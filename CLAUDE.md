@@ -55,6 +55,7 @@ bd close <id>         # Complete work
 _Add your build and test commands here_
 
 ```bash
+pio test
 # Example:
 # npm install
 # npm test
@@ -62,8 +63,10 @@ _Add your build and test commands here_
 
 ## Architecture Overview
 
-_Add a brief overview of your project architecture_
+Forgekey is an embedded device firmware that works by communicating with an MQTT server to service the needs of makerspaces.  Use MQTT for communication back and forth with OpenMakerSpace.  The devices with authenticate with the MQTT server via JWT.  The topic hirearachy is:
+
+/ :: mac address of device :: / (capabilities of device and system hooks)
+
 
 ## Conventions & Patterns
 
-_Add your project-specific conventions here_
