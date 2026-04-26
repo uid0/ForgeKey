@@ -1,17 +1,14 @@
 #ifndef TFLITE_MODEL_H
 #define TFLITE_MODEL_H
 
-// Person detection model for ESP32-S3
-// This is a placeholder - replace with actual model from:
-// https://github.com/espressif/esp-tflite-micro/tree/main/examples/person_detection
+// Espressif's pre-trained 96x96 grayscale person detection model.
+// Source: https://github.com/espressif/esp-tflite-micro/tree/master/examples/person_detection
+// Generated via: xxd -i person_detect.tflite > tflite_model.h
 //
-// To generate: xxd -i person_detect.tflite > tflite_model.h
-
-// Minimal model data (replace with actual model)
-// Model input: 96x96 grayscale image (9216 bytes)
-// Model output: [person_score, not_person_score]
+// Model input:  int8[1, 96, 96, 1] (camera grayscale shifted by -128)
+// Model output: int8[1, 2]         ([no_person_score, person_score], dequantize via output->params)
 
 extern const unsigned char g_person_detect_model_data[];
-extern const unsigned int g_person_detect_model_data_len;
+extern const int g_person_detect_model_data_len;
 
 #endif
