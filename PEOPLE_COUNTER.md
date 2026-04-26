@@ -3,10 +3,10 @@
 Area occupancy counting using XIAO ESP32-S3 Sense and camera.
 
 ## Features
-- Camera-based people detection (motion detection, TFLite ready)
+- Camera-based people detection (TensorFlow Lite Micro, with motion-detection fallback)
 - Occupancy counting with stabilization
 - MQTT publishing to OpenMakerSpace
-- PSRAM support for frame buffering
+- PSRAM support for frame buffering and the TFLite tensor arena
 
 ## Hardware
 - Seeed XIAO ESP32-S3 Sense (OV3660 camera, 8MB PSRAM)
@@ -44,37 +44,51 @@ Payload:
 {"count": 3, "timestamp": 12345}
 ```
 
-## Current Implementation: Motion Detection
+## Detection Pipeline
 
-The current code uses motion detection for people counting:
-- Detects pixel changes between frames
-- Simple and works immediately
-- May have false positives (lighting changes, etc.)
+### TensorFlow Lite Person Detection (active)
 
-## Upgrade to TensorFlow Lite Person Detection
+`PersonDetector` runs Espressif's pre-trained 96×96 grayscale `person_detect`
+model (int8-quantized MobileNet) via TensorFlow Lite Micro on the ESP32-S3.
 
-For proper ML-based person detection:
+- **Model**: `src/detection/tflite_model.cpp` — `g_person_detect_model_data`
+  (~300 KB in flash). Sourced from
+  [esp-tflite-micro](https://github.com/espressif/esp-tflite-micro/tree/master/examples/person_detection).
+- **Library**: `tanakamasayuki/TensorFlowLite_ESP32@^1.0.0` (Arduino-compatible
+  TFLite Micro port; supports ESP32-S3).
+- **Tensor arena**: ~120 KB (`81 KB + 39 KB scratch`), allocated in PSRAM via
+  `heap_caps_malloc(MALLOC_CAP_SPIRAM)`. PSRAM is required.
+- **Input pipeline**: camera grayscale frame → nearest-neighbor resize to
+  96×96 → shift uint8 → int8 (`pixel - 128`) → `interpreter->Invoke()`.
+- **Output**: dequantized `[no_person_score, person_score]`. A person is
+  reported when `person_score > 0.6` (tunable via
+  `PersonDetector::setPersonThreshold`).
+- **Per-frame cost**: target ≤500 ms on ESP32-S3 @ 240 MHz. Inference time is
+  printed to serial alongside the scores.
+- **Motion pre-filter**: a quick pixel-diff against the previous 96×96 frame
+  is computed but currently informational only (`DetectionResult.motionDetected`).
+  Future optimization can skip `Invoke()` when no motion is seen.
 
-1. **Get Person Detection Model**
-   ```bash
-   # Download from Espressif
-   wget https://github.com/espressif/esp-tflite-micro/raw/main/examples/person_detection/person_detect.tflite
-   
-   # Convert to C header
-   xxd -i person_detect.tflite > src/detection/tflite_model.h
-   ```
+### Motion-Detection Fallback (legacy)
 
-2. **Update platformio.ini**
-   ```ini
-   lib_deps = 
-       espressif/esp32-camera
-       knolleary/PubSubClient
-       tanakamasayuki/TensorFlowLite_ESP32@^1.0.0
-   ```
+If TFLite initialization fails (e.g. PSRAM unavailable, arena allocation
+fails, model schema mismatch), `PersonDetector` falls back to the original
+motion detector: pixel-diff against the previous frame, with a 5%
+changed-pixel threshold. Marked legacy — kept only as a safety net so the
+firmware still produces useful occupancy signals on a misconfigured board.
 
-3. **Update person_detector.cpp** to use TFLite inference instead of motion detection
+### Updating the Model
 
-4. **Rebuild and flash**
+To regenerate `src/detection/tflite_model.cpp` from a newer `person_detect.tflite`:
+
+```bash
+wget https://github.com/espressif/esp-tflite-micro/raw/master/examples/person_detection/main/person_detect_model_data.cc \
+     -O src/detection/tflite_model.cpp
+sed -i 's|#include "person_detect_model_data.h"|#include "tflite_model.h"|' src/detection/tflite_model.cpp
+```
+
+The header `src/detection/tflite_model.h` only declares the externs; it does
+not need to be regenerated unless the symbol names change.
 
 ## File Structure
 ```
@@ -89,5 +103,6 @@ src/
 ## Performance
 - Detection interval: 2 seconds (configurable)
 - MQTT publish: On change or every 10 seconds
-- RAM usage: ~15%
-- Flash usage: ~22%
+- TFLite inference: ~hundreds of ms per frame on ESP32-S3 @ 240 MHz
+- TFLite tensor arena: ~120 KB in PSRAM (model itself: ~300 KB in flash)
+- DRAM usage: dominated by camera + WiFi/MQTT stacks (TFLite arena lives in PSRAM)
