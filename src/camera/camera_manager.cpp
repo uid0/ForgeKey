@@ -1,6 +1,7 @@
 #include "camera_manager.h"
 #include "camera_config.h"
 #include "Arduino.h"
+#include "img_converters.h"
 
 CameraManager cameraManager;
 
@@ -59,4 +60,35 @@ void CameraManager::end() {
         esp_camera_deinit();
         initialized = false;
     }
+}
+
+bool CameraManager::captureJpeg(uint8_t** outBuf, size_t* outLen, int quality) {
+    if (!initialized || !outBuf || !outLen) return false;
+
+    camera_fb_t* fb = esp_camera_fb_get();
+    if (!fb) {
+        Serial.println("captureJpeg: fb_get failed");
+        return false;
+    }
+
+    bool ok;
+    if (fb->format == PIXFORMAT_JPEG) {
+        // Camera is already producing JPEG; copy into a heap buffer the
+        // caller can free() after we return the framebuffer.
+        *outBuf = (uint8_t*)malloc(fb->len);
+        if (!*outBuf) {
+            esp_camera_fb_return(fb);
+            return false;
+        }
+        memcpy(*outBuf, fb->buf, fb->len);
+        *outLen = fb->len;
+        ok = true;
+    } else {
+        ok = frame2jpg(fb, quality, outBuf, outLen);
+    }
+    esp_camera_fb_return(fb);
+    if (!ok) {
+        Serial.println("captureJpeg: encode failed");
+    }
+    return ok;
 }
