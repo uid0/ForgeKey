@@ -41,15 +41,72 @@ and can be overridden via `-D` flags in `platformio.ini`:
 | `FORGEKEY_FIRMWARE_VERSION` | `0.1.0` | Reported in registration payload + OTA logs |
 | `PHOTO_UPLOAD_INTERVAL_MS` | `300000` | Periodic photo cadence |
 | `PHOTO_UPLOAD_MOTION_WINDOW_MS` | `30000` | Skip photo if no motion seen this recently |
+| `FORGEKEY_AP_PASSWORD` | `12345678` | Captive-portal AP password (printed on sticker) |
 
-WiFi SSID/PSK and MQTT broker are still set at the top of `src/main.cpp` for
-v1; captive-portal-based credential entry is tracked as a follow-up.
+The MQTT broker host/port are still set at the top of `src/main.cpp`. WiFi
+SSID/PSK are no longer baked in — see
+[WiFi provisioning (captive portal)](#wifi-provisioning-captive-portal).
+
+## WiFi provisioning (captive portal)
+
+A freshly flashed device has no WiFi credentials, so it can't talk to OMS yet.
+The first-boot flow uses a captive portal AP (built on
+[`tzapu/WiFiManager`](https://github.com/tzapu/WiFiManager)) to collect
+credentials from a phone or laptop on-site:
+
+1. On boot, `WifiSetup::connectOrPortal()` tries the SSID/PSK saved by
+   WiFiManager in NVS. If the connect succeeds, normal flow resumes.
+2. If no creds are saved (or the saved network is unreachable), the device
+   raises an open WiFi AP:
+   - **SSID**: `ForgeKey-Setup-XXXX` where `XXXX` is the last four hex digits
+     of the device MAC, uppercased (e.g. `ForgeKey-Setup-A4F9`).
+   - **Password**: `12345678` (override at build time with
+     `-DFORGEKEY_AP_PASSWORD=...`).
+   - A DNS server on `192.168.4.1` answers any hostname, which triggers the
+     iOS / Android "Sign in to network" captive-portal flow automatically.
+3. The user picks their SSID from the scanned list, types the PSK, hits
+   *Save*. WiFiManager persists the creds and reboots.
+4. After reboot the device re-runs step 1, this time succeeding, then
+   continues to OMS registration / occupancy publishing.
+
+`connectOrPortal()` blocks. If the user never completes the form, the device
+sits in AP mode forever — by design, since there's nothing useful it can do
+without WiFi. A timeout can be passed in if needed.
+
+### Sticker label format
+
+Every shipped device should carry a sticker showing its AP credentials:
+
+```
+ForgeKey-Setup-XXXX
+Pwd: 12345678
+```
+
+Replace `XXXX` with the last four hex chars of the printed MAC address.
+
+### Forgetting WiFi (re-provisioning a deployed device)
+
+To move a device to a new network without physically reflashing it, publish
+the following JSON to its config topic:
+
+```
+forgekey/<mac>/config
+{"cmd": "forget_wifi"}
+```
+
+The device clears its saved WiFi creds and reboots back into the captive
+portal. Use this when handing a device to a new makerspace.
+
+> Note: the device must currently be online to receive this command. A device
+> that has lost WiFi entirely needs a power-cycle reset by hand (a future
+> revision will add a physical button + GPIO trigger).
 
 ## Provisioning (first boot)
 
 On every boot the device:
 
-1. Connects WiFi using the baked-in credentials.
+1. Connects WiFi via the captive-portal flow above. If WiFi creds aren't
+   saved yet this blocks until a user completes the portal form.
 2. Bumps a persistent `boot_count` in NVS namespace `forgekey`.
 3. If NVS does not yet contain a `dev_id` + `jwt`, runs `runProvisioning()`:
    - Captures one JPEG (`CameraManager::captureJpeg`, frame2jpg-encoded).
@@ -271,7 +328,6 @@ After `~/.platformio/penv/bin/platformio run --target upload`:
 
 ## Out of scope (filed as follow-ups)
 
-- Captive-portal WiFi credential entry
 - Offline queue + exponential backoff for unreachable OMS
 - Multi-channel update streams (stable / beta / dev)
 - ESP32 hardware Secure Boot v2 (fuse-burning, irreversible)

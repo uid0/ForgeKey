@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <WiFi.h>
+#include <ArduinoJson.h>
 #include "camera/camera_manager.h"
 #include "detection/person_detector.h"
 #include "counting/occupancy_counter.h"
@@ -9,10 +10,11 @@
 #include "photo_upload/uploader.h"
 #include "ota/ota_updater.h"
 #include "config/credential_rotation.h"
+#include "wifi_setup/captive.h"
 
 // ============= CONFIGURATION =============
-const char* WIFI_SSID = "YOUR_WIFI_SSID";
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+// WiFi credentials are no longer baked in: a first-boot captive portal
+// (see src/wifi_setup/captive.cpp) collects them and persists them to NVS.
 const char* MQTT_BROKER = "mqtt.yourdomain.com";
 const int   MQTT_PORT = 1883;
 
@@ -24,6 +26,26 @@ unsigned long lastDetection = 0;
 unsigned long lastMqttPublish = 0;
 bool occupancyChanged = false;
 String macAddress;
+
+// Single dispatcher for the shared forgekey/<mac>/config topic. The two
+// payload shapes coexist:
+//   {"cmd": "forget_wifi"}                     → clear WiFi creds, reboot
+//   {"provisioning_token": "...", "valid_after": "..."}  → token rotation
+static void onConfigMessage(const char* topic, const uint8_t* payload, unsigned int length) {
+    StaticJsonDocument<384> doc;
+    DeserializationError err = deserializeJson(doc, payload, length);
+    if (!err) {
+        const char* cmd = doc["cmd"] | "";
+        if (strcmp(cmd, "forget_wifi") == 0) {
+            Serial.println("config: forget_wifi command received");
+            WifiSetup::forgetAndRestart();  // does not return
+            return;
+        }
+    }
+    // Anything else (rotation payload, parse error, unknown cmd) falls through
+    // to the credential-rotation handler, which logs and parses on its own.
+    credential_rotation::onConfigMessage(topic, payload, length);
+}
 
 static void onFirmwareDispatch(const char* topic, const uint8_t* payload, unsigned int length) {
     Serial.printf("ota: dispatch on %s (%u bytes)\n", topic, length);
@@ -63,13 +85,14 @@ void setup() {
     Serial.println("\n\nForgeKey People Counter Starting...");
     Serial.printf("Firmware version: %s\n", FORGEKEY_FIRMWARE_VERSION);
 
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    Serial.print("Connecting to WiFi");
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(500);
-        Serial.print(".");
+    // Captive portal: blocks until the device is on WiFi, either via
+    // previously-saved creds in NVS or via the AP+portal form.
+    if (!WifiSetup::connectOrPortal()) {
+        Serial.println("WiFi: portal failed, restarting");
+        delay(2000);
+        ESP.restart();
     }
-    Serial.println("\nWiFi connected");
+    Serial.println("WiFi connected");
     Serial.println("IP: " + WiFi.localIP().toString());
 
     macAddress = WiFi.macAddress();
@@ -112,12 +135,12 @@ void setup() {
         mqttClient.subscribeFirmware(onFirmwareDispatch);
     }
 
-    // Config / credential-rotation channel. Topic is derived from the MAC
-    // rather than handed back at registration so the back-end can fan out
-    // a rotation message before knowing each device's OMS id.
+    // Config / control topic. Topic is derived from the MAC rather than
+    // handed back at registration so the back-end can fan out messages
+    // (token rotation, forget_wifi) before knowing each device's OMS id.
     String configTopic = credential_rotation::topicFor(macAddress);
     mqttClient.setConfigTopic(configTopic.c_str());
-    mqttClient.subscribeConfig(credential_rotation::onConfigMessage);
+    mqttClient.subscribeConfig(onConfigMessage);
 
     photoUploader.begin(OMS_HOST, OMS_PORT, macAddress);
     photoUploader.setJwt(creds.jwtToken);
