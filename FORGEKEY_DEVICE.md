@@ -112,17 +112,24 @@ subscribes to the topic returned by the server in `mqtt_topic_for_firmware`
 {
   "url": "https://oms.openmakerspace.org/static/firmware/0.2.0.bin",
   "sha256": "f3b5...64hex",
+  "signature": "MEUCIQ...base64-DER-ECDSA(P-256)",
   "version": "0.2.0",
   "mandatory": false
 }
 ```
+
+`signature` is the base64-encoded ECDSA(P-256)-over-SHA-256 signature of the
+raw firmware bytes, produced by OMS using the private key matching the public
+key baked into firmware (`src/security/firmware_pubkey.h`). Devices reject
+any dispatch missing the signature field; see "Signed firmware" below.
 
 ### Apply flow
 
 `OtaUpdater::apply()`:
 
 1. Splits the URL (`http`/`https` + host + port + path).
-2. Opens a `WiFiClient` (or `WiFiClientSecure` with `setInsecure()` for v1).
+2. Opens a `WiFiClient` (or `WiFiClientSecure` with `setCACert(kOmsCaPem)` for
+   pinned TLS).
 3. Issues a manual `GET` and parses status + headers (requires
    `Content-Length`; chunked transfer encoding is not yet supported).
 4. Calls `Update.begin(contentLength)` to open the inactive OTA partition.
@@ -131,7 +138,10 @@ subscribes to the topic returned by the server in `mqtt_topic_for_firmware`
    * Feeds each chunk into `mbedtls_sha256_update()` in parallel.
 6. Compares the computed digest to the dispatch payload's `sha256`.
    Mismatch → `Update.abort()`, no partition switch, log + return.
-7. `Update.end(true)` finalizes; `ESP.restart()` reboots into the new image.
+7. Base64-decodes the dispatch `signature` and runs
+   `mbedtls_pk_verify(MBEDTLS_MD_SHA256, digest, signature)` against the
+   baked-in ECDSA(P-256) public key. Mismatch → `Update.abort()`, log + return.
+8. `Update.end(true)` finalizes; `ESP.restart()` reboots into the new image.
 
 Non-mandatory updates are deferred if a photo upload happened in the last 5
 seconds; mandatory updates apply immediately.
@@ -157,20 +167,90 @@ NVS namespace `forgekey`:
 | `fw_topic` | str | OTA dispatch MQTT topic |
 | `p_topic` | str | Occupancy publish MQTT topic |
 | `jwt` | str | Bearer for HTTPS uploads + MQTT auth |
+| `prov_tok` | str | OTA-rotated provisioning token (overrides compile-time default) |
 
 A factory reset (re-registration) is `provisioning.clear()` from the field —
-or an over-the-air firmware that wipes the namespace.
+or an over-the-air firmware that wipes the namespace. `clear()` deliberately
+preserves `boots` and `prov_tok` so a rotated token survives re-registration.
 
-## Security model (v1)
+## Credential rotation
 
-- **Transport**: TLS to OMS, currently with `setInsecure()` (no CA pinning).
-  Pinning is tracked as a follow-up; rotation can ship over OTA.
-- **Provisioning**: shared bearer baked into the firmware. Devices are
-  physically controlled in v1; rotation arrives over OTA.
+Devices subscribe to `forgekey/<mac>/config`. A payload of:
+
+```json
+{ "provisioning_token": "<new>", "valid_after": "2026-05-01T00:00:00Z" }
+```
+
+writes the new token to NVS (`prov_tok`). The device uses the rotated token
+on its next re-registration; OMS coordinates the cutover by accepting both
+the old and new tokens during the transition window, then revoking the old
+one once all devices have ack'd. `valid_after` is parsed and logged but the
+device does not enforce it — the back-end controls when the old token
+stops being honoured by `/api/forgekey/devices/register/`.
+
+## Security model
+
+- **Transport**: TLS to OMS with the OMS root certificate baked into firmware
+  (`src/security/oms_ca.h`). `WiFiClientSecure::setCACert()` is used in all
+  three HTTPS paths (registration, photo upload, OTA download). MITM via a
+  rogue public CA is rejected at the TLS handshake.
+- **Provisioning bearer**: shared token baked into the firmware at build time
+  via `FORGEKEY_PROVISIONING_TOKEN`. The token can be rotated post-deploy
+  through the MQTT `forgekey/<mac>/config` channel; the rotated value lives
+  in NVS and overrides the compile-time default.
 - **Per-device auth**: each device gets a unique `jwt_token` from OMS at
   registration, used for HTTPS uploads and MQTT auth thereafter.
-- **OTA integrity**: SHA-256 verification of the downloaded image plus the
-  ESP-IDF two-slot rollback scheme. Signed firmware is v2.
+- **OTA integrity + authenticity**:
+  * SHA-256 of the downloaded image must match the dispatch payload.
+  * ECDSA(P-256) signature over the same digest must verify against the
+    public key baked into firmware (`src/security/firmware_pubkey.h`).
+  * Both checks happen *before* `Update.end()` — a failed check leaves the
+    inactive partition aborted and never swaps the boot pointer.
+  * The ESP-IDF two-slot rollback scheme catches runtime crashes after boot.
+
+## Rotation procedures
+
+### OMS TLS root certificate
+
+OMS rotates its TLS chain (e.g. Let's Encrypt root migration):
+
+1. Run `scripts/build/fetch-oms-ca.sh` against the new endpoint to refresh
+   `src/security/oms_ca.h`.
+2. During an overlap window, concatenate both old and new PEMs in the header
+   so devices flashed with either build keep working.
+3. Bump `FORGEKEY_FIRMWARE_VERSION`, build, push to the OTA channel, and
+   wait for fleet uptake.
+4. Once metrics show all devices on the new build, drop the old PEM and
+   ship a final clean-up build.
+
+### Firmware-signing keypair
+
+To rotate the OTA signing keypair (suspected compromise, scheduled hygiene):
+
+1. `scripts/build/gen-firmware-signing-key.sh` writes a fresh keypair under
+   `.firmware-keys/` (gitignored).
+2. Deploy the new private key to OMS as `FORGEKEY_FIRMWARE_SIGNING_KEY`,
+   keeping the old key alongside for the transition.
+3. `scripts/build/gen-firmware-signing-key.sh --update-header` rewrites
+   `src/security/firmware_pubkey.h`. Concatenating two PEM blocks and
+   teaching `firmware_verify::verifySignature` to try both is one option for
+   true zero-downtime rotation; the simpler path is dual-publishing
+   firmware (one signed by old key, one by new) targeted by version range.
+4. Bump `FORGEKEY_FIRMWARE_VERSION`, build, dispatch.
+5. After fleet uptake, retire the old private key in OMS.
+
+### Provisioning bearer token
+
+For rotation post-deploy:
+
+1. Generate the new shared token.
+2. Publish the rotation message to each device's `forgekey/<mac>/config`
+   topic. The device persists it to NVS immediately and acknowledges by
+   logging the new token's prefix to serial.
+3. Once OMS metrics show all devices ack'd (or the rollout window expires),
+   stop accepting the old token at `/api/forgekey/devices/register/`.
+4. Future builds should also bake the new token as the compile-time default
+   so freshly flashed devices skip the rotation step.
 
 ## Manual smoke test (hardware)
 
@@ -193,6 +273,7 @@ After `~/.platformio/penv/bin/platformio run --target upload`:
 
 - Captive-portal WiFi credential entry
 - Offline queue + exponential backoff for unreachable OMS
-- Signed firmware images (currently SHA-256 + TLS only)
 - Multi-channel update streams (stable / beta / dev)
-- TLS CA pinning (currently `setInsecure()`)
+- ESP32 hardware Secure Boot v2 (fuse-burning, irreversible)
+- mTLS (per-device client cert) — current model relies on JWT bearer for
+  per-device auth; mTLS revisit if the attack surface widens

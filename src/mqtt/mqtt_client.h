@@ -18,9 +18,11 @@ public:
     // If empty, defaults derived from the MAC are used.
     void setOccupancyTopic(const char* topic);
     void setFirmwareTopic(const char* topic);
+    void setConfigTopic(const char* topic);
 
     bool publishOccupancy(int count);
     bool subscribeFirmware(MessageHandler handler);
+    bool subscribeConfig(MessageHandler handler);
     bool isConnected();
     void loop();
     void end();
@@ -31,11 +33,13 @@ private:
     String topicPrefix;
     String occupancyTopic;  // resolved publish topic
     String firmwareTopic;   // OTA dispatch topic
+    String configTopic;     // credential-rotation / config command topic
     String jwtToken;
     String broker;
     int port = 1883;
     unsigned long lastReconnectAttempt = 0;
     MessageHandler firmwareHandler;
+    MessageHandler configHandler;
 
     bool connect();
     void resubscribeAll();

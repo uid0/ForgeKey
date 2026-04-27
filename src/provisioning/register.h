@@ -29,6 +29,15 @@ public:
     // time so back-end can correlate fleet stability metrics.
     uint32_t bootCount() const { return cachedBootCount; }
 
+    // Returns the bearer token currently used for the X-ForgeKey-Provisioning-Token
+    // header. Falls back to the compile-time FORGEKEY_PROVISIONING_TOKEN if NVS
+    // hasn't yet been overwritten by an OTA-delivered rotation message.
+    String activeProvisioningToken() const;
+
+    // Persist a new provisioning token delivered over the MQTT config channel.
+    // Returns true if the value was actually written (false on NVS error).
+    bool setProvisioningToken(const String& token);
+
     // POST a multipart photo + JSON metadata to the OMS register endpoint.
     // On success persists credentials and returns true.
     //

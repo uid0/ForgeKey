@@ -3,3 +3,7 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# OTA firmware-signing keypair output. Private key MUST never be committed;
+# the public key gets baked into src/security/firmware_pubkey.h instead.
+.firmware-keys/

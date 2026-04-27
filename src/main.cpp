@@ -8,6 +8,7 @@
 #include "provisioning/register.h"
 #include "photo_upload/uploader.h"
 #include "ota/ota_updater.h"
+#include "config/credential_rotation.h"
 
 // ============= CONFIGURATION =============
 const char* WIFI_SSID = "YOUR_WIFI_SSID";
@@ -110,6 +111,13 @@ void setup() {
         mqttClient.setFirmwareTopic(creds.mqttFirmwareTopic.c_str());
         mqttClient.subscribeFirmware(onFirmwareDispatch);
     }
+
+    // Config / credential-rotation channel. Topic is derived from the MAC
+    // rather than handed back at registration so the back-end can fan out
+    // a rotation message before knowing each device's OMS id.
+    String configTopic = credential_rotation::topicFor(macAddress);
+    mqttClient.setConfigTopic(configTopic.c_str());
+    mqttClient.subscribeConfig(credential_rotation::onConfigMessage);
 
     photoUploader.begin(OMS_HOST, OMS_PORT, macAddress);
     photoUploader.setJwt(creds.jwtToken);

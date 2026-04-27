@@ -7,6 +7,9 @@
 #include <mbedtls/sha256.h>
 #include <esp_ota_ops.h>
 
+#include "security/oms_ca.h"
+#include "security/firmware_verify.h"
+
 OtaUpdater otaUpdater;
 
 void OtaUpdater::begin() {
@@ -15,18 +18,23 @@ void OtaUpdater::begin() {
 }
 
 bool OtaUpdater::parse(const uint8_t* payload, unsigned int length, Spec& out) {
-    StaticJsonDocument<512> doc;
+    StaticJsonDocument<1024> doc;
     DeserializationError err = deserializeJson(doc, payload, length);
     if (err) {
         Serial.printf("ota: parse error: %s\n", err.c_str());
         return false;
     }
-    out.url       = (const char*)(doc["url"]     | "");
-    out.sha256    = (const char*)(doc["sha256"]  | "");
-    out.version   = (const char*)(doc["version"] | "");
+    out.url       = (const char*)(doc["url"]       | "");
+    out.sha256    = (const char*)(doc["sha256"]    | "");
+    out.signature = (const char*)(doc["signature"] | "");
+    out.version   = (const char*)(doc["version"]   | "");
     out.mandatory = doc["mandatory"] | false;
     if (out.url.length() == 0 || out.sha256.length() != 64) {
         Serial.println("ota: missing url or invalid sha256");
+        return false;
+    }
+    if (out.signature.length() == 0) {
+        Serial.println("ota: dispatch missing signature — refusing");
         return false;
     }
     out.sha256.toLowerCase();
@@ -97,7 +105,7 @@ bool OtaUpdater::apply(const Spec& spec) {
     WiFiClientSecure secureClient;
     WiFiClient plainClient;
     if (tls) {
-        secureClient.setInsecure();
+        secureClient.setCACert(kOmsCaPem);
         secureClient.setTimeout(20);
         client = &secureClient;
     } else {
@@ -220,6 +228,28 @@ bool OtaUpdater::apply(const Spec& spec) {
         Update.abort();
         updating = false;
         return false;
+    }
+
+    // ECDSA signature must verify before we hand the partition to the bootloader.
+    // A mismatch here means either the binary was tampered with in transit (and
+    // collided on SHA-256, which is implausible) or the dispatcher used a key the
+    // device doesn't trust — either way we refuse the swap.
+    {
+        uint8_t sigBuf[128];  // ECDSA(P-256) DER is ≤ 72 bytes; 128 is comfortable headroom
+        size_t sigLen = sizeof(sigBuf);
+        if (!firmware_verify::decodeBase64(spec.signature, sigBuf, &sigLen)) {
+            Serial.println("ota: signature is not valid base64 — abort");
+            Update.abort();
+            updating = false;
+            return false;
+        }
+        if (!firmware_verify::verifySignature(digest, 32, sigBuf, sigLen)) {
+            Serial.println("ota: signature verification failed — abort");
+            Update.abort();
+            updating = false;
+            return false;
+        }
+        Serial.println("ota: signature verified");
     }
 
     if (!Update.end(/*evenIfRemaining=*/true)) {

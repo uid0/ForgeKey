@@ -2,6 +2,8 @@
 
 #include <WiFiClientSecure.h>
 
+#include "security/oms_ca.h"
+
 PhotoUploader photoUploader;
 
 namespace {
@@ -41,7 +43,7 @@ PhotoUploader::Result PhotoUploader::uploadPhoto(const uint8_t* jpegBuf, size_t 
     size_t total = head.length() + jpegLen + tail.length();
 
     WiFiClientSecure tls;
-    tls.setInsecure();
+    tls.setCACert(kOmsCaPem);
     tls.setTimeout(15);
     if (!tls.connect(host.c_str(), port)) {
         Serial.println("photo: TLS connect failed");

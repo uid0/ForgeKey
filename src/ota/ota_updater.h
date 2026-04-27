@@ -7,7 +7,8 @@ class OtaUpdater {
 public:
     struct Spec {
         String url;
-        String sha256;     // 64 hex chars
+        String sha256;       // 64 hex chars
+        String signature;    // base64-encoded ECDSA(P-256) DER over the raw image
         String version;
         bool mandatory = false;
     };

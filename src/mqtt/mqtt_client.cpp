@@ -4,6 +4,14 @@
 MqttClient mqttClient;
 
 void MqttClient::staticCallback(char* topic, uint8_t* payload, unsigned int length) {
+    // Dispatch to the matching per-topic handler. PubSubClient delivers every
+    // subscribed topic through the same callback, so we have to demux here.
+    if (mqttClient.configTopic.length() &&
+        mqttClient.configHandler &&
+        mqttClient.configTopic == topic) {
+        mqttClient.configHandler(topic, payload, length);
+        return;
+    }
     if (mqttClient.firmwareHandler) {
         mqttClient.firmwareHandler(topic, payload, length);
     }
@@ -43,6 +51,15 @@ void MqttClient::setFirmwareTopic(const char* topic) {
     }
 }
 
+void MqttClient::setConfigTopic(const char* topic) {
+    if (topic && *topic) {
+        configTopic = topic;
+        if (isConnected()) {
+            client->subscribe(configTopic.c_str());
+        }
+    }
+}
+
 bool MqttClient::connect() {
     if (!client) return false;
 
@@ -61,6 +78,9 @@ bool MqttClient::connect() {
 void MqttClient::resubscribeAll() {
     if (firmwareTopic.length() && firmwareHandler) {
         client->subscribe(firmwareTopic.c_str());
+    }
+    if (configTopic.length() && configHandler) {
+        client->subscribe(configTopic.c_str());
     }
 }
 
@@ -91,6 +111,13 @@ bool MqttClient::subscribeFirmware(MessageHandler handler) {
     if (firmwareTopic.length() == 0 || !client) return false;
     if (!client->connected()) return false;
     return client->subscribe(firmwareTopic.c_str());
+}
+
+bool MqttClient::subscribeConfig(MessageHandler handler) {
+    configHandler = handler;
+    if (configTopic.length() == 0 || !client) return false;
+    if (!client->connected()) return false;
+    return client->subscribe(configTopic.c_str());
 }
 
 bool MqttClient::isConnected() {

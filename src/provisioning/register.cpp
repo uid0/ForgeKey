@@ -5,6 +5,8 @@
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 
+#include "security/oms_ca.h"
+
 Provisioning provisioning;
 
 namespace {
@@ -14,6 +16,7 @@ constexpr const char* kKeyFwTopic  = "fw_topic";
 constexpr const char* kKeyPingTopic = "p_topic";
 constexpr const char* kKeyJwt      = "jwt";
 constexpr const char* kKeyBoots    = "boots";
+constexpr const char* kKeyProvTok  = "prov_tok";  // OTA-delivered rotation override
 
 // Multipart boundary used for the multipart/form-data registration POST.
 constexpr const char* kBoundary = "----ForgekeyBoundary7d3f2c1a";
@@ -55,6 +58,25 @@ void Provisioning::clear() {
 }
 
 DeviceCredentials Provisioning::credentials() const { return creds; }
+
+String Provisioning::activeProvisioningToken() const {
+    Preferences p;
+    if (!p.begin(kNvsNamespace, /*readOnly=*/true)) {
+        return String(FORGEKEY_PROVISIONING_TOKEN);
+    }
+    String stored = p.getString(kKeyProvTok, "");
+    p.end();
+    return stored.length() > 0 ? stored : String(FORGEKEY_PROVISIONING_TOKEN);
+}
+
+bool Provisioning::setProvisioningToken(const String& token) {
+    if (token.length() == 0) return false;
+    Preferences p;
+    if (!p.begin(kNvsNamespace, /*readOnly=*/false)) return false;
+    size_t written = p.putString(kKeyProvTok, token);
+    p.end();
+    return written > 0;
+}
 
 bool Provisioning::persist(const DeviceCredentials& c) {
     Preferences p;
@@ -105,20 +127,21 @@ bool Provisioning::registerDevice(const char* host, uint16_t port,
     size_t totalLen = head.length() + jpegLen + tail.length();
 
     WiFiClientSecure tls;
-    tls.setInsecure();  // v1: rely on TLS for transit only; CA pinning lands later
+    tls.setCACert(kOmsCaPem);
     tls.setTimeout(15);
     if (!tls.connect(host, port)) {
         Serial.printf("register: TLS connect to %s:%u failed\n", host, port);
         return false;
     }
 
+    String activeToken = activeProvisioningToken();
     tls.printf("POST /api/forgekey/devices/register/ HTTP/1.1\r\n"
                "Host: %s\r\n"
                "X-ForgeKey-Provisioning-Token: %s\r\n"
                "Content-Type: multipart/form-data; boundary=%s\r\n"
                "Content-Length: %u\r\n"
                "Connection: close\r\n\r\n",
-               host, FORGEKEY_PROVISIONING_TOKEN, kBoundary,
+               host, activeToken.c_str(), kBoundary,
                (unsigned)totalLen);
     tls.print(head);
     // Stream the JPEG in chunks so we don't double-allocate the buffer.
