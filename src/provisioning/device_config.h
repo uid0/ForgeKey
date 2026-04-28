@@ -7,7 +7,7 @@
 // editing this header.
 
 #ifndef OMS_HOST
-#define OMS_HOST "oms.openmakerspace.org"
+#define OMS_HOST "dms.openmakersuite.net"
 #endif
 
 #ifndef OMS_PORT

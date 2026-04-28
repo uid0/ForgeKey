@@ -15,11 +15,82 @@
 // ============= CONFIGURATION =============
 // WiFi credentials are no longer baked in: a first-boot captive portal
 // (see src/wifi_setup/captive.cpp) collects them and persists them to NVS.
-const char* MQTT_BROKER = "mqtt.yourdomain.com";
+const char* MQTT_BROKER = "dms.oms-iot.com";
 const int   MQTT_PORT = 1883;
 
 const int DETECTION_INTERVAL = 2000;        // ms between detections
 const int MQTT_PUBLISH_INTERVAL = 10000;    // ms between MQTT updates
+// =========================================
+
+// ============= STATUS LED =============
+// Onboard LED on XIAO ESP32-S3 is GPIO 21 (orange LED)
+const int STATUS_LED_PIN = 21;
+const int LED_ON = LOW;   // LED is active LOW on XIAO ESP32-S3
+const int LED_OFF = HIGH;
+
+// LED blink patterns (on_ms, off_ms, repeat_count; 0 = infinite)
+struct BlinkPattern {
+    int onMs;
+    int offMs;
+    int count;
+};
+
+// Predefined patterns for different states
+const BlinkPattern BOOT_PATTERN      = {100, 100, 5};   // Fast blink 5x at boot
+const BlinkPattern WIFI_CONNECTING   = {500, 500, 0};   // Slow blink while connecting
+const BlinkPattern NORMAL_PATTERN    = {50, 2950, 0};   // Short blink every 3s
+const BlinkPattern ERROR_PATTERN     = {200, 200, 0};   // Fast blink (error)
+const BlinkPattern MQTT_CONNECTED_PATTERN = {50, 50, 3}; // 3 quick blinks on MQTT connect
+
+BlinkPattern currentPattern = BOOT_PATTERN;
+unsigned long lastLedToggle = 0;
+bool ledState = false;
+int blinkCount = 0;
+bool patternComplete = false;
+
+void setLedPattern(const BlinkPattern& pattern) {
+    currentPattern = pattern;
+    blinkCount = 0;
+    patternComplete = false;
+    ledState = (pattern.onMs > 0) ? LED_ON : LED_OFF;
+    digitalWrite(STATUS_LED_PIN, ledState);
+    lastLedToggle = millis();
+}
+
+void updateLed() {
+    if (patternComplete) return;
+
+    unsigned long now = millis();
+    unsigned long interval = ledState == LED_ON ? currentPattern.onMs : currentPattern.offMs;
+
+    if (now - lastLedToggle >= interval) {
+        ledState = !ledState;
+        digitalWrite(STATUS_LED_PIN, ledState ? LED_ON : LED_OFF);
+        lastLedToggle = now;
+
+        if (ledState == LED_OFF) {
+            blinkCount++;
+            if (currentPattern.count > 0 && blinkCount >= currentPattern.count) {
+                patternComplete = true;
+                digitalWrite(STATUS_LED_PIN, LED_OFF);
+            }
+        }
+    }
+}
+
+// ============= DEBUG HELPERS =============
+void debugPrint(const char* level, const char* tag, const char* msg) {
+    Serial.printf("[%6lu] [%s] %s: %s\n", millis(), level, tag, msg);
+}
+
+void debugPrintf(const char* level, const char* tag, const char* fmt, ...) {
+    char buf[128];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    Serial.printf("[%6lu] [%s] %s: %s\n", millis(), level, tag, buf);
+}
 // =========================================
 
 unsigned long lastDetection = 0;
@@ -37,7 +108,7 @@ static void onConfigMessage(const char* topic, const uint8_t* payload, unsigned 
     if (!err) {
         const char* cmd = doc["cmd"] | "";
         if (strcmp(cmd, "forget_wifi") == 0) {
-            Serial.println("config: forget_wifi command received");
+            debugPrint("INFO", "CFG", "forget_wifi command received");
             WifiSetup::forgetAndRestart();  // does not return
             return;
         }
@@ -48,15 +119,15 @@ static void onConfigMessage(const char* topic, const uint8_t* payload, unsigned 
 }
 
 static void onFirmwareDispatch(const char* topic, const uint8_t* payload, unsigned int length) {
-    Serial.printf("ota: dispatch on %s (%u bytes)\n", topic, length);
+    debugPrintf("INFO", "OTA", "Dispatch on %s (%u bytes)", topic, length);
     OtaUpdater::Spec spec;
     if (!otaUpdater.parse(payload, length, spec)) return;
-    Serial.printf("ota: target version %s mandatory=%d\n",
-                  spec.version.c_str(), (int)spec.mandatory);
+    debugPrintf("INFO", "OTA", "Target version %s mandatory=%d",
+                spec.version.c_str(), (int)spec.mandatory);
     if (!spec.mandatory) {
         // Best-effort: defer if a photo upload was very recent.
         if (millis() - photoUploader.lastUploadMs() < 5000) {
-            Serial.println("ota: deferring non-mandatory update — busy");
+            debugPrint("INFO", "OTA", "Deferring non-mandatory update — busy");
             return;
         }
     }
@@ -69,9 +140,10 @@ static bool runProvisioning() {
     uint8_t* jpeg = nullptr;
     size_t jpegLen = 0;
     if (!cameraManager.captureJpeg(&jpeg, &jpegLen)) {
-        Serial.println("provision: photo capture failed");
+        debugPrint("ERROR", "PROV", "Photo capture failed");
         return false;
     }
+    debugPrintf("INFO", "PROV", "Registering with OMS (photo: %u bytes)", jpegLen);
     bool ok = provisioning.registerDevice(OMS_HOST, OMS_PORT, macAddress,
                                           WiFi.localIP().toString(),
                                           jpeg, jpegLen);
@@ -82,44 +154,69 @@ static bool runProvisioning() {
 void setup() {
     Serial.begin(115200);
     delay(1000);
-    Serial.println("\n\nForgeKey People Counter Starting...");
-    Serial.printf("Firmware version: %s\n", FORGEKEY_FIRMWARE_VERSION);
+
+    // Initialize status LED
+    pinMode(STATUS_LED_PIN, OUTPUT);
+    digitalWrite(STATUS_LED_PIN, LED_OFF);
+    setLedPattern(BOOT_PATTERN);
+
+    debugPrint("INFO", "MAIN", "ForgeKey People Counter Starting...");
+    debugPrintf("INFO", "MAIN", "Firmware version: %s", FORGEKEY_FIRMWARE_VERSION);
+    debugPrintf("INFO", "MAIN", "ESP32 SDK: %s", esp_get_idf_version());
+    debugPrintf("INFO", "MAIN", "Free heap: %lu bytes", ESP.getFreeHeap());
 
     // Captive portal: blocks until the device is on WiFi, either via
     // previously-saved creds in NVS or via the AP+portal form.
+    setLedPattern(WIFI_CONNECTING);
+    debugPrint("INFO", "WIFI", "Connecting to WiFi...");
     if (!WifiSetup::connectOrPortal()) {
-        Serial.println("WiFi: portal failed, restarting");
+        debugPrint("ERROR", "WIFI", "Portal failed, restarting");
+        setLedPattern(ERROR_PATTERN);
         delay(2000);
         ESP.restart();
     }
-    Serial.println("WiFi connected");
-    Serial.println("IP: " + WiFi.localIP().toString());
+    debugPrint("INFO", "WIFI", "WiFi connected");
+    debugPrintf("INFO", "WIFI", "IP: %s", WiFi.localIP().toString().c_str());
+    debugPrintf("INFO", "WIFI", "RSSI: %d dBm", WiFi.RSSI());
 
     macAddress = WiFi.macAddress();
     macAddress.replace(":", "");
     macAddress.toLowerCase();
+    debugPrintf("INFO", "MAIN", "MAC Address: %s", macAddress.c_str());
 
+    debugPrint("INFO", "CAM", "Initializing camera...");
     if (!cameraManager.begin()) {
-        Serial.println("Camera init failed!");
+        debugPrint("ERROR", "CAM", "Camera init failed!");
+        setLedPattern(ERROR_PATTERN);
         return;
     }
+    debugPrint("INFO", "CAM", "Camera initialized");
+
+    debugPrint("INFO", "DET", "Initializing person detector...");
     if (!personDetector.begin()) {
-        Serial.println("Person detector init failed!");
+        debugPrint("ERROR", "DET", "Person detector init failed!");
+        setLedPattern(ERROR_PATTERN);
         return;
     }
+    debugPrint("INFO", "DET", "Person detector initialized");
+
     occupancyCounter.begin(0);
 
     provisioning.begin();
     otaUpdater.begin();
 
     if (!provisioning.isProvisioned()) {
-        Serial.println("provision: first boot — registering with OMS");
+        debugPrint("INFO", "PROV", "First boot — registering with OMS");
         // Best-effort. If it fails we keep retrying on each boot; the
         // device still runs detection locally so on-prem operators see
         // something on the serial console.
         if (!runProvisioning()) {
-            Serial.println("provision: registration failed; will retry on next boot");
+            debugPrint("WARN", "PROV", "Registration failed; will retry on next boot");
+        } else {
+            debugPrint("INFO", "PROV", "Registration successful");
         }
+    } else {
+        debugPrint("INFO", "PROV", "Already provisioned");
     }
 
     DeviceCredentials creds = provisioning.credentials();
@@ -145,11 +242,16 @@ void setup() {
     photoUploader.begin(OMS_HOST, OMS_PORT, macAddress);
     photoUploader.setJwt(creds.jwtToken);
 
-    Serial.println("Setup complete. Starting detection loop...");
+    debugPrint("INFO", "MAIN", "Setup complete. Starting detection loop...");
+    setLedPattern(NORMAL_PATTERN);
 }
 
 void loop() {
     unsigned long now = millis();
+    static bool mqttWasConnected = false;
+
+    // Update status LED
+    updateLed();
 
     // Run detection at specified interval
     if (now - lastDetection >= DETECTION_INTERVAL) {
@@ -157,15 +259,15 @@ void loop() {
 
         camera_fb_t* fb = cameraManager.capture();
         if (!fb) {
-            Serial.println("Camera capture failed");
+            debugPrint("ERROR", "CAM", "Camera capture failed");
             return;
         }
 
         DetectionResult result = personDetector.detect(fb->buf, fb->width, fb->height);
         occupancyCounter.updateCount(result.count);
 
-        Serial.printf("Detected: %d person(s), Confidence: %.2f\n",
-                     result.count, result.confidence);
+        debugPrintf("INFO", "DET", "Detected: %d person(s), Confidence: %.2f, Motion: %s",
+                    result.count, result.confidence, result.motionDetected ? "yes" : "no");
 
         if (result.motionDetected || result.count > 0) {
             photoUploader.markMotion(now);
@@ -176,19 +278,37 @@ void loop() {
         OccupancyData data = occupancyCounter.getData();
         if (data.changed) {
             occupancyChanged = true;
-            Serial.printf("Occupancy changed to: %d\n", data.currentCount);
+            debugPrintf("INFO", "CNT", "Occupancy changed to: %d", data.currentCount);
         }
     }
 
+    // Check MQTT connection status and blink on (re)connect
+    bool mqttConnected = mqttClient.isConnected();
+    if (mqttConnected && !mqttWasConnected) {
+        debugPrint("INFO", "MQTT", "MQTT connected");
+        setLedPattern(MQTT_CONNECTED_PATTERN);
+        // Resume normal pattern after the 3 blinks complete
+        currentPattern = NORMAL_PATTERN;
+        patternComplete = false;
+        ledState = LED_OFF;
+        digitalWrite(STATUS_LED_PIN, LED_OFF);
+    } else if (!mqttConnected && mqttWasConnected) {
+        debugPrint("WARN", "MQTT", "MQTT disconnected");
+    }
+    mqttWasConnected = mqttConnected;
+
     // Publish to MQTT (on change or at interval)
-    if (mqttClient.isConnected() &&
+    if (mqttConnected &&
         (occupancyChanged || now - lastMqttPublish >= MQTT_PUBLISH_INTERVAL)) {
         int count = occupancyCounter.getCurrentCount();
         if (mqttClient.publishOccupancy(count)) {
             lastMqttPublish = now;
             occupancyChanged = false;
+            debugPrintf("INFO", "MQTT", "Published occupancy: %d", count);
             // First successful publish post-OTA = green light to bless the partition.
             otaUpdater.markStableIfPending();
+        } else {
+            debugPrint("ERROR", "MQTT", "Failed to publish occupancy");
         }
     }
 
@@ -199,12 +319,18 @@ void loop() {
         uint8_t* jpeg = nullptr;
         size_t jpegLen = 0;
         if (cameraManager.captureJpeg(&jpeg, &jpegLen)) {
+            debugPrintf("INFO", "UPLOAD", "Uploading photo (%u bytes)", jpegLen);
             PhotoUploader::Result r = photoUploader.uploadPhoto(jpeg, jpegLen, now);
             free(jpeg);
             if (r == PhotoUploader::Result::AuthExpired) {
+                debugPrint("WARN", "UPLOAD", "Auth expired, will re-register on next boot");
                 // Force a re-register on the next boot rather than blocking
                 // the loop here. The next photo cycle will pick up new creds.
                 provisioning.clear();
+            } else if (r == PhotoUploader::Result::Ok) {
+                debugPrint("INFO", "UPLOAD", "Photo upload successful");
+            } else {
+                debugPrint("ERROR", "UPLOAD", "Photo upload failed");
             }
         }
     }

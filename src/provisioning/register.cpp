@@ -17,6 +17,7 @@ constexpr const char* kKeyPingTopic = "p_topic";
 constexpr const char* kKeyJwt      = "jwt";
 constexpr const char* kKeyBoots    = "boots";
 constexpr const char* kKeyProvTok  = "prov_tok";  // OTA-delivered rotation override
+constexpr const char* kPlaceholderToken = "REPLACE_ME_PROVISIONING_TOKEN";
 
 // Multipart boundary used for the multipart/form-data registration POST.
 constexpr const char* kBoundary = "----ForgekeyBoundary7d3f2c1a";
@@ -125,6 +126,15 @@ bool Provisioning::registerDevice(const char* host, uint16_t port,
     tail += "\r\n--"; tail += kBoundary; tail += "--\r\n";
 
     size_t totalLen = head.length() + jpegLen + tail.length();
+    String activeToken = activeProvisioningToken();
+
+    String tokenPreview = activeToken.substring(0, 6);
+    Serial.printf("register: POST https://%s:%u/api/forgekey/devices/register/ (%u bytes, token prefix=%s..., len=%u)\n",
+                  host, port, (unsigned)totalLen, tokenPreview.c_str(),
+                  (unsigned)activeToken.length());
+    if (activeToken == kPlaceholderToken) {
+        Serial.println("register: WARNING using placeholder provisioning token; OMS will reject this with 401");
+    }
 
     WiFiClientSecure tls;
     tls.setCACert(kOmsCaPem);
@@ -134,7 +144,6 @@ bool Provisioning::registerDevice(const char* host, uint16_t port,
         return false;
     }
 
-    String activeToken = activeProvisioningToken();
     tls.printf("POST /api/forgekey/devices/register/ HTTP/1.1\r\n"
                "Host: %s\r\n"
                "X-ForgeKey-Provisioning-Token: %s\r\n"
@@ -164,11 +173,6 @@ bool Provisioning::registerDevice(const char* host, uint16_t port,
     int code = (sp1 >= 0 && sp2 > sp1)
                    ? statusLine.substring(sp1 + 1, sp2).toInt()
                    : 0;
-    if (code < 200 || code >= 300) {
-        Serial.printf("register: status %d (%s)\n", code, statusLine.c_str());
-        tls.stop();
-        return false;
-    }
 
     // Skip headers up to blank line.
     while (tls.connected() || tls.available()) {
@@ -185,6 +189,14 @@ bool Provisioning::registerDevice(const char* host, uint16_t port,
         if (body.length() > 4096) break;  // hard cap, shouldn't happen
     }
     tls.stop();
+
+    if (code < 200 || code >= 300) {
+        Serial.printf("register: status %d (%s)\n", code, statusLine.c_str());
+        if (body.length() > 0) {
+            Serial.printf("register: response body: %s\n", body.c_str());
+        }
+        return false;
+    }
 
     StaticJsonDocument<512> resp;
     DeserializationError err = deserializeJson(resp, body);
