@@ -7,3 +7,7 @@
 # OTA firmware-signing keypair output. Private key MUST never be committed;
 # the public key gets baked into src/security/firmware_pubkey.h instead.
 .firmware-keys/
+
+# Per-developer predefined WiFi credentials picked up by src/wifi_setup/secrets.h.
+# Copy secrets_local.example.h to secrets_local.h and fill in your dev networks.
+src/wifi_setup/secrets_local.h
