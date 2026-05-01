@@ -224,8 +224,47 @@ void setup() {
                                                    : "";
     mqttClient.begin(MQTT_BROKER, MQTT_PORT, mqttJwt);
     mqttClient.setTopicPrefix(macAddress.c_str());
+
+    // Validate the stored pings topic against the OMS contract before
+    // applying it. A topic from an older firmware (leading '/') or from a
+    // bad registration response would otherwise silently override the
+    // correct default. Required shape:
+    //   forgekey/<bare-mac-12-hex>/(people_counter|door_counter)/occupancy
+    auto isValidPingsTopic = [](const String& t) -> bool {
+        if (!t.startsWith("forgekey/")) return false;
+        if (!t.endsWith("/occupancy")) return false;
+        // Expect exactly 4 segments after split: forgekey / <mac> / <kind> / occupancy
+        int s1 = t.indexOf('/');                    // after "forgekey"
+        int s2 = (s1 >= 0) ? t.indexOf('/', s1+1) : -1;  // after <mac>
+        int s3 = (s2 >= 0) ? t.indexOf('/', s2+1) : -1;  // after <kind>
+        if (s1 < 0 || s2 < 0 || s3 < 0) return false;
+        String mac = t.substring(s1+1, s2);
+        String kind = t.substring(s2+1, s3);
+        if (mac.length() != 12) return false;
+        for (size_t i = 0; i < mac.length(); ++i) {
+            char ch = mac[i];
+            bool hex = (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+            if (!hex) return false;
+        }
+        return kind == "people_counter" || kind == "door_counter";
+    };
+
     if (creds.mqttPingsTopic.length()) {
-        mqttClient.setOccupancyTopic(creds.mqttPingsTopic.c_str());
+        if (isValidPingsTopic(creds.mqttPingsTopic)) {
+            mqttClient.setOccupancyTopic(creds.mqttPingsTopic.c_str());
+        } else {
+            // Stale or malformed override (e.g. from pre-fix firmware). Don't
+            // apply it; clear creds so the next boot re-registers and picks
+            // up a clean topic from the server.
+            debugPrintf("WARN", "MAIN",
+                        "Stored mqtt_topic_for_pings='%s' does not match OMS contract; "
+                        "ignoring and clearing creds to force re-register on next boot",
+                        creds.mqttPingsTopic.c_str());
+            provisioning.clear();
+        }
+    } else {
+        debugPrint("INFO", "MAIN",
+                   "No NVS mqtt_topic_for_pings; using firmware default forgekey/<mac>/people_counter/occupancy");
     }
     if (creds.mqttFirmwareTopic.length()) {
         mqttClient.setFirmwareTopic(creds.mqttFirmwareTopic.c_str());

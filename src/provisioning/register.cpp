@@ -41,6 +41,17 @@ void Provisioning::load() {
     creds.mqttPingsTopic    = p.getString(kKeyPingTopic, "");
     creds.jwtToken          = p.getString(kKeyJwt, "");
     p.end();
+
+    // Verbose: dump exactly what we loaded so a wrong/empty topic in NVS
+    // is visible at boot rather than silently falling back to defaults.
+    Serial.printf("provisioning: loaded from NVS device_id='%s' (len=%u)\n",
+                  creds.deviceId.c_str(), (unsigned)creds.deviceId.length());
+    Serial.printf("provisioning: loaded from NVS mqtt_topic_for_pings='%s' (len=%u)\n",
+                  creds.mqttPingsTopic.c_str(), (unsigned)creds.mqttPingsTopic.length());
+    Serial.printf("provisioning: loaded from NVS mqtt_topic_for_firmware='%s' (len=%u)\n",
+                  creds.mqttFirmwareTopic.c_str(), (unsigned)creds.mqttFirmwareTopic.length());
+    Serial.printf("provisioning: loaded from NVS jwt_token len=%u\n",
+                  (unsigned)creds.jwtToken.length());
 }
 
 bool Provisioning::isProvisioned() const {
@@ -190,11 +201,29 @@ bool Provisioning::registerDevice(const char* host, uint16_t port,
     }
     tls.stop();
 
-    if (code < 200 || code >= 300) {
-        Serial.printf("register: status %d (%s)\n", code, statusLine.c_str());
-        if (body.length() > 0) {
-            Serial.printf("register: response body: %s\n", body.c_str());
+    Serial.printf("register: HTTP %d (%s) body_len=%u\n",
+                  code, statusLine.c_str(), (unsigned)body.length());
+    // Log the full body with the JWT redacted so we can compare what the
+    // server actually returned against what the firmware ends up using.
+    {
+        String redacted = body;
+        int jwtKey = redacted.indexOf("\"jwt_token\"");
+        if (jwtKey >= 0) {
+            int colon = redacted.indexOf(':', jwtKey);
+            int q1 = (colon >= 0) ? redacted.indexOf('"', colon + 1) : -1;
+            int q2 = (q1 >= 0) ? redacted.indexOf('"', q1 + 1) : -1;
+            if (q1 >= 0 && q2 > q1) {
+                String prefix = redacted.substring(q1 + 1, q1 + 1 +
+                    ((q2 - q1 - 1) < 8 ? (q2 - q1 - 1) : 8));
+                redacted = redacted.substring(0, q1 + 1) + prefix +
+                           "...REDACTED(len=" + String(q2 - q1 - 1) + ")" +
+                           redacted.substring(q2);
+            }
         }
+        Serial.printf("register: response body: %s\n", redacted.c_str());
+    }
+
+    if (code < 200 || code >= 300) {
         return false;
     }
 
@@ -210,6 +239,18 @@ bool Provisioning::registerDevice(const char* host, uint16_t port,
     c.mqttFirmwareTopic = (const char*)(resp["mqtt_topic_for_firmware"] | "");
     c.mqttPingsTopic    = (const char*)(resp["mqtt_topic_for_pings"]    | "");
     c.jwtToken          = (const char*)(resp["jwt_token"]               | "");
+
+    // Log every topic field actually parsed from the response so we can
+    // distinguish "server sent empty string" from "field absent" from
+    // "field present with the wrong prefix".
+    Serial.printf("register: parsed device_id='%s'\n", c.deviceId.c_str());
+    Serial.printf("register: parsed mqtt_topic_for_pings='%s' (present=%d)\n",
+                  c.mqttPingsTopic.c_str(), (int)resp.containsKey("mqtt_topic_for_pings"));
+    Serial.printf("register: parsed mqtt_topic_for_firmware='%s' (present=%d)\n",
+                  c.mqttFirmwareTopic.c_str(), (int)resp.containsKey("mqtt_topic_for_firmware"));
+    Serial.printf("register: parsed jwt_token len=%u (present=%d)\n",
+                  (unsigned)c.jwtToken.length(), (int)resp.containsKey("jwt_token"));
+
     if (c.deviceId.length() == 0 || c.jwtToken.length() == 0) {
         Serial.println("register: response missing device_id or jwt_token");
         return false;

@@ -37,12 +37,27 @@ const char* MQTT_JWT = "YOUR_JWT_TOKEN";
 ```
 
 ## MQTT Topic
-`/<mac_address>/people_counter/occupancy`
+`forgekey/<mac_address>/people_counter/occupancy`
+
+The `<mac_address>` is the bare lowercase 12-hex MAC (no separators), e.g.
+`aabbcc112233`. The OMS-side subscriber listens on the same topic shape
+(`backend/forgekey/utils.py`).
+
+After a successful registration, the OMS server returns the canonical
+topic in `mqtt_topic_for_pings`, which is persisted to NVS and used as an
+override on subsequent boots. If that stored value does not match the
+`forgekey/<mac>/(people_counter|door_counter)/occupancy` shape, the
+firmware ignores it and forces a re-registration on the next boot.
 
 Payload:
 ```json
 {"count": 3, "timestamp": 12345}
 ```
+
+## Debugging publishes
+
+Verbose serial logging is on by default — see [DEBUG.md](DEBUG.md) for the
+expected boot trace and a symptom → cause table.
 
 ## Detection Pipeline
 
