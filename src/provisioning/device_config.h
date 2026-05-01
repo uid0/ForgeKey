@@ -44,4 +44,23 @@
 #define PHOTO_UPLOAD_MOTION_WINDOW_MS 30000UL
 #endif
 
+// ===== Temperature-sensor variant =====
+// Enabled by defining FORGEKEY_TEMPERATURE_SENSOR (see the
+// seeed_xiao_esp32s3_temperature env in platformio.ini). When enabled the
+// firmware skips camera/detection/photo upload and instead samples a DHT 21
+// (AM2301) on FORGEKEY_DHT_PIN, publishing readings to
+// forgekey/<mac>/temperature_sensor/reading.
+
+// GPIO connected to the DHT21 data line. GPIO 2 (D1 on the XIAO ESP32-S3
+// header) is free in the temperature build (the camera pins are unused).
+#ifndef FORGEKEY_DHT_PIN
+#define FORGEKEY_DHT_PIN 2
+#endif
+
+// Sampling cadence. DHT21 needs ≥2s between reads; sampling slower keeps
+// self-heating low and the published series small.
+#ifndef TEMPERATURE_SAMPLE_INTERVAL_MS
+#define TEMPERATURE_SAMPLE_INTERVAL_MS 30000UL
+#endif
+
 #endif

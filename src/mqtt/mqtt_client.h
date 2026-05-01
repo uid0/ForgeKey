@@ -17,11 +17,16 @@ public:
     // Override the per-device topics returned by OMS at registration.
     // If empty, defaults derived from the MAC are used.
     void setOccupancyTopic(const char* topic);
+    void setReadingTopic(const char* topic);
     void setFirmwareTopic(const char* topic);
     void setFirmwareStatusTopic(const char* topic);
     void setConfigTopic(const char* topic);
 
     bool publishOccupancy(int count);
+    // Publish a temperature/humidity reading on the device's reading topic.
+    // Topic shape: forgekey/<mac>/temperature_sensor/reading. Payload:
+    //   {"tempC": 21.4, "humidity": 47.1, "timestamp": <millis>}
+    bool publishTemperature(float tempC, float humidity);
     // Publish OTA progress JSON on the firmware-status topic. The payload is:
     //   {"state": "<state>", "version": "...", "progress": 0..100, "error": "..."}
     // version/progress/error are optional; pass empty/-1 to omit. Best-effort:
@@ -40,7 +45,8 @@ private:
     WiFiClient wifiClient;
     PubSubClient* client = nullptr;
     String topicPrefix;
-    String occupancyTopic;  // resolved publish topic
+    String occupancyTopic;  // resolved publish topic (people/door counter builds)
+    String readingTopic;    // resolved publish topic (temperature sensor builds)
     String firmwareTopic;       // OTA dispatch topic (subscribe)
     String firmwareStatusTopic; // OTA progress topic (publish)
     String configTopic;         // credential-rotation / config command topic

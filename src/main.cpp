@@ -1,16 +1,21 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <ArduinoJson.h>
-#include "camera/camera_manager.h"
-#include "detection/person_detector.h"
-#include "counting/occupancy_counter.h"
 #include "mqtt/mqtt_client.h"
 #include "provisioning/device_config.h"
 #include "provisioning/register.h"
-#include "photo_upload/uploader.h"
 #include "ota/ota_updater.h"
 #include "config/credential_rotation.h"
 #include "wifi_setup/captive.h"
+
+#ifdef FORGEKEY_TEMPERATURE_SENSOR
+#include "temperature/temperature_sensor.h"
+#else
+#include "camera/camera_manager.h"
+#include "detection/person_detector.h"
+#include "counting/occupancy_counter.h"
+#include "photo_upload/uploader.h"
+#endif
 
 // ============= CONFIGURATION =============
 // WiFi credentials are no longer baked in: a first-boot captive portal
@@ -95,6 +100,7 @@ void debugPrintf(const char* level, const char* tag, const char* fmt, ...) {
 
 unsigned long lastDetection = 0;
 unsigned long lastMqttPublish = 0;
+unsigned long lastTemperatureSample = 0;
 bool occupancyChanged = false;
 String macAddress;
 
@@ -128,6 +134,7 @@ static void onFirmwareDispatch(const char* topic, const uint8_t* payload, unsign
     debugPrintf("INFO", "OTA", "Target version %s mandatory=%d",
                 spec.version.c_str(), (int)spec.mandatory);
     mqttClient.publishFirmwareStatus("received", spec.version.c_str(), -1, nullptr);
+#ifndef FORGEKEY_TEMPERATURE_SENSOR
     if (!spec.mandatory) {
         // Best-effort: defer if a photo upload was very recent.
         if (millis() - photoUploader.lastUploadMs() < 5000) {
@@ -136,12 +143,22 @@ static void onFirmwareDispatch(const char* topic, const uint8_t* payload, unsign
             return;
         }
     }
+#endif
     otaUpdater.apply(spec);  // does not return on success
 }
 
-// First-boot: capture a photo and send it to OMS, getting back our credentials.
+// First-boot: capture a photo (people-counter build) or send an empty body
+// (temperature-sensor build) and POST to OMS, getting back our credentials.
 // Returns true on success (credentials persisted).
 static bool runProvisioning() {
+#ifdef FORGEKEY_TEMPERATURE_SENSOR
+    // Temperature sensors have no camera. The OMS register endpoint accepts
+    // a zero-length photo part for non-imaging device kinds.
+    debugPrint("INFO", "PROV", "Registering with OMS (no photo: temperature sensor)");
+    return provisioning.registerDevice(OMS_HOST, OMS_PORT, macAddress,
+                                       WiFi.localIP().toString(),
+                                       nullptr, 0);
+#else
     uint8_t* jpeg = nullptr;
     size_t jpegLen = 0;
     if (!cameraManager.captureJpeg(&jpeg, &jpegLen)) {
@@ -154,6 +171,7 @@ static bool runProvisioning() {
                                           jpeg, jpegLen);
     free(jpeg);
     return ok;
+#endif
 }
 
 void setup() {
@@ -165,7 +183,11 @@ void setup() {
     digitalWrite(STATUS_LED_PIN, LED_OFF);
     setLedPattern(BOOT_PATTERN);
 
+#ifdef FORGEKEY_TEMPERATURE_SENSOR
+    debugPrint("INFO", "MAIN", "ForgeKey Temperature Sensor Starting...");
+#else
     debugPrint("INFO", "MAIN", "ForgeKey People Counter Starting...");
+#endif
     debugPrintf("INFO", "MAIN", "Firmware version: %s", FORGEKEY_FIRMWARE_VERSION);
     debugPrintf("INFO", "MAIN", "ESP32 SDK: %s", esp_get_idf_version());
     debugPrintf("INFO", "MAIN", "Free heap: %lu bytes", ESP.getFreeHeap());
@@ -189,6 +211,15 @@ void setup() {
     macAddress.toLowerCase();
     debugPrintf("INFO", "MAIN", "MAC Address: %s", macAddress.c_str());
 
+#ifdef FORGEKEY_TEMPERATURE_SENSOR
+    debugPrintf("INFO", "TEMP", "Initializing DHT21 on GPIO %d...", FORGEKEY_DHT_PIN);
+    if (!temperatureSensor.begin(FORGEKEY_DHT_PIN)) {
+        debugPrint("ERROR", "TEMP", "DHT21 init failed!");
+        setLedPattern(ERROR_PATTERN);
+        return;
+    }
+    debugPrint("INFO", "TEMP", "DHT21 initialized");
+#else
     debugPrint("INFO", "CAM", "Initializing camera...");
     if (!cameraManager.begin()) {
         debugPrint("ERROR", "CAM", "Camera init failed!");
@@ -206,6 +237,7 @@ void setup() {
     debugPrint("INFO", "DET", "Person detector initialized");
 
     occupancyCounter.begin(0);
+#endif
 
     provisioning.begin();
     otaUpdater.begin();
@@ -243,28 +275,39 @@ void setup() {
     // bad registration response would otherwise silently override the
     // correct default. Required shape:
     //   forgekey/<bare-mac-12-hex>/(people_counter|door_counter)/occupancy
+    //   forgekey/<bare-mac-12-hex>/temperature_sensor/reading
     auto isValidPingsTopic = [](const String& t) -> bool {
         if (!t.startsWith("forgekey/")) return false;
-        if (!t.endsWith("/occupancy")) return false;
-        // Expect exactly 4 segments after split: forgekey / <mac> / <kind> / occupancy
+        // Expect exactly 4 segments after split: forgekey / <mac> / <kind> / <leaf>
         int s1 = t.indexOf('/');                    // after "forgekey"
         int s2 = (s1 >= 0) ? t.indexOf('/', s1+1) : -1;  // after <mac>
         int s3 = (s2 >= 0) ? t.indexOf('/', s2+1) : -1;  // after <kind>
         if (s1 < 0 || s2 < 0 || s3 < 0) return false;
         String mac = t.substring(s1+1, s2);
         String kind = t.substring(s2+1, s3);
+        String leaf = t.substring(s3+1);
         if (mac.length() != 12) return false;
         for (size_t i = 0; i < mac.length(); ++i) {
             char ch = mac[i];
             bool hex = (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
             if (!hex) return false;
         }
-        return kind == "people_counter" || kind == "door_counter";
+        if (kind == "people_counter" || kind == "door_counter") {
+            return leaf == "occupancy";
+        }
+        if (kind == "temperature_sensor") {
+            return leaf == "reading";
+        }
+        return false;
     };
 
     if (creds.mqttPingsTopic.length()) {
         if (isValidPingsTopic(creds.mqttPingsTopic)) {
+#ifdef FORGEKEY_TEMPERATURE_SENSOR
+            mqttClient.setReadingTopic(creds.mqttPingsTopic.c_str());
+#else
             mqttClient.setOccupancyTopic(creds.mqttPingsTopic.c_str());
+#endif
         } else {
             // Stale or malformed override (e.g. from pre-fix firmware). Don't
             // apply it; clear creds so the next boot re-registers and picks
@@ -277,7 +320,7 @@ void setup() {
         }
     } else {
         debugPrint("INFO", "MAIN",
-                   "No NVS mqtt_topic_for_pings; using firmware default forgekey/<mac>/people_counter/occupancy");
+                   "No NVS mqtt_topic_for_pings; using firmware default forgekey/<mac>/<kind>/<leaf>");
     }
     if (creds.mqttFirmwareTopic.length()) {
         mqttClient.setFirmwareTopic(creds.mqttFirmwareTopic.c_str());
@@ -291,10 +334,12 @@ void setup() {
     mqttClient.setConfigTopic(configTopic.c_str());
     mqttClient.subscribeConfig(onConfigMessage);
 
+#ifndef FORGEKEY_TEMPERATURE_SENSOR
     photoUploader.begin(OMS_HOST, OMS_PORT, macAddress);
     photoUploader.setJwt(creds.jwtToken);
+#endif
 
-    debugPrint("INFO", "MAIN", "Setup complete. Starting detection loop...");
+    debugPrint("INFO", "MAIN", "Setup complete. Starting main loop...");
     setLedPattern(NORMAL_PATTERN);
 }
 
@@ -305,6 +350,7 @@ void loop() {
     // Update status LED
     updateLed();
 
+#ifndef FORGEKEY_TEMPERATURE_SENSOR
     // Run detection at specified interval
     if (now - lastDetection >= DETECTION_INTERVAL) {
         lastDetection = now;
@@ -333,6 +379,7 @@ void loop() {
             debugPrintf("INFO", "CNT", "Occupancy changed to: %d", data.currentCount);
         }
     }
+#endif
 
     // Check MQTT connection status and blink on (re)connect
     bool mqttConnected = mqttClient.isConnected();
@@ -349,6 +396,28 @@ void loop() {
     }
     mqttWasConnected = mqttConnected;
 
+#ifdef FORGEKEY_TEMPERATURE_SENSOR
+    // Sample DHT21 + publish on the configured cadence.
+    if (now - lastTemperatureSample >= TEMPERATURE_SAMPLE_INTERVAL_MS) {
+        lastTemperatureSample = now;
+        TemperatureReading r = temperatureSensor.read();
+        if (r.ok) {
+            debugPrintf("INFO", "TEMP", "Reading: %.2f C, %.2f%% RH", r.tempC, r.humidity);
+            if (mqttConnected) {
+                if (mqttClient.publishTemperature(r.tempC, r.humidity)) {
+                    lastMqttPublish = now;
+                    debugPrint("INFO", "MQTT", "Published temperature reading");
+                    // First successful publish post-OTA = bless the partition.
+                    otaUpdater.markStableIfPending();
+                } else {
+                    debugPrint("ERROR", "MQTT", "Failed to publish temperature reading");
+                }
+            } else {
+                debugPrint("WARN", "MQTT", "Skipping publish — MQTT not connected");
+            }
+        }
+    }
+#else
     // Publish to MQTT (on change or at interval)
     if (mqttConnected &&
         (occupancyChanged || now - lastMqttPublish >= MQTT_PUBLISH_INTERVAL)) {
@@ -386,6 +455,7 @@ void loop() {
             }
         }
     }
+#endif
 
     mqttClient.loop();
     delay(10);

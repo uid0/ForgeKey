@@ -369,15 +369,18 @@ in `platformio.ini`. It runs at every build and:
    - `FIRMWARE_BUILD_TIMESTAMP` — Unix epoch at build time. Honors
      `SOURCE_DATE_EPOCH` when set so CI can produce reproducible builds.
 2. **Exports the artifact** after `firmware.bin` is produced. The merged
-   binary is copied to:
+   binary is copied to (variant slug derived from the PlatformIO env so
+   the two device kinds never overwrite each other):
 
    ```
    artifacts/
-     forgekey-<version>-<commit>.bin
-     forgekey-<version>-<commit>.bin.sha256
-     forgekey-latest.bin
-     forgekey-latest.bin.sha256
+     forgekey-<variant>-<version>-<commit>.bin
+     forgekey-<variant>-<version>-<commit>.bin.sha256
+     forgekey-<variant>-latest.bin
+     forgekey-<variant>-latest.bin.sha256
    ```
+
+   `<variant>` is one of `people-counter` or `temperature-sensor`.
 
    The `.sha256` file holds plain hex (lowercase, no filename suffix) — the
    exact shape OMS pastes into the OTA dispatch payload's `sha256` field.
@@ -401,6 +404,39 @@ base64 -w0 artifacts/forgekey-<version>-<commit>.bin.sig
 ```
 
 `artifacts/` is gitignored — it's a build output, not source.
+
+## Temperature-sensor variant
+
+A second device kind ships from this firmware tree as a separate PlatformIO
+build env (`seeed_xiao_esp32s3_temperature`). Same skeleton — captive portal,
+provisioning, OTA, MQTT, config rotation — but the camera/detection/photo
+pipeline is compiled out and a DHT 21 (AM2301) is sampled instead.
+
+```bash
+~/.platformio/penv/bin/platformio run -e seeed_xiao_esp32s3_temperature
+```
+
+| Aspect | People-counter | Temperature-sensor |
+|---|---|---|
+| Sensor kind sent at register | `people-counter` | `temperature-sensor` |
+| MQTT topic kind segment | `people_counter` | `temperature_sensor` |
+| Publish topic leaf | `/occupancy` | `/reading` |
+| Publish payload | `{count, timestamp}` | `{tempC, humidity, timestamp}` |
+| Publish cadence | on-change + ≤10s | every 30s (`TEMPERATURE_SAMPLE_INTERVAL_MS`) |
+| Hardware | XIAO ESP32-S3 Sense (camera) | XIAO ESP32-S3 + DHT21 on GPIO 2 |
+| Photo upload | yes | n/a |
+| Registration multipart | metadata + photo | metadata only |
+
+The DHT data pin defaults to GPIO 2 (D1 on the XIAO header) and is
+overridable via `-DFORGEKEY_DHT_PIN=<pin>`. A 4.7k–10k pull-up between the
+data line and 3V3 is recommended on long leads. The sample interval is
+overridable via `-DTEMPERATURE_SAMPLE_INTERVAL_MS=<ms>`.
+
+The OTA dispatch flow is shared, but the firmware images are NOT
+interchangeable — a temperature-sensor device cannot run a people-counter
+binary and vice-versa. The build script keys artifact names on the variant
+(`forgekey-temperature-sensor-<ver>-<sha>.bin`) so OMS dispatchers can target
+the right binary per device kind.
 
 ## Out of scope (filed as follow-ups)
 

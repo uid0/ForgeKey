@@ -120,18 +120,30 @@ def _export_artifact(source, target, env):  # noqa: ARG001 (PIO callback signatu
         print(f"[version] skip export: {src} missing")
         return
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
-    name = f"forgekey-{VERSION}-{COMMIT}.bin"
+
+    # Variant slug derived from the PlatformIO env name, so the people-counter
+    # and temperature-sensor builds don't overwrite each other's artifacts —
+    # cross-flashing the wrong binary would be a serious OTA foot-gun.
+    pioenv = env["PIOENV"]  # noqa: F821
+    if pioenv == "seeed_xiao_esp32s3":
+        variant = "people-counter"
+    elif pioenv == "seeed_xiao_esp32s3_temperature":
+        variant = "temperature-sensor"
+    else:
+        variant = pioenv
+
+    name = f"forgekey-{variant}-{VERSION}-{COMMIT}.bin"
     dest = ARTIFACT_DIR / name
     shutil.copy2(src, dest)
 
     digest = hashlib.sha256(dest.read_bytes()).hexdigest()
     (ARTIFACT_DIR / f"{name}.sha256").write_text(digest + "\n")
 
-    # Convenience copy for staff who just want "the latest". Not a symlink so
-    # this works on Windows checkouts too.
-    latest = ARTIFACT_DIR / "forgekey-latest.bin"
+    # Convenience copy for staff who just want "the latest". One per variant
+    # so the wrong binary cannot get pulled by accident.
+    latest = ARTIFACT_DIR / f"forgekey-{variant}-latest.bin"
     shutil.copy2(dest, latest)
-    (ARTIFACT_DIR / "forgekey-latest.bin.sha256").write_text(digest + "\n")
+    (ARTIFACT_DIR / f"forgekey-{variant}-latest.bin.sha256").write_text(digest + "\n")
 
     size = dest.stat().st_size
     print(f"[version] exported {dest.relative_to(PROJECT_DIR)} ({size} bytes)")

@@ -106,10 +106,10 @@ bool Provisioning::registerDevice(const char* host, uint16_t port,
                                   const String& mac,
                                   const String& ipAddr,
                                   const uint8_t* jpegBuf, size_t jpegLen) {
-    if (!jpegBuf || jpegLen == 0) {
-        Serial.println("register: missing photo");
-        return false;
-    }
+    // jpegBuf == nullptr / jpegLen == 0 is allowed for non-imaging sensor
+    // kinds (e.g. temperature_sensor). The multipart body in that case
+    // contains only the metadata part.
+    const bool hasPhoto = (jpegBuf != nullptr && jpegLen > 0);
 
     // Build the JSON metadata part once so we can compute Content-Length.
     StaticJsonDocument<384> meta;
@@ -128,15 +128,17 @@ bool Provisioning::registerDevice(const char* host, uint16_t port,
     head += "Content-Disposition: form-data; name=\"metadata\"\r\n";
     head += "Content-Type: application/json\r\n\r\n";
     head += metaJson;
-    head += "\r\n--"; head += kBoundary; head += "\r\n";
-    head += "Content-Disposition: form-data; name=\"photo\"; filename=\"boot.jpg\"\r\n";
-    head += "Content-Type: image/jpeg\r\n\r\n";
+    if (hasPhoto) {
+        head += "\r\n--"; head += kBoundary; head += "\r\n";
+        head += "Content-Disposition: form-data; name=\"photo\"; filename=\"boot.jpg\"\r\n";
+        head += "Content-Type: image/jpeg\r\n\r\n";
+    }
 
     String tail;
     tail.reserve(64);
     tail += "\r\n--"; tail += kBoundary; tail += "--\r\n";
 
-    size_t totalLen = head.length() + jpegLen + tail.length();
+    size_t totalLen = head.length() + (hasPhoto ? jpegLen : 0) + tail.length();
     String activeToken = activeProvisioningToken();
 
     String tokenPreview = activeToken.substring(0, 6);
@@ -164,14 +166,16 @@ bool Provisioning::registerDevice(const char* host, uint16_t port,
                host, activeToken.c_str(), kBoundary,
                (unsigned)totalLen);
     tls.print(head);
-    // Stream the JPEG in chunks so we don't double-allocate the buffer.
-    const size_t kChunk = 1024;
-    for (size_t off = 0; off < jpegLen; off += kChunk) {
-        size_t n = (jpegLen - off < kChunk) ? (jpegLen - off) : kChunk;
-        if (tls.write(jpegBuf + off, n) != n) {
-            Serial.println("register: TLS write failed mid-photo");
-            tls.stop();
-            return false;
+    if (hasPhoto) {
+        // Stream the JPEG in chunks so we don't double-allocate the buffer.
+        const size_t kChunk = 1024;
+        for (size_t off = 0; off < jpegLen; off += kChunk) {
+            size_t n = (jpegLen - off < kChunk) ? (jpegLen - off) : kChunk;
+            if (tls.write(jpegBuf + off, n) != n) {
+                Serial.println("register: TLS write failed mid-photo");
+                tls.stop();
+                return false;
+            }
         }
     }
     tls.print(tail);

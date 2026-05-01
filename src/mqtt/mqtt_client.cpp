@@ -1,6 +1,14 @@
 #include "mqtt_client.h"
 #include "Arduino.h"
 
+// Compile-time topic kind. The OMS subscriber listens on
+// forgekey/<mac>/<kind>/... — kind is a string segment that identifies the
+// device's capability bucket. Override via -DFORGEKEY_MQTT_TOPIC_KIND in the
+// build env (e.g. "temperature_sensor", "door_counter").
+#ifndef FORGEKEY_MQTT_TOPIC_KIND
+#define FORGEKEY_MQTT_TOPIC_KIND "people_counter"
+#endif
+
 MqttClient mqttClient;
 
 namespace {
@@ -62,15 +70,19 @@ bool MqttClient::begin(const char* brokerHost, int portNum, const char* jwt) {
 
 void MqttClient::setTopicPrefix(const char* mac) {
     // Default prefix matches the OMS subscriber contract:
-    //   forgekey/<bare-mac>/people_counter[/occupancy|/firmware|/config]
+    //   forgekey/<bare-mac>/<kind>[/occupancy|/reading|/firmware|/config]
     // (No leading slash. The OMS-side subscriber listens on
-    // forgekey/<mac>/... — see backend/forgekey/utils.py.)
-    topicPrefix = String("forgekey/") + mac + "/people_counter";
+    // forgekey/<mac>/... — see backend/forgekey/utils.py.) The <kind>
+    // segment is selected at compile time via FORGEKEY_MQTT_TOPIC_KIND.
+    topicPrefix = String("forgekey/") + mac + "/" + FORGEKEY_MQTT_TOPIC_KIND;
     if (occupancyTopic.length() == 0) {
         occupancyTopic = topicPrefix + "/occupancy";
     }
-    Serial.printf("[MQTT] setTopicPrefix: prefix=%s default_occupancy=%s\n",
-                  topicPrefix.c_str(), occupancyTopic.c_str());
+    if (readingTopic.length() == 0) {
+        readingTopic = topicPrefix + "/reading";
+    }
+    Serial.printf("[MQTT] setTopicPrefix: prefix=%s default_occupancy=%s default_reading=%s\n",
+                  topicPrefix.c_str(), occupancyTopic.c_str(), readingTopic.c_str());
 }
 
 void MqttClient::setOccupancyTopic(const char* topic) {
@@ -80,6 +92,16 @@ void MqttClient::setOccupancyTopic(const char* topic) {
         occupancyTopic = topic;
     } else {
         Serial.println("[MQTT] setOccupancyTopic: empty value ignored, keeping default");
+    }
+}
+
+void MqttClient::setReadingTopic(const char* topic) {
+    if (topic && *topic) {
+        Serial.printf("[MQTT] setReadingTopic: override '%s' -> '%s'\n",
+                      readingTopic.c_str(), topic);
+        readingTopic = topic;
+    } else {
+        Serial.println("[MQTT] setReadingTopic: empty value ignored, keeping default");
     }
 }
 
@@ -197,6 +219,52 @@ bool MqttClient::publishOccupancy(int count) {
                       st, mqttStateName(st));
     }
 
+    return result;
+}
+
+bool MqttClient::publishTemperature(float tempC, float humidity) {
+    if (!client) {
+        Serial.println("[MQTT] publishTemperature FAILED: no client (begin() not called)");
+        return false;
+    }
+    if (!client->connected()) {
+        int st = client->state();
+        Serial.printf("[MQTT] publishTemperature FAILED: not connected (state=%d %s); attempting reconnect\n",
+                      st, mqttStateName(st));
+        if (millis() - lastReconnectAttempt > 5000) {
+            connect();
+            lastReconnectAttempt = millis();
+        }
+        return false;
+    }
+
+    if (readingTopic.length() == 0) {
+        Serial.println("[MQTT] publishTemperature FAILED: readingTopic is empty "
+                       "(setTopicPrefix not called and no override)");
+        return false;
+    }
+
+    char tBuf[16], hBuf[16];
+    dtostrf(tempC, 0, 2, tBuf);
+    dtostrf(humidity, 0, 2, hBuf);
+    String payload = "{\"tempC\":";
+    payload += tBuf;
+    payload += ",\"humidity\":";
+    payload += hBuf;
+    payload += ",\"timestamp\":";
+    payload += String(millis());
+    payload += "}";
+
+    bool result = client->publish(readingTopic.c_str(), payload.c_str());
+    if (result) {
+        Serial.printf("[MQTT] publish OK: topic=%s payload=%s\n",
+                      readingTopic.c_str(), payload.c_str());
+    } else {
+        int st = client->state();
+        Serial.printf("[MQTT] publish FAILED: topic=%s payload_len=%u state=%d (%s)\n",
+                      readingTopic.c_str(), (unsigned)payload.length(),
+                      st, mqttStateName(st));
+    }
     return result;
 }
 
