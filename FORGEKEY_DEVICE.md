@@ -203,6 +203,35 @@ any dispatch missing the signature field; see "Signed firmware" below.
 Non-mandatory updates are deferred if a photo upload happened in the last 5
 seconds; mandatory updates apply immediately.
 
+### Status reporting
+
+Throughout `apply()` the device publishes progress JSON to a status topic so
+OMS can render an OTA progress UI in real time. The status topic defaults to
+the dispatch topic plus `/status` (e.g. `forgekey/<mac>/people_counter/firmware/status`)
+and can be overridden via `MqttClient::setFirmwareStatusTopic()`.
+
+Payload shape:
+
+```json
+{"state": "downloading", "version": "0.2.0", "progress": 60, "ts": 12345678}
+```
+
+Lifecycle states, in order:
+
+| State | When | `progress` | `error` |
+|-------|------|-----------:|---------|
+| `received` | Dispatch parsed successfully | — | — |
+| `deferred` | Non-mandatory update postponed (recent photo upload) | — | `device_busy` |
+| `downloading` | Streaming the body — emitted at start and each ~10% boundary | `0..100` | — |
+| `verifying` | Body fully downloaded, computing SHA-256 + ECDSA verify | `100` | — |
+| `rebooting` | Both checks passed, `Update.end()` succeeded — about to `ESP.restart()` | `100` | — |
+| `applied` | First successful occupancy publish post-reboot, partition blessed via `markStableIfPending()` | `100` | — |
+| `failed` | Any failure path | — | one of: `parse_error`, `malformed_url`, `connect_failed`, `http_<code>`, `no_content_length`, `update_begin_failed`, `read_timeout`, `connection_closed`, `flash_write_failed`, `sha256_mismatch`, `bad_base64_signature`, `signature_invalid`, `update_end_failed` |
+
+Status publishing is best-effort: if MQTT is offline at the moment of an
+event the publish silently drops, but the OTA download itself never blocks
+on the status path.
+
 ### Rollback safety
 
 The new partition is written but **not** marked stable. After reboot the
@@ -325,6 +354,53 @@ After `~/.platformio/penv/bin/platformio run --target upload`:
 5. After reboot, confirm the new firmware version appears in the next
    registration ping or occupancy log line, and that
    `ota: marked running partition as valid` appears once a publish lands.
+
+## Building & releasing firmware
+
+`scripts/build/version.py` is registered as a PlatformIO `pre:` extra script
+in `platformio.ini`. It runs at every build and:
+
+1. **Injects build identity macros** into the compile so the binary knows
+   exactly which version it is:
+   - `FORGEKEY_FIRMWARE_VERSION` — read from `src/provisioning/device_config.h`
+     (or override via env: `FORGEKEY_FIRMWARE_VERSION=0.2.0 pio run`)
+   - `FIRMWARE_GIT_COMMIT` — short SHA from `git rev-parse`, with `-dirty`
+     suffix when the working tree has uncommitted changes
+   - `FIRMWARE_BUILD_TIMESTAMP` — Unix epoch at build time. Honors
+     `SOURCE_DATE_EPOCH` when set so CI can produce reproducible builds.
+2. **Exports the artifact** after `firmware.bin` is produced. The merged
+   binary is copied to:
+
+   ```
+   artifacts/
+     forgekey-<version>-<commit>.bin
+     forgekey-<version>-<commit>.bin.sha256
+     forgekey-latest.bin
+     forgekey-latest.bin.sha256
+   ```
+
+   The `.sha256` file holds plain hex (lowercase, no filename suffix) — the
+   exact shape OMS pastes into the OTA dispatch payload's `sha256` field.
+
+### Cutting a release
+
+```bash
+# 1. Bump the version in src/provisioning/device_config.h, commit it.
+# 2. Build:
+~/.platformio/penv/bin/platformio run
+
+# 3. Sign the resulting artifact:
+openssl dgst -sha256 -sign .firmware-keys/firmware-signing.pem \
+    -out artifacts/forgekey-<version>-<commit>.bin.sig \
+    artifacts/forgekey-<version>-<commit>.bin
+base64 -w0 artifacts/forgekey-<version>-<commit>.bin.sig
+
+# 4. Upload artifacts/forgekey-<version>-<commit>.bin to OMS static hosting,
+#    then dispatch via the OMS admin OTA form using the .sha256 contents and
+#    the base64-encoded signature.
+```
+
+`artifacts/` is gitignored — it's a build output, not source.
 
 ## Out of scope (filed as follow-ups)
 

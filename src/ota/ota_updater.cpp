@@ -9,12 +9,17 @@
 
 #include "security/oms_ca.h"
 #include "security/firmware_verify.h"
+#include "provisioning/device_config.h"
 
 OtaUpdater otaUpdater;
 
 void OtaUpdater::begin() {
     // Nothing to set up at boot. markStableIfPending() handles validation
     // once the rest of the system has proven itself.
+}
+
+void OtaUpdater::notify(const char* state, const char* version, int progress, const char* error) {
+    if (statusCb) statusCb(state, version, progress, error);
 }
 
 bool OtaUpdater::parse(const uint8_t* payload, unsigned int length, Spec& out) {
@@ -96,10 +101,12 @@ bool OtaUpdater::apply(const Spec& spec) {
     uint16_t port = 0;
     if (!splitUrl(spec.url, tls, host, port, path)) {
         Serial.println("ota: malformed URL");
+        notify("failed", spec.version.c_str(), -1, "malformed_url");
         return false;
     }
 
     updating = true;
+    notify("downloading", spec.version.c_str(), 0, nullptr);
 
     WiFiClient* client = nullptr;
     WiFiClientSecure secureClient;
@@ -115,6 +122,7 @@ bool OtaUpdater::apply(const Spec& spec) {
     if (!client->connect(host.c_str(), port)) {
         Serial.printf("ota: connect %s:%u failed\n", host.c_str(), port);
         updating = false;
+        notify("failed", spec.version.c_str(), -1, "connect_failed");
         return false;
     }
 
@@ -138,6 +146,9 @@ bool OtaUpdater::apply(const Spec& spec) {
         Serial.printf("ota: HTTP %d (%s)\n", code, statusLine.c_str());
         client->stop();
         updating = false;
+        char err[32];
+        snprintf(err, sizeof(err), "http_%d", code);
+        notify("failed", spec.version.c_str(), -1, err);
         return false;
     }
 
@@ -156,6 +167,7 @@ bool OtaUpdater::apply(const Spec& spec) {
         Serial.println("ota: server did not advertise Content-Length");
         client->stop();
         updating = false;
+        notify("failed", spec.version.c_str(), -1, "no_content_length");
         return false;
     }
     Serial.printf("ota: downloading %u bytes for %s\n",
@@ -165,6 +177,7 @@ bool OtaUpdater::apply(const Spec& spec) {
         Serial.printf("ota: Update.begin failed: %s\n", Update.errorString());
         client->stop();
         updating = false;
+        notify("failed", spec.version.c_str(), -1, "update_begin_failed");
         return false;
     }
 
@@ -174,6 +187,7 @@ bool OtaUpdater::apply(const Spec& spec) {
 
     uint8_t buf[1024];
     size_t received = 0;
+    int lastProgressPct = 0;
     unsigned long lastDataMs = millis();
     while (received < contentLength) {
         size_t avail = client->available();
@@ -184,6 +198,7 @@ bool OtaUpdater::apply(const Spec& spec) {
                 mbedtls_sha256_free(&sha);
                 client->stop();
                 updating = false;
+                notify("failed", spec.version.c_str(), -1, "connection_closed");
                 return false;
             }
             if (millis() - lastDataMs > 20000) {
@@ -192,6 +207,7 @@ bool OtaUpdater::apply(const Spec& spec) {
                 mbedtls_sha256_free(&sha);
                 client->stop();
                 updating = false;
+                notify("failed", spec.version.c_str(), -1, "read_timeout");
                 return false;
             }
             delay(5);
@@ -208,17 +224,28 @@ bool OtaUpdater::apply(const Spec& spec) {
             mbedtls_sha256_free(&sha);
             client->stop();
             updating = false;
+            notify("failed", spec.version.c_str(), -1, "flash_write_failed");
             return false;
         }
         mbedtls_sha256_update(&sha, buf, n);
         received += n;
         lastDataMs = millis();
+
+        // Emit a status ping every ~10% of progress. Cheap (one MQTT publish)
+        // and lets OMS show a meaningful progress bar without flooding the bus.
+        int pct = (int)((received * 100ULL) / contentLength);
+        if (pct >= lastProgressPct + 10 && pct < 100) {
+            lastProgressPct = pct;
+            notify("downloading", spec.version.c_str(), pct, nullptr);
+        }
     }
 
     uint8_t digest[32];
     mbedtls_sha256_finish(&sha, digest);
     mbedtls_sha256_free(&sha);
     client->stop();
+
+    notify("verifying", spec.version.c_str(), 100, nullptr);
 
     char actualHex[65];
     toHex(digest, 32, actualHex);
@@ -227,6 +254,7 @@ bool OtaUpdater::apply(const Spec& spec) {
                       actualHex, spec.sha256.c_str());
         Update.abort();
         updating = false;
+        notify("failed", spec.version.c_str(), -1, "sha256_mismatch");
         return false;
     }
 
@@ -241,12 +269,14 @@ bool OtaUpdater::apply(const Spec& spec) {
             Serial.println("ota: signature is not valid base64 — abort");
             Update.abort();
             updating = false;
+            notify("failed", spec.version.c_str(), -1, "bad_base64_signature");
             return false;
         }
         if (!firmware_verify::verifySignature(digest, 32, sigBuf, sigLen)) {
             Serial.println("ota: signature verification failed — abort");
             Update.abort();
             updating = false;
+            notify("failed", spec.version.c_str(), -1, "signature_invalid");
             return false;
         }
         Serial.println("ota: signature verified");
@@ -255,9 +285,14 @@ bool OtaUpdater::apply(const Spec& spec) {
     if (!Update.end(/*evenIfRemaining=*/true)) {
         Serial.printf("ota: Update.end failed: %s\n", Update.errorString());
         updating = false;
+        notify("failed", spec.version.c_str(), -1, "update_end_failed");
         return false;
     }
 
+    // Tell OMS we're rebooting into the new image. The post-reboot
+    // markStableIfPending() call publishes the "applied" event once the new
+    // firmware proves it can talk to the broker.
+    notify("rebooting", spec.version.c_str(), 100, nullptr);
     Serial.printf("ota: %s installed, rebooting\n", spec.version.c_str());
     delay(250);
     ESP.restart();
@@ -275,6 +310,10 @@ void OtaUpdater::markStableIfPending() {
         esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
         if (err == ESP_OK) {
             Serial.println("ota: marked running partition as valid");
+            // The very first publish post-OTA is the success signal back to
+            // OMS. We don't know the prior "downloading" version string here,
+            // but the running firmware version is what matters to the operator.
+            notify("applied", FORGEKEY_FIRMWARE_VERSION, 100, nullptr);
         } else {
             Serial.printf("ota: mark valid failed: 0x%x\n", err);
         }

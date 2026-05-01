@@ -91,8 +91,27 @@ void MqttClient::setFirmwareTopic(const char* topic) {
         if (isConnected()) {
             client->subscribe(firmwareTopic.c_str());
         }
+        // Default the status topic alongside the dispatch topic. Conventional
+        // shape: append "/status" to the dispatch topic so OMS can subscribe
+        // to a single wildcard like forgekey/+/+/firmware/status. An explicit
+        // setFirmwareStatusTopic() afterwards still wins.
+        if (firmwareStatusTopic.length() == 0) {
+            firmwareStatusTopic = firmwareTopic + "/status";
+            Serial.printf("[MQTT] firmwareStatusTopic defaulted: '%s'\n",
+                          firmwareStatusTopic.c_str());
+        }
     } else {
         Serial.println("[MQTT] setFirmwareTopic: empty value ignored");
+    }
+}
+
+void MqttClient::setFirmwareStatusTopic(const char* topic) {
+    if (topic && *topic) {
+        Serial.printf("[MQTT] setFirmwareStatusTopic: '%s' -> '%s'\n",
+                      firmwareStatusTopic.c_str(), topic);
+        firmwareStatusTopic = topic;
+    } else {
+        Serial.println("[MQTT] setFirmwareStatusTopic: empty value ignored");
     }
 }
 
@@ -179,6 +198,47 @@ bool MqttClient::publishOccupancy(int count) {
     }
 
     return result;
+}
+
+bool MqttClient::publishFirmwareStatus(const char* state,
+                                       const char* version,
+                                       int progress,
+                                       const char* error) {
+    if (!client || !client->connected()) {
+        // Best-effort; skip silently if offline. The OTA path must not block
+        // on status publishing.
+        return false;
+    }
+    if (firmwareStatusTopic.length() == 0) {
+        Serial.println("[MQTT] publishFirmwareStatus: no status topic set, skipping");
+        return false;
+    }
+
+    String payload = "{\"state\":\"";
+    payload += (state ? state : "");
+    payload += "\"";
+    if (version && *version) {
+        payload += ",\"version\":\"";
+        payload += version;
+        payload += "\"";
+    }
+    if (progress >= 0 && progress <= 100) {
+        payload += ",\"progress\":";
+        payload += String(progress);
+    }
+    if (error && *error) {
+        payload += ",\"error\":\"";
+        payload += error;
+        payload += "\"";
+    }
+    payload += ",\"ts\":";
+    payload += String(millis());
+    payload += "}";
+
+    bool ok = client->publish(firmwareStatusTopic.c_str(), payload.c_str());
+    Serial.printf("[MQTT] publishFirmwareStatus: topic=%s payload=%s ok=%d\n",
+                  firmwareStatusTopic.c_str(), payload.c_str(), (int)ok);
+    return ok;
 }
 
 bool MqttClient::subscribeFirmware(MessageHandler handler) {

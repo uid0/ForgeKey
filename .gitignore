@@ -11,3 +11,8 @@
 # Per-developer predefined WiFi credentials picked up by src/wifi_setup/secrets.h.
 # Copy secrets_local.example.h to secrets_local.h and fill in your dev networks.
 src/wifi_setup/secrets_local.h
+
+# Versioned firmware binaries produced by scripts/build/version.py post-build
+# hook. These are build outputs, not source — staff upload them to OMS for OTA
+# dispatch but they should not live in the repo.
+artifacts/

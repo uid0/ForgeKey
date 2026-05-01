@@ -121,13 +121,18 @@ static void onConfigMessage(const char* topic, const uint8_t* payload, unsigned 
 static void onFirmwareDispatch(const char* topic, const uint8_t* payload, unsigned int length) {
     debugPrintf("INFO", "OTA", "Dispatch on %s (%u bytes)", topic, length);
     OtaUpdater::Spec spec;
-    if (!otaUpdater.parse(payload, length, spec)) return;
+    if (!otaUpdater.parse(payload, length, spec)) {
+        mqttClient.publishFirmwareStatus("failed", "", -1, "parse_error");
+        return;
+    }
     debugPrintf("INFO", "OTA", "Target version %s mandatory=%d",
                 spec.version.c_str(), (int)spec.mandatory);
+    mqttClient.publishFirmwareStatus("received", spec.version.c_str(), -1, nullptr);
     if (!spec.mandatory) {
         // Best-effort: defer if a photo upload was very recent.
         if (millis() - photoUploader.lastUploadMs() < 5000) {
             debugPrint("INFO", "OTA", "Deferring non-mandatory update — busy");
+            mqttClient.publishFirmwareStatus("deferred", spec.version.c_str(), -1, "device_busy");
             return;
         }
     }
@@ -204,6 +209,14 @@ void setup() {
 
     provisioning.begin();
     otaUpdater.begin();
+    // OTA layer is MQTT-agnostic; bridge its lifecycle events to the firmware
+    // status topic so OMS can render "Downloading 60%", "Verifying", "Applied".
+    otaUpdater.setStatusCallback([](const char* state,
+                                    const char* version,
+                                    int progress,
+                                    const char* error) {
+        mqttClient.publishFirmwareStatus(state, version, progress, error);
+    });
 
     if (!provisioning.isProvisioned()) {
         debugPrint("INFO", "PROV", "First boot — registering with OMS");

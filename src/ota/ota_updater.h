@@ -2,6 +2,7 @@
 #define OTA_UPDATER_H
 
 #include <Arduino.h>
+#include <functional>
 
 class OtaUpdater {
 public:
@@ -13,7 +14,18 @@ public:
         bool mandatory = false;
     };
 
+    // Status callback fired at each OTA lifecycle transition. `progress` is
+    // 0..100 during downloading; -1 when not applicable. `error` is empty on
+    // success-path states, populated on failure states. The callback is best-
+    // effort: a slow handler must not stall the download loop, so callers
+    // should keep work cheap (e.g. publish one MQTT message and return).
+    using StatusCallback = std::function<void(const char* state,
+                                              const char* version,
+                                              int progress,
+                                              const char* error)>;
+
     void begin();
+    void setStatusCallback(StatusCallback cb) { statusCb = cb; }
 
     // Parse a JSON payload (the MQTT firmware-dispatch message) into a Spec.
     // Returns false if any required field is missing/malformed.
@@ -36,7 +48,9 @@ public:
 private:
     bool updating = false;
     bool stableMarked = false;
+    StatusCallback statusCb;
 
+    void notify(const char* state, const char* version, int progress, const char* error);
     static bool hexEq(const String& a, const String& b);
 };
 
