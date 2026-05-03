@@ -16,3 +16,12 @@ src/wifi_setup/secrets_local.h
 # hook. These are build outputs, not source — staff upload them to OMS for OTA
 # dispatch but they should not live in the repo.
 artifacts/
+
+# Beads / Dolt working state. The gt + bd tooling can leave nested .beads/
+# directories under sibling working trees (e.g. when a cross-rig command runs
+# from this worktree). Dolt manages its own .dolt/ internals and committing
+# them into git history corrupts the live database — never let an auto-save
+# safety net pick them up.
+.beads/
+**/.beads/
+oms/
