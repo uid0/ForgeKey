@@ -35,6 +35,11 @@ public:
     // Topic shape: forgekey/<mac>/temperature_sensor/reading. Payload:
     //   {"tempC": 21.4, "humidity": 47.1, "timestamp": <millis>}
     bool publishTemperature(float tempC, float humidity);
+    // Publish the device's capability announcement on
+    // forgekey/<mac>/capabilities with retained=true. PubSubClient does not
+    // support QoS 1 publish (only QoS 0); retained=true gives equivalent
+    // late-subscriber semantics for this one-shot announcement.
+    bool publishCapabilities(const char* jsonPayload);
     // Publish OTA progress JSON on the firmware-status topic. The payload is:
     //   {"state": "<state>", "version": "...", "progress": 0..100, "error": "..."}
     // version/progress/error are optional; pass empty/-1 to omit. Best-effort:
@@ -71,6 +76,7 @@ private:
     String configTopic;         // credential-rotation / config command topic
     String commandTopic;        // per-device control commands (subscribe)
     String statusTopic;         // operator-visible state changes (publish)
+    String capabilitiesTopic;   // capability announcement topic (publish)
     String jwtToken;
     String broker;
     int port = 1883;

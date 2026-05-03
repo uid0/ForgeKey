@@ -97,8 +97,48 @@ void MqttClient::setTopicPrefix(const char* mac) {
     if (readingTopic.length() == 0) {
         readingTopic = topicPrefix + "/reading";
     }
-    Serial.printf("[MQTT] setTopicPrefix: prefix=%s default_occupancy=%s default_reading=%s\n",
-                  topicPrefix.c_str(), occupancyTopic.c_str(), readingTopic.c_str());
+    // Capability announcement topic lives directly under the MAC, not the
+    // kind segment, so a single device with multiple capabilities still has
+    // one announcement endpoint (forgekey/<mac>/capabilities).
+    capabilitiesTopic = String("forgekey/") + mac + "/capabilities";
+    Serial.printf("[MQTT] setTopicPrefix: prefix=%s default_occupancy=%s default_reading=%s capabilities=%s\n",
+                  topicPrefix.c_str(), occupancyTopic.c_str(),
+                  readingTopic.c_str(), capabilitiesTopic.c_str());
+}
+
+bool MqttClient::publishCapabilities(const char* jsonPayload) {
+    if (!client) {
+        Serial.println("[MQTT] publishCapabilities FAILED: no client (begin() not called)");
+        return false;
+    }
+    if (!client->connected()) {
+        int st = client->state();
+        Serial.printf("[MQTT] publishCapabilities FAILED: not connected (state=%d %s)\n",
+                      st, mqttStateName(st));
+        return false;
+    }
+    if (capabilitiesTopic.length() == 0) {
+        Serial.println("[MQTT] publishCapabilities FAILED: capabilitiesTopic is empty "
+                       "(setTopicPrefix not called)");
+        return false;
+    }
+    if (!jsonPayload) jsonPayload = "";
+
+    size_t len = strlen(jsonPayload);
+    bool ok = client->publish(capabilitiesTopic.c_str(),
+                              reinterpret_cast<const uint8_t*>(jsonPayload),
+                              len,
+                              true /* retained */);
+    if (ok) {
+        lastPublishMs = millis();
+        Serial.printf("[MQTT] publishCapabilities OK: topic=%s retained=true payload_len=%u payload=%s\n",
+                      capabilitiesTopic.c_str(), (unsigned)len, jsonPayload);
+    } else {
+        int st = client->state();
+        Serial.printf("[MQTT] publishCapabilities FAILED: topic=%s payload_len=%u state=%d (%s)\n",
+                      capabilitiesTopic.c_str(), (unsigned)len, st, mqttStateName(st));
+    }
+    return ok;
 }
 
 void MqttClient::setOccupancyTopic(const char* topic) {
