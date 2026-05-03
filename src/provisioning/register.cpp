@@ -50,8 +50,9 @@ void Provisioning::load() {
                   creds.mqttPingsTopic.c_str(), (unsigned)creds.mqttPingsTopic.length());
     Serial.printf("provisioning: loaded from NVS mqtt_topic_for_firmware='%s' (len=%u)\n",
                   creds.mqttFirmwareTopic.c_str(), (unsigned)creds.mqttFirmwareTopic.length());
-    Serial.printf("provisioning: loaded from NVS jwt_token len=%u\n",
-                  (unsigned)creds.jwtToken.length());
+    Serial.printf("provisioning: loaded from NVS jwt_token len=%u prefix=%s\n",
+                  (unsigned)creds.jwtToken.length(),
+                  creds.jwtToken.length() >= 8 ? creds.jwtToken.substring(0, 8).c_str() : "(short)");
 }
 
 bool Provisioning::isProvisioned() const {
@@ -141,10 +142,12 @@ bool Provisioning::registerDevice(const char* host, uint16_t port,
     size_t totalLen = head.length() + (hasPhoto ? jpegLen : 0) + tail.length();
     String activeToken = activeProvisioningToken();
 
-    String tokenPreview = activeToken.substring(0, 6);
-    Serial.printf("register: POST https://%s:%u/api/forgekey/devices/register/ (%u bytes, token prefix=%s..., len=%u)\n",
-                  host, port, (unsigned)totalLen, tokenPreview.c_str(),
-                  (unsigned)activeToken.length());
+    String tokenPreview = activeToken.substring(0, 8);
+    Serial.printf("register: POST host=%s port=%u path=/api/forgekey/devices/register/ "
+                  "url=https://%s:%u/api/forgekey/devices/register/ "
+                  "body_bytes=%u token_prefix=%s... token_len=%u\n",
+                  host, port, host, port, (unsigned)totalLen,
+                  tokenPreview.c_str(), (unsigned)activeToken.length());
     if (activeToken == kPlaceholderToken) {
         Serial.println("register: WARNING using placeholder provisioning token; OMS will reject this with 401");
     }
@@ -264,6 +267,17 @@ bool Provisioning::registerDevice(const char* host, uint16_t port,
         Serial.println("register: NVS persist failed");
         return false;
     }
+    // Dump every key written to NVS so we can confirm the bytes that future
+    // boots will read back (matches the "loaded from NVS" lines in load()).
+    Serial.printf("register: NVS persisted device_id='%s' (len=%u)\n",
+                  c.deviceId.c_str(), (unsigned)c.deviceId.length());
+    Serial.printf("register: NVS persisted mqtt_topic_for_pings='%s' (len=%u)\n",
+                  c.mqttPingsTopic.c_str(), (unsigned)c.mqttPingsTopic.length());
+    Serial.printf("register: NVS persisted mqtt_topic_for_firmware='%s' (len=%u)\n",
+                  c.mqttFirmwareTopic.c_str(), (unsigned)c.mqttFirmwareTopic.length());
+    Serial.printf("register: NVS persisted jwt_token len=%u prefix=%s\n",
+                  (unsigned)c.jwtToken.length(),
+                  c.jwtToken.length() >= 8 ? c.jwtToken.substring(0, 8).c_str() : "(short)");
     Serial.printf("register: provisioned as %s\n", c.deviceId.c_str());
     return true;
 }

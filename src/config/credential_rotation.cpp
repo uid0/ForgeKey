@@ -32,9 +32,9 @@ void onConfigMessage(const char* topic, const uint8_t* payload, unsigned int len
     if (provisioning.setProvisioningToken(tokenStr)) {
         // Log a short prefix only — the full token is a secret and the serial
         // console is shoulder-surfable when the device is on a bench.
-        String preview = tokenStr.substring(0, 6);
-        Serial.printf("config: stored new provisioning token (prefix=%s..., valid_after=%s)\n",
-                      preview.c_str(), validAfter);
+        String preview = tokenStr.substring(0, 8);
+        Serial.printf("config: stored new provisioning token (prefix=%s..., len=%u, valid_after=%s)\n",
+                      preview.c_str(), (unsigned)tokenStr.length(), validAfter);
     } else {
         Serial.println("config: NVS write failed; rotation NOT applied");
     }

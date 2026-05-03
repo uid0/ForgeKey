@@ -60,10 +60,20 @@ bool MqttClient::begin(const char* brokerHost, int portNum, const char* jwt) {
     client->setBufferSize(1024);  // larger payloads for OTA dispatch JSON
     jwtToken = jwt;
 
-    Serial.printf("[MQTT] begin: broker=%s:%d jwt_len=%u jwt_prefix=%s tls=plain\n",
+    // auth_method=jwt-as-password: the JWT travels in the MQTT CONNECT
+    // password field, with a fixed username (forgemqtt). No TLS on this
+    // transport — broker is on a private VPC; the JWT is single-use and
+    // short-lived. If TLS is added later, this line must change.
+    Serial.printf("[MQTT] begin: broker=%s:%d auth_method=jwt-as-password "
+                  "username=forgemqtt jwt_len=%u jwt_prefix=%s tls=plain\n",
                   broker.c_str(), port,
                   (unsigned)jwtToken.length(),
                   jwtToken.length() >= 8 ? jwtToken.substring(0, 8).c_str() : "(short)");
+    if (jwtToken.length() == 0) {
+        Serial.println("[MQTT] begin: WARNING jwt is empty — broker will reject "
+                       "with rc=4 (CONNECT_BAD_CREDENTIALS) unless anonymous "
+                       "auth is enabled. Did registration succeed?");
+    }
 
     return connect();
 }
@@ -162,23 +172,48 @@ bool MqttClient::connect() {
                   (unsigned)jwtToken.length());
 
     if (client->connect(clientId.c_str(), "forgemqtt", jwtToken.c_str())) {
+        lastConnectState = client->state();
         Serial.printf("[MQTT] connected: state=%d (%s)\n",
-                      client->state(), mqttStateName(client->state()));
+                      lastConnectState, mqttStateName(lastConnectState));
         resubscribeAll();
         return true;
     }
 
-    int st = client->state();
-    Serial.printf("[MQTT] connect FAILED: rc=%d (%s)\n", st, mqttStateName(st));
+    lastConnectState = client->state();
+    Serial.printf("[MQTT] connect FAILED: rc=%d (%s)\n",
+                  lastConnectState, mqttStateName(lastConnectState));
+    if (lastConnectState == 4 || lastConnectState == 5) {
+        Serial.println("[MQTT] connect FAILED: broker rejected credentials. "
+                       "Compare jwt_len in [MQTT] begin against register: "
+                       "parsed jwt_token len=. If they match, the JWT is "
+                       "either expired or the EMQX JWT authenticator (JWKS) "
+                       "is misconfigured.");
+    }
     return false;
 }
 
 void MqttClient::resubscribeAll() {
+    // PubSubClient's subscribe() returns true iff the SUBSCRIBE packet was
+    // written to the socket — it does NOT confirm a SUBACK from the broker.
+    // A "true" here only means "we tried"; if you don't see commands flow,
+    // suspect ACL on the broker side.
     if (firmwareTopic.length() && firmwareHandler) {
-        client->subscribe(firmwareTopic.c_str());
+        bool ok = client->subscribe(firmwareTopic.c_str());
+        Serial.printf("[MQTT] subscribe firmware topic=%s ok=%d (write to socket; SUBACK not awaited)\n",
+                      firmwareTopic.c_str(), (int)ok);
+    } else {
+        Serial.printf("[MQTT] subscribe firmware SKIPPED: topic_len=%u handler=%s\n",
+                      (unsigned)firmwareTopic.length(),
+                      firmwareHandler ? "set" : "(null)");
     }
     if (configTopic.length() && configHandler) {
-        client->subscribe(configTopic.c_str());
+        bool ok = client->subscribe(configTopic.c_str());
+        Serial.printf("[MQTT] subscribe config topic=%s ok=%d (write to socket; SUBACK not awaited)\n",
+                      configTopic.c_str(), (int)ok);
+    } else {
+        Serial.printf("[MQTT] subscribe config SKIPPED: topic_len=%u handler=%s\n",
+                      (unsigned)configTopic.length(),
+                      configHandler ? "set" : "(null)");
     }
 }
 
@@ -207,13 +242,18 @@ bool MqttClient::publishOccupancy(int count) {
     String payload = "{\"count\":" + String(count) +
                     ",\"timestamp\":" + String(millis()) + "}";
 
+    // PubSubClient::publish() with the (topic, payload) signature defaults to
+    // QoS 0 / retain=false. There is no PUBACK at QoS 0; "ok" only means
+    // "we wrote it to the socket" — broker delivery is not confirmed.
     bool result = client->publish(occupancyTopic.c_str(), payload.c_str());
     if (result) {
-        Serial.printf("[MQTT] publish OK: topic=%s payload=%s\n",
-                      occupancyTopic.c_str(), payload.c_str());
+        lastPublishMs = millis();
+        Serial.printf("[MQTT] publish OK: topic=%s qos=0 payload_len=%u payload=%s\n",
+                      occupancyTopic.c_str(),
+                      (unsigned)payload.length(), payload.c_str());
     } else {
         int st = client->state();
-        Serial.printf("[MQTT] publish FAILED: topic=%s payload_len=%u state=%d (%s) "
+        Serial.printf("[MQTT] publish FAILED: topic=%s qos=0 payload_len=%u state=%d (%s) "
                       "buffer_size=1024 — likely payload too large or socket closed\n",
                       occupancyTopic.c_str(), (unsigned)payload.length(),
                       st, mqttStateName(st));
@@ -257,11 +297,13 @@ bool MqttClient::publishTemperature(float tempC, float humidity) {
 
     bool result = client->publish(readingTopic.c_str(), payload.c_str());
     if (result) {
-        Serial.printf("[MQTT] publish OK: topic=%s payload=%s\n",
-                      readingTopic.c_str(), payload.c_str());
+        lastPublishMs = millis();
+        Serial.printf("[MQTT] publish OK: topic=%s qos=0 payload_len=%u payload=%s\n",
+                      readingTopic.c_str(),
+                      (unsigned)payload.length(), payload.c_str());
     } else {
         int st = client->state();
-        Serial.printf("[MQTT] publish FAILED: topic=%s payload_len=%u state=%d (%s)\n",
+        Serial.printf("[MQTT] publish FAILED: topic=%s qos=0 payload_len=%u state=%d (%s)\n",
                       readingTopic.c_str(), (unsigned)payload.length(),
                       st, mqttStateName(st));
     }
@@ -304,23 +346,48 @@ bool MqttClient::publishFirmwareStatus(const char* state,
     payload += "}";
 
     bool ok = client->publish(firmwareStatusTopic.c_str(), payload.c_str());
-    Serial.printf("[MQTT] publishFirmwareStatus: topic=%s payload=%s ok=%d\n",
+    if (ok) lastPublishMs = millis();
+    Serial.printf("[MQTT] publishFirmwareStatus: topic=%s qos=0 payload=%s ok=%d\n",
                   firmwareStatusTopic.c_str(), payload.c_str(), (int)ok);
     return ok;
 }
 
 bool MqttClient::subscribeFirmware(MessageHandler handler) {
     firmwareHandler = handler;
-    if (firmwareTopic.length() == 0 || !client) return false;
-    if (!client->connected()) return false;
-    return client->subscribe(firmwareTopic.c_str());
+    if (firmwareTopic.length() == 0 || !client) {
+        Serial.printf("[MQTT] subscribeFirmware DEFERRED: topic_len=%u client=%s\n",
+                      (unsigned)firmwareTopic.length(), client ? "ok" : "(null)");
+        return false;
+    }
+    if (!client->connected()) {
+        Serial.printf("[MQTT] subscribeFirmware DEFERRED: not connected (state=%d %s); "
+                      "will resubscribe on next connect\n",
+                      client->state(), mqttStateName(client->state()));
+        return false;
+    }
+    bool ok = client->subscribe(firmwareTopic.c_str());
+    Serial.printf("[MQTT] subscribeFirmware: topic=%s ok=%d\n",
+                  firmwareTopic.c_str(), (int)ok);
+    return ok;
 }
 
 bool MqttClient::subscribeConfig(MessageHandler handler) {
     configHandler = handler;
-    if (configTopic.length() == 0 || !client) return false;
-    if (!client->connected()) return false;
-    return client->subscribe(configTopic.c_str());
+    if (configTopic.length() == 0 || !client) {
+        Serial.printf("[MQTT] subscribeConfig DEFERRED: topic_len=%u client=%s\n",
+                      (unsigned)configTopic.length(), client ? "ok" : "(null)");
+        return false;
+    }
+    if (!client->connected()) {
+        Serial.printf("[MQTT] subscribeConfig DEFERRED: not connected (state=%d %s); "
+                      "will resubscribe on next connect\n",
+                      client->state(), mqttStateName(client->state()));
+        return false;
+    }
+    bool ok = client->subscribe(configTopic.c_str());
+    Serial.printf("[MQTT] subscribeConfig: topic=%s ok=%d\n",
+                  configTopic.c_str(), (int)ok);
+    return ok;
 }
 
 bool MqttClient::isConnected() {

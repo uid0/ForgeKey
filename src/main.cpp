@@ -189,8 +189,23 @@ void setup() {
     debugPrint("INFO", "MAIN", "ForgeKey People Counter Starting...");
 #endif
     debugPrintf("INFO", "MAIN", "Firmware version: %s", FORGEKEY_FIRMWARE_VERSION);
+#ifdef FIRMWARE_GIT_COMMIT
+    debugPrintf("INFO", "MAIN", "Git commit: %s", FIRMWARE_GIT_COMMIT);
+#endif
+#ifdef FIRMWARE_BUILD_TIMESTAMP
+    debugPrintf("INFO", "MAIN", "Build timestamp (epoch): %s", FIRMWARE_BUILD_TIMESTAMP);
+#endif
+    debugPrintf("INFO", "MAIN", "Compiled: %s %s", __DATE__, __TIME__);
     debugPrintf("INFO", "MAIN", "ESP32 SDK: %s", esp_get_idf_version());
     debugPrintf("INFO", "MAIN", "Free heap: %lu bytes", ESP.getFreeHeap());
+    // MAC: log the firmware-computed value early, before any provisioning step
+    // can produce its own. This is the source-of-truth byte sequence used in
+    // topic derivation; if it differs from what OMS shows, suspect efuse vs
+    // station vs AP MAC mixups.
+    {
+        String earlyMac = WiFi.macAddress();
+        debugPrintf("INFO", "MAIN", "WiFi.macAddress() (pre-connect): %s", earlyMac.c_str());
+    }
 
     // Captive portal: blocks until the device is on WiFi, either via
     // previously-saved creds in NVS or via the AP+portal form.
@@ -203,7 +218,14 @@ void setup() {
         ESP.restart();
     }
     debugPrint("INFO", "WIFI", "WiFi connected");
+    debugPrintf("INFO", "WIFI", "SSID: %s", WiFi.SSID().c_str());
+    debugPrintf("INFO", "WIFI", "BSSID: %s channel=%d", WiFi.BSSIDstr().c_str(), WiFi.channel());
     debugPrintf("INFO", "WIFI", "IP: %s", WiFi.localIP().toString().c_str());
+    debugPrintf("INFO", "WIFI", "Subnet: %s", WiFi.subnetMask().toString().c_str());
+    debugPrintf("INFO", "WIFI", "Gateway: %s", WiFi.gatewayIP().toString().c_str());
+    debugPrintf("INFO", "WIFI", "DNS: %s / %s",
+                WiFi.dnsIP(0).toString().c_str(),
+                WiFi.dnsIP(1).toString().c_str());
     debugPrintf("INFO", "WIFI", "RSSI: %d dBm", WiFi.RSSI());
 
     macAddress = WiFi.macAddress();
@@ -360,12 +382,26 @@ void loop() {
             debugPrint("ERROR", "CAM", "Camera capture failed");
             return;
         }
+        debugPrintf("INFO", "CAM", "Frame: %ux%u format=%d bytes=%u",
+                    (unsigned)fb->width, (unsigned)fb->height,
+                    (int)fb->format, (unsigned)fb->len);
 
         DetectionResult result = personDetector.detect(fb->buf, fb->width, fb->height);
+        int prevStable = occupancyCounter.getCurrentCount();
         occupancyCounter.updateCount(result.count);
+        int newStable = occupancyCounter.getCurrentCount();
 
-        debugPrintf("INFO", "DET", "Detected: %d person(s), Confidence: %.2f, Motion: %s",
-                    result.count, result.confidence, result.motionDetected ? "yes" : "no");
+        debugPrintf("INFO", "DET",
+                    "Detected: %d person(s), Confidence: %.2f, Motion: %s, "
+                    "Inference: %lu us, TFLite: %s",
+                    result.count, result.confidence,
+                    result.motionDetected ? "yes" : "no",
+                    (unsigned long)result.inferenceMicros,
+                    result.tfliteUsed ? "yes" : "no(fallback)");
+        debugPrintf("INFO", "CNT",
+                    "Stabilization: raw=%d stable_prev=%d stable_now=%d changed=%s",
+                    result.count, prevStable, newStable,
+                    (prevStable != newStable) ? "yes" : "no");
 
         if (result.motionDetected || result.count > 0) {
             photoUploader.markMotion(now);
@@ -392,7 +428,15 @@ void loop() {
         ledState = LED_OFF;
         digitalWrite(STATUS_LED_PIN, LED_OFF);
     } else if (!mqttConnected && mqttWasConnected) {
-        debugPrint("WARN", "MQTT", "MQTT disconnected");
+        // Log the underlying state so we can distinguish broker-initiated vs
+        // network-initiated drops. Time since last successful publish helps
+        // tell "broker dropped us idle" from "we just lost the socket".
+        unsigned long lastPub = mqttClient.lastSuccessfulPublishMs();
+        unsigned long sinceMs = (lastPub == 0) ? 0 : (now - lastPub);
+        debugPrintf("WARN", "MQTT",
+                    "MQTT disconnected: last_state=%d since_last_publish_ms=%s",
+                    mqttClient.lastConnectRc(),
+                    (lastPub == 0) ? "never" : String(sinceMs).c_str());
     }
     mqttWasConnected = mqttConnected;
 

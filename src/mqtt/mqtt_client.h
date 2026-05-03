@@ -41,6 +41,12 @@ public:
     void loop();
     void end();
 
+    // Diagnostic accessors. lastSuccessfulPublishMs() returns 0 if nothing
+    // has ever been published successfully (so disconnect logging can say
+    // "never" instead of a misleading age).
+    unsigned long lastSuccessfulPublishMs() const { return lastPublishMs; }
+    int lastConnectRc() const { return lastConnectState; }
+
 private:
     WiFiClient wifiClient;
     PubSubClient* client = nullptr;
@@ -54,6 +60,8 @@ private:
     String broker;
     int port = 1883;
     unsigned long lastReconnectAttempt = 0;
+    unsigned long lastPublishMs = 0;       // millis() of last publish() == true
+    int lastConnectState = 0;              // PubSubClient state after last connect attempt
     MessageHandler firmwareHandler;
     MessageHandler configHandler;
 
