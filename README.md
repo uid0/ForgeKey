@@ -38,6 +38,13 @@ Forgekey is an embedded device firmware that works in step with OpenMakerSpace i
 
 ForgeKey is based off of the adaptable ESP32 series of chips.
 
+## Documentation
+
+- [FORGEKEY_DEVICE.md](FORGEKEY_DEVICE.md) — device lifecycle, OTA apply flow, NVS layout, security model.
+- [PEOPLE_COUNTER.md](PEOPLE_COUNTER.md) — people-counter variant specifics.
+- [docs/OTA_DEPLOYMENT.md](docs/OTA_DEPLOYMENT.md) — operator walkthrough for shipping new firmware (signing-key setup, build, upload via OMS, troubleshooting).
+- [DEBUG.md](DEBUG.md) — diagnostic logging reference.
+
 ## Predefined Dev Networks (optional)
 
 On boot ForgeKey first tries up to two predefined WiFi networks via
