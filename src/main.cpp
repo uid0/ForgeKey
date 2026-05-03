@@ -47,6 +47,14 @@ const BlinkPattern NORMAL_PATTERN    = {50, 2950, 0};   // Short blink every 3s
 const BlinkPattern ERROR_PATTERN     = {200, 200, 0};   // Fast blink (error)
 const BlinkPattern MQTT_CONNECTED_PATTERN = {50, 50, 3}; // 3 quick blinks on MQTT connect
 
+// Period for the operator-triggered "identify me" blink (forgekey/<mac>/command
+// {"cmd":"blink"}). Symmetric on/off. Tunable at build time via
+// -DBLINK_PERIOD_MS=NNN; 750 ms ≈ 1.33 Hz, visible from across a workshop.
+#ifndef BLINK_PERIOD_MS
+#define BLINK_PERIOD_MS 750
+#endif
+const BlinkPattern BLINK_COMMAND_PATTERN = {BLINK_PERIOD_MS, BLINK_PERIOD_MS, 0};
+
 BlinkPattern currentPattern = BOOT_PATTERN;
 unsigned long lastLedToggle = 0;
 bool ledState = false;
@@ -103,6 +111,60 @@ unsigned long lastMqttPublish = 0;
 unsigned long lastTemperatureSample = 0;
 bool occupancyChanged = false;
 String macAddress;
+
+// Operator-triggered "identify me" blink state. Toggled by command-topic
+// messages; transitions are mirrored to the status topic so OMS can render
+// the current state in the device-control panel.
+bool blinkActive = false;
+
+static void setBlinkActive(bool on) {
+    if (on == blinkActive) return;  // no-op: don't spam status on repeat sets
+    blinkActive = on;
+    if (on) {
+        setLedPattern(BLINK_COMMAND_PATTERN);
+    } else {
+        // Restore the steady-state pattern. We don't try to remember
+        // transient patterns (boot, MQTT-connected burst) — by the time an
+        // operator can send a blink command those have already finished.
+        setLedPattern(NORMAL_PATTERN);
+    }
+    mqttClient.publishBlinkStatus(on);
+    debugPrintf("INFO", "CMD", "blink -> %s", on ? "on" : "off");
+}
+
+static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned int length) {
+    StaticJsonDocument<256> doc;
+    DeserializationError err = deserializeJson(doc, payload, length);
+    if (err) {
+        debugPrintf("WARN", "CMD", "parse error: %s", err.c_str());
+        return;
+    }
+    const char* cmd = doc["cmd"] | "";
+    if (strcmp(cmd, "blink") == 0) {
+        // Three accepted forms:
+        //   {"cmd":"blink"}                     -> toggle (back-compat)
+        //   {"cmd":"blink","action":"start|stop|toggle"}
+        //   {"cmd":"blink","on":true|false}
+        if (doc.containsKey("on")) {
+            setBlinkActive(doc["on"].as<bool>());
+        } else if (doc.containsKey("action")) {
+            const char* action = doc["action"] | "";
+            if (strcmp(action, "start") == 0) {
+                setBlinkActive(true);
+            } else if (strcmp(action, "stop") == 0) {
+                setBlinkActive(false);
+            } else if (strcmp(action, "toggle") == 0) {
+                setBlinkActive(!blinkActive);
+            } else {
+                debugPrintf("WARN", "CMD", "unknown blink action: %s", action);
+            }
+        } else {
+            setBlinkActive(!blinkActive);
+        }
+        return;
+    }
+    debugPrintf("WARN", "CMD", "unknown cmd: '%s'", cmd);
+}
 
 // Single dispatcher for the shared forgekey/<mac>/config topic. The two
 // payload shapes coexist:
@@ -356,6 +418,15 @@ void setup() {
     mqttClient.setConfigTopic(configTopic.c_str());
     mqttClient.subscribeConfig(onConfigMessage);
 
+    // Per-device control plane (operator commands + state echo). MAC-derived
+    // for the same reason as configTopic — OMS can address a device before it
+    // has an id assigned.
+    String commandTopic = String("forgekey/") + macAddress + "/command";
+    String statusTopic  = String("forgekey/") + macAddress + "/status";
+    mqttClient.setCommandTopic(commandTopic.c_str());
+    mqttClient.setStatusTopic(statusTopic.c_str());
+    mqttClient.subscribeCommand(onCommandMessage);
+
 #ifndef FORGEKEY_TEMPERATURE_SENSOR
     photoUploader.begin(OMS_HOST, OMS_PORT, macAddress);
     photoUploader.setJwt(creds.jwtToken);
@@ -421,12 +492,19 @@ void loop() {
     bool mqttConnected = mqttClient.isConnected();
     if (mqttConnected && !mqttWasConnected) {
         debugPrint("INFO", "MQTT", "MQTT connected");
-        setLedPattern(MQTT_CONNECTED_PATTERN);
-        // Resume normal pattern after the 3 blinks complete
-        currentPattern = NORMAL_PATTERN;
-        patternComplete = false;
-        ledState = LED_OFF;
-        digitalWrite(STATUS_LED_PIN, LED_OFF);
+        if (blinkActive) {
+            // Operator-triggered blink takes precedence over the MQTT-connect
+            // burst; otherwise a reconnect during identification would silently
+            // stop the blink without publishing a status transition.
+            setLedPattern(BLINK_COMMAND_PATTERN);
+        } else {
+            setLedPattern(MQTT_CONNECTED_PATTERN);
+            // Resume normal pattern after the 3 blinks complete
+            currentPattern = NORMAL_PATTERN;
+            patternComplete = false;
+            ledState = LED_OFF;
+            digitalWrite(STATUS_LED_PIN, LED_OFF);
+        }
     } else if (!mqttConnected && mqttWasConnected) {
         // Log the underlying state so we can distinguish broker-initiated vs
         // network-initiated drops. Time since last successful publish helps

@@ -47,6 +47,12 @@ void MqttClient::staticCallback(char* topic, uint8_t* payload, unsigned int leng
         mqttClient.configHandler(topic, payload, length);
         return;
     }
+    if (mqttClient.commandTopic.length() &&
+        mqttClient.commandHandler &&
+        mqttClient.commandTopic == topic) {
+        mqttClient.commandHandler(topic, payload, length);
+        return;
+    }
 }
 
 bool MqttClient::begin(const char* brokerHost, int portNum, const char* jwt) {
@@ -160,6 +166,29 @@ void MqttClient::setConfigTopic(const char* topic) {
     }
 }
 
+void MqttClient::setCommandTopic(const char* topic) {
+    if (topic && *topic) {
+        Serial.printf("[MQTT] setCommandTopic: '%s' -> '%s'\n",
+                      commandTopic.c_str(), topic);
+        commandTopic = topic;
+        if (isConnected() && commandHandler) {
+            client->subscribe(commandTopic.c_str());
+        }
+    } else {
+        Serial.println("[MQTT] setCommandTopic: empty value ignored");
+    }
+}
+
+void MqttClient::setStatusTopic(const char* topic) {
+    if (topic && *topic) {
+        Serial.printf("[MQTT] setStatusTopic: '%s' -> '%s'\n",
+                      statusTopic.c_str(), topic);
+        statusTopic = topic;
+    } else {
+        Serial.println("[MQTT] setStatusTopic: empty value ignored");
+    }
+}
+
 bool MqttClient::connect() {
     if (!client) {
         Serial.println("[MQTT] connect: no client (begin() not called)");
@@ -214,6 +243,15 @@ void MqttClient::resubscribeAll() {
         Serial.printf("[MQTT] subscribe config SKIPPED: topic_len=%u handler=%s\n",
                       (unsigned)configTopic.length(),
                       configHandler ? "set" : "(null)");
+    }
+    if (commandTopic.length() && commandHandler) {
+        bool ok = client->subscribe(commandTopic.c_str());
+        Serial.printf("[MQTT] subscribe command topic=%s ok=%d (write to socket; SUBACK not awaited)\n",
+                      commandTopic.c_str(), (int)ok);
+    } else {
+        Serial.printf("[MQTT] subscribe command SKIPPED: topic_len=%u handler=%s\n",
+                      (unsigned)commandTopic.length(),
+                      commandHandler ? "set" : "(null)");
     }
 }
 
@@ -368,6 +406,39 @@ bool MqttClient::subscribeFirmware(MessageHandler handler) {
     bool ok = client->subscribe(firmwareTopic.c_str());
     Serial.printf("[MQTT] subscribeFirmware: topic=%s ok=%d\n",
                   firmwareTopic.c_str(), (int)ok);
+    return ok;
+}
+
+bool MqttClient::subscribeCommand(MessageHandler handler) {
+    commandHandler = handler;
+    if (commandTopic.length() == 0 || !client) {
+        Serial.printf("[MQTT] subscribeCommand DEFERRED: topic_len=%u client=%s\n",
+                      (unsigned)commandTopic.length(), client ? "ok" : "(null)");
+        return false;
+    }
+    if (!client->connected()) {
+        Serial.printf("[MQTT] subscribeCommand DEFERRED: not connected (state=%d %s); "
+                      "will resubscribe on next connect\n",
+                      client->state(), mqttStateName(client->state()));
+        return false;
+    }
+    bool ok = client->subscribe(commandTopic.c_str());
+    Serial.printf("[MQTT] subscribeCommand: topic=%s ok=%d\n",
+                  commandTopic.c_str(), (int)ok);
+    return ok;
+}
+
+bool MqttClient::publishBlinkStatus(bool on) {
+    if (!client || !client->connected()) return false;
+    if (statusTopic.length() == 0) {
+        Serial.println("[MQTT] publishBlinkStatus: no status topic set, skipping");
+        return false;
+    }
+    const char* payload = on ? "{\"blink\":\"on\"}" : "{\"blink\":\"off\"}";
+    bool ok = client->publish(statusTopic.c_str(), payload);
+    if (ok) lastPublishMs = millis();
+    Serial.printf("[MQTT] publishBlinkStatus: topic=%s payload=%s ok=%d\n",
+                  statusTopic.c_str(), payload, (int)ok);
     return ok;
 }
 

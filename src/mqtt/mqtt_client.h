@@ -21,6 +21,14 @@ public:
     void setFirmwareTopic(const char* topic);
     void setFirmwareStatusTopic(const char* topic);
     void setConfigTopic(const char* topic);
+    // Per-device control plane: commands flow in on commandTopic
+    // (forgekey/<mac>/command), and operator-visible state changes
+    // (e.g. blink on/off) are published on statusTopic
+    // (forgekey/<mac>/status). Topics are MAC-derived in setup() rather
+    // than handed back at registration so operators can address a device
+    // by MAC alone before OMS knows its id.
+    void setCommandTopic(const char* topic);
+    void setStatusTopic(const char* topic);
 
     bool publishOccupancy(int count);
     // Publish a temperature/humidity reading on the device's reading topic.
@@ -37,6 +45,11 @@ public:
                                const char* error);
     bool subscribeFirmware(MessageHandler handler);
     bool subscribeConfig(MessageHandler handler);
+    bool subscribeCommand(MessageHandler handler);
+    // Publish blink on/off transition on statusTopic. Payload: {"blink":"on"}
+    // or {"blink":"off"}. Best-effort; returns false if topic unset or socket
+    // closed. Caller should still update local state regardless.
+    bool publishBlinkStatus(bool on);
     bool isConnected();
     void loop();
     void end();
@@ -56,6 +69,8 @@ private:
     String firmwareTopic;       // OTA dispatch topic (subscribe)
     String firmwareStatusTopic; // OTA progress topic (publish)
     String configTopic;         // credential-rotation / config command topic
+    String commandTopic;        // per-device control commands (subscribe)
+    String statusTopic;         // operator-visible state changes (publish)
     String jwtToken;
     String broker;
     int port = 1883;
@@ -64,6 +79,7 @@ private:
     int lastConnectState = 0;              // PubSubClient state after last connect attempt
     MessageHandler firmwareHandler;
     MessageHandler configHandler;
+    MessageHandler commandHandler;
 
     bool connect();
     void resubscribeAll();

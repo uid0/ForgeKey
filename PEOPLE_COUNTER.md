@@ -59,6 +59,53 @@ Payload:
 Verbose serial logging is on by default — see [DEBUG.md](DEBUG.md) for the
 expected boot trace and a symptom → cause table.
 
+## Operator commands (manual smoke)
+
+Per-device control plane:
+
+- Subscribe (device): `forgekey/<mac>/command`
+- Publish (device):   `forgekey/<mac>/status`
+
+### Blink ("identify me")
+
+Used to physically locate a device. Toggles a 1.33 Hz on/off LED override on
+the onboard status LED. Period is `BLINK_PERIOD_MS` (default 750 ms,
+overridable at build time via `-DBLINK_PERIOD_MS=NNN`).
+
+Accepted command payloads:
+
+```json
+{"cmd":"blink"}                       // toggle
+{"cmd":"blink","action":"start"}      // explicit on
+{"cmd":"blink","action":"stop"}       // explicit off
+{"cmd":"blink","action":"toggle"}     // explicit toggle
+{"cmd":"blink","on":true}             // explicit on
+{"cmd":"blink","on":false}            // explicit off
+```
+
+On every transition the device publishes one of:
+
+```json
+{"blink":"on"}
+{"blink":"off"}
+```
+
+Manual smoke (replace `<mac>` with the bare 12-hex MAC printed at boot):
+
+```bash
+# Terminal 1: watch status
+mosquitto_sub -h dms.oms-iot.com -t "forgekey/<mac>/status" -v
+
+# Terminal 2: toggle on, then off
+mosquitto_pub -h dms.oms-iot.com -t "forgekey/<mac>/command" -m '{"cmd":"blink"}'
+mosquitto_pub -h dms.oms-iot.com -t "forgekey/<mac>/command" -m '{"cmd":"blink"}'
+```
+
+Expect: LED visibly alternating ~0.75 s on / 0.75 s off after the first send,
+returns to the steady ~3 s heartbeat after the second. Each send produces
+exactly one status message; repeated `{"on":true}` while already on is a no-op
+and emits nothing.
+
 ## Detection Pipeline
 
 ### TensorFlow Lite Person Detection (active)
