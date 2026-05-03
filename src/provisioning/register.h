@@ -8,6 +8,11 @@ struct DeviceCredentials {
     String mqttFirmwareTopic;  // OMS-controlled OTA dispatch topic
     String mqttPingsTopic;     // OMS-controlled occupancy publish topic
     String jwtToken;           // bearer for HTTPS uploads + MQTT auth
+    // Broker connection info returned by OMS at registration time. Empty
+    // host means "no broker info on file yet — use compile-time fallback".
+    String mqttBrokerHost;
+    uint16_t mqttBrokerPort = 0;
+    bool mqttBrokerUseTls = false;
 };
 
 class Provisioning {

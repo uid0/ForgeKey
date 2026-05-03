@@ -22,8 +22,10 @@
 // ============= CONFIGURATION =============
 // WiFi credentials are no longer baked in: a first-boot captive portal
 // (see src/wifi_setup/captive.cpp) collects them and persists them to NVS.
-const char* MQTT_BROKER = "dms.oms-iot.com";
-const int   MQTT_PORT = 1883;
+// MQTT broker connection info is no longer baked in either: the OMS
+// registration response supplies it (mqtt_broker_host / _port / _use_tls)
+// and we cache it in NVS. Pre-registration boots use the compile-time
+// MQTT_BROKER_FALLBACK_* values from provisioning/device_config.h.
 // =========================================
 
 String macAddress;
@@ -241,7 +243,30 @@ void setup() {
 
     DeviceCredentials creds = provisioning.credentials();
     const char* mqttJwt = creds.jwtToken.length() ? creds.jwtToken.c_str() : "";
-    mqttClient.begin(MQTT_BROKER, MQTT_PORT, mqttJwt);
+
+    // Resolve broker connection info: NVS (set by registration response) wins
+    // over the compile-time fallback. Source is logged so a wrong host on a
+    // device in the field is diagnosable from a single boot log.
+    String   brokerHost;
+    uint16_t brokerPort;
+    bool     brokerUseTls;
+    const char* brokerSource;
+    if (creds.mqttBrokerHost.length() && creds.mqttBrokerPort != 0) {
+        brokerHost   = creds.mqttBrokerHost;
+        brokerPort   = creds.mqttBrokerPort;
+        brokerUseTls = creds.mqttBrokerUseTls;
+        brokerSource = "nvs";
+    } else {
+        brokerHost   = MQTT_BROKER_FALLBACK_HOST;
+        brokerPort   = MQTT_BROKER_FALLBACK_PORT;
+        brokerUseTls = (MQTT_BROKER_FALLBACK_USE_TLS != 0);
+        brokerSource = "fallback";
+    }
+    debugPrintf("INFO", "MQTT", "broker host=%s port=%u use_tls=%d source=%s",
+                brokerHost.c_str(), (unsigned)brokerPort,
+                (int)brokerUseTls, brokerSource);
+
+    mqttClient.begin(brokerHost.c_str(), brokerPort, mqttJwt, brokerUseTls);
     mqttClient.setTopicPrefix(macAddress.c_str());
 
     // Validate the stored pings topic against the OMS contract before

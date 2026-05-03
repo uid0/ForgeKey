@@ -1,6 +1,11 @@
 #include "mqtt_client.h"
 #include "Arduino.h"
 
+#include <WiFiClient.h>
+#include <WiFiClientSecure.h>
+
+#include "security/oms_ca.h"
+
 // Compile-time topic kind. The OMS subscriber listens on
 // forgekey/<mac>/<kind>/... — kind is a string segment that identifies the
 // device's capability bucket. Override via -DFORGEKEY_MQTT_TOPIC_KIND in the
@@ -55,10 +60,24 @@ void MqttClient::staticCallback(char* topic, uint8_t* payload, unsigned int leng
     }
 }
 
-bool MqttClient::begin(const char* brokerHost, int portNum, const char* jwt) {
-    if (client) delete client;
+bool MqttClient::begin(const char* brokerHost, int portNum, const char* jwt,
+                       bool useTlsArg) {
+    if (client) { delete client; client = nullptr; }
+    if (netClient) { delete netClient; netClient = nullptr; }
 
-    client = new PubSubClient(wifiClient);
+    useTls = useTlsArg;
+    if (useTls) {
+        // CA pinning: reuse the OMS HTTPS root. Brokers fronted by a different
+        // CA will fail TLS handshake — track that as a separate bead if it
+        // becomes a real deployment.
+        WiFiClientSecure* secure = new WiFiClientSecure();
+        secure->setCACert(kOmsCaPem);
+        netClient = secure;
+    } else {
+        netClient = new WiFiClient();
+    }
+
+    client = new PubSubClient(*netClient);
     broker = brokerHost;
     port = portNum;
     client->setServer(broker.c_str(), port);
@@ -67,14 +86,14 @@ bool MqttClient::begin(const char* brokerHost, int portNum, const char* jwt) {
     jwtToken = jwt;
 
     // auth_method=jwt-as-password: the JWT travels in the MQTT CONNECT
-    // password field, with a fixed username (forgemqtt). No TLS on this
-    // transport — broker is on a private VPC; the JWT is single-use and
-    // short-lived. If TLS is added later, this line must change.
+    // password field, with a fixed username (forgemqtt). TLS is now toggled
+    // per-broker via the registration response (mqtt_broker_use_tls).
     Serial.printf("[MQTT] begin: broker=%s:%d auth_method=jwt-as-password "
-                  "username=forgemqtt jwt_len=%u jwt_prefix=%s tls=plain\n",
+                  "username=forgemqtt jwt_len=%u jwt_prefix=%s tls=%s\n",
                   broker.c_str(), port,
                   (unsigned)jwtToken.length(),
-                  jwtToken.length() >= 8 ? jwtToken.substring(0, 8).c_str() : "(short)");
+                  jwtToken.length() >= 8 ? jwtToken.substring(0, 8).c_str() : "(short)",
+                  useTls ? "on" : "plain");
     if (jwtToken.length() == 0) {
         Serial.println("[MQTT] begin: WARNING jwt is empty — broker will reject "
                        "with rc=4 (CONNECT_BAD_CREDENTIALS) unless anonymous "
@@ -514,5 +533,9 @@ void MqttClient::end() {
         client->disconnect();
         delete client;
         client = nullptr;
+    }
+    if (netClient) {
+        delete netClient;
+        netClient = nullptr;
     }
 }

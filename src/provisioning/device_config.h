@@ -33,6 +33,20 @@
 #define FORGEKEY_FIRMWARE_VERSION "0.1.0"
 #endif
 
+// First-boot fallback MQTT broker. The authoritative broker host/port/tls
+// come back from the OMS registration response and are persisted to NVS;
+// these values are only used before a successful registration (or if the
+// stored values are wiped). Override per-build via -D flags.
+#ifndef MQTT_BROKER_FALLBACK_HOST
+#define MQTT_BROKER_FALLBACK_HOST "dms.openmakersuite.net"
+#endif
+#ifndef MQTT_BROKER_FALLBACK_PORT
+#define MQTT_BROKER_FALLBACK_PORT 1883
+#endif
+#ifndef MQTT_BROKER_FALLBACK_USE_TLS
+#define MQTT_BROKER_FALLBACK_USE_TLS 0
+#endif
+
 // Periodic photo cadence in milliseconds (300s per fo-0z9).
 #ifndef PHOTO_UPLOAD_INTERVAL_MS
 #define PHOTO_UPLOAD_INTERVAL_MS 300000UL

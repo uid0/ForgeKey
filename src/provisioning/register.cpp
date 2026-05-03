@@ -17,6 +17,9 @@ constexpr const char* kKeyPingTopic = "p_topic";
 constexpr const char* kKeyJwt      = "jwt";
 constexpr const char* kKeyBoots    = "boots";
 constexpr const char* kKeyProvTok  = "prov_tok";  // OTA-delivered rotation override
+constexpr const char* kKeyBrokerHost = "b_host";
+constexpr const char* kKeyBrokerPort = "b_port";
+constexpr const char* kKeyBrokerTls  = "b_tls";
 constexpr const char* kPlaceholderToken = "REPLACE_ME_PROVISIONING_TOKEN";
 
 // Multipart boundary used for the multipart/form-data registration POST.
@@ -40,6 +43,9 @@ void Provisioning::load() {
     creds.mqttFirmwareTopic = p.getString(kKeyFwTopic, "");
     creds.mqttPingsTopic    = p.getString(kKeyPingTopic, "");
     creds.jwtToken          = p.getString(kKeyJwt, "");
+    creds.mqttBrokerHost    = p.getString(kKeyBrokerHost, "");
+    creds.mqttBrokerPort    = (uint16_t)p.getUShort(kKeyBrokerPort, 0);
+    creds.mqttBrokerUseTls  = p.getBool(kKeyBrokerTls, false);
     p.end();
 
     // Verbose: dump exactly what we loaded so a wrong/empty topic in NVS
@@ -53,6 +59,9 @@ void Provisioning::load() {
     Serial.printf("provisioning: loaded from NVS jwt_token len=%u prefix=%s\n",
                   (unsigned)creds.jwtToken.length(),
                   creds.jwtToken.length() >= 8 ? creds.jwtToken.substring(0, 8).c_str() : "(short)");
+    Serial.printf("provisioning: loaded from NVS mqtt_broker host='%s' port=%u use_tls=%d\n",
+                  creds.mqttBrokerHost.c_str(), (unsigned)creds.mqttBrokerPort,
+                  (int)creds.mqttBrokerUseTls);
 }
 
 bool Provisioning::isProvisioned() const {
@@ -66,6 +75,9 @@ void Provisioning::clear() {
     p.remove(kKeyFwTopic);
     p.remove(kKeyPingTopic);
     p.remove(kKeyJwt);
+    p.remove(kKeyBrokerHost);
+    p.remove(kKeyBrokerPort);
+    p.remove(kKeyBrokerTls);
     p.end();
     creds = DeviceCredentials{};
 }
@@ -98,6 +110,9 @@ bool Provisioning::persist(const DeviceCredentials& c) {
     p.putString(kKeyFwTopic, c.mqttFirmwareTopic);
     p.putString(kKeyPingTopic, c.mqttPingsTopic);
     p.putString(kKeyJwt, c.jwtToken);
+    p.putString(kKeyBrokerHost, c.mqttBrokerHost);
+    p.putUShort(kKeyBrokerPort, c.mqttBrokerPort);
+    p.putBool(kKeyBrokerTls, c.mqttBrokerUseTls);
     p.end();
     creds = c;
     return true;
@@ -234,7 +249,7 @@ bool Provisioning::registerDevice(const char* host, uint16_t port,
         return false;
     }
 
-    StaticJsonDocument<512> resp;
+    StaticJsonDocument<1024> resp;
     DeserializationError err = deserializeJson(resp, body);
     if (err) {
         Serial.printf("register: JSON parse error: %s\n", err.c_str());
@@ -246,6 +261,9 @@ bool Provisioning::registerDevice(const char* host, uint16_t port,
     c.mqttFirmwareTopic = (const char*)(resp["mqtt_topic_for_firmware"] | "");
     c.mqttPingsTopic    = (const char*)(resp["mqtt_topic_for_pings"]    | "");
     c.jwtToken          = (const char*)(resp["jwt_token"]               | "");
+    c.mqttBrokerHost    = (const char*)(resp["mqtt_broker_host"]        | "");
+    c.mqttBrokerPort    = (uint16_t)(resp["mqtt_broker_port"]           | 0);
+    c.mqttBrokerUseTls  = (bool)(resp["mqtt_broker_use_tls"]            | false);
 
     // Log every topic field actually parsed from the response so we can
     // distinguish "server sent empty string" from "field absent" from
@@ -257,6 +275,12 @@ bool Provisioning::registerDevice(const char* host, uint16_t port,
                   c.mqttFirmwareTopic.c_str(), (int)resp.containsKey("mqtt_topic_for_firmware"));
     Serial.printf("register: parsed jwt_token len=%u (present=%d)\n",
                   (unsigned)c.jwtToken.length(), (int)resp.containsKey("jwt_token"));
+    Serial.printf("register: parsed mqtt_broker_host='%s' (present=%d)\n",
+                  c.mqttBrokerHost.c_str(), (int)resp.containsKey("mqtt_broker_host"));
+    Serial.printf("register: parsed mqtt_broker_port=%u (present=%d)\n",
+                  (unsigned)c.mqttBrokerPort, (int)resp.containsKey("mqtt_broker_port"));
+    Serial.printf("register: parsed mqtt_broker_use_tls=%d (present=%d)\n",
+                  (int)c.mqttBrokerUseTls, (int)resp.containsKey("mqtt_broker_use_tls"));
 
     if (c.deviceId.length() == 0 || c.jwtToken.length() == 0) {
         Serial.println("register: response missing device_id or jwt_token");
@@ -278,6 +302,9 @@ bool Provisioning::registerDevice(const char* host, uint16_t port,
     Serial.printf("register: NVS persisted jwt_token len=%u prefix=%s\n",
                   (unsigned)c.jwtToken.length(),
                   c.jwtToken.length() >= 8 ? c.jwtToken.substring(0, 8).c_str() : "(short)");
+    Serial.printf("register: NVS persisted mqtt_broker host='%s' port=%u use_tls=%d\n",
+                  c.mqttBrokerHost.c_str(), (unsigned)c.mqttBrokerPort,
+                  (int)c.mqttBrokerUseTls);
     Serial.printf("register: provisioned as %s\n", c.deviceId.c_str());
     return true;
 }

@@ -3,6 +3,7 @@
 
 #include <PubSubClient.h>
 #include <WiFiClient.h>
+#include <Client.h>
 #include <functional>
 
 class MqttClient {
@@ -11,7 +12,8 @@ public:
                                               const uint8_t* payload,
                                               unsigned int length)>;
 
-    bool begin(const char* broker, int port, const char* jwtToken);
+    bool begin(const char* broker, int port, const char* jwtToken,
+               bool useTls = false);
     void setTopicPrefix(const char* macAddress);
 
     // Override the per-device topics returned by OMS at registration.
@@ -66,7 +68,11 @@ public:
     int lastConnectRc() const { return lastConnectState; }
 
 private:
-    WiFiClient wifiClient;
+    // Net transport: either a plain WiFiClient or a WiFiClientSecure depending
+    // on whether the broker speaks TLS. Heap-allocated so we can swap on each
+    // begin() without slicing.
+    Client* netClient = nullptr;
+    bool useTls = false;
     PubSubClient* client = nullptr;
     String topicPrefix;
     String occupancyTopic;  // resolved publish topic (people/door counter builds)
