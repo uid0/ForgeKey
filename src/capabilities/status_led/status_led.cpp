@@ -54,6 +54,8 @@ bool g_ledOnNow = false;
 int  g_blinkCount = 0;
 bool g_patternComplete = false;
 bool g_blinkOverride = false;
+unsigned long g_blinkOverrideExpiresMs = 0;  // 0 = no auto-expiry
+bool g_blinkOverrideExpiredFlag = false;     // consumed by consumeBlinkOverrideExpired()
 
 const BlinkPattern& patternFor(State s) {
     switch (s) {
@@ -85,8 +87,12 @@ void requestState(State s) {
 }
 
 bool setBlinkOverride(bool on) {
-    if (on == g_blinkOverride) return false;
+    if (on == g_blinkOverride) {
+        if (!on) g_blinkOverrideExpiresMs = 0;
+        return false;
+    }
     g_blinkOverride = on;
+    g_blinkOverrideExpiresMs = 0;  // explicit on/off cancels any timer
     if (on) {
         applyPattern(PATTERN_BLINK_OVERRIDE);
     } else {
@@ -99,7 +105,23 @@ bool setBlinkOverride(bool on) {
     return true;
 }
 
+bool setBlinkOverrideTimed(unsigned long durationMs) {
+    bool wasOff = !g_blinkOverride;
+    if (wasOff) {
+        g_blinkOverride = true;
+        applyPattern(PATTERN_BLINK_OVERRIDE);
+    }
+    g_blinkOverrideExpiresMs = (durationMs > 0) ? (millis() + durationMs) : 0;
+    return wasOff;
+}
+
 bool blinkOverrideActive() { return g_blinkOverride; }
+
+bool consumeBlinkOverrideExpired() {
+    if (!g_blinkOverrideExpiredFlag) return false;
+    g_blinkOverrideExpiredFlag = false;
+    return true;
+}
 
 bool detectFn() {
     return true;  // always-present onboard LED
@@ -113,6 +135,16 @@ void setupFn() {
 }
 
 void tickFn() {
+    // Auto-expire timed identify-blink override before any pattern logic so
+    // the resumed pattern picks up immediately.
+    if (g_blinkOverride && g_blinkOverrideExpiresMs != 0 &&
+        (long)(millis() - g_blinkOverrideExpiresMs) >= 0) {
+        g_blinkOverride = false;
+        g_blinkOverrideExpiresMs = 0;
+        g_blinkOverrideExpiredFlag = true;
+        applyPattern(patternFor(g_state == State::Boot ? State::Normal : g_state));
+    }
+
     if (g_haveTransition) {
         g_haveTransition = false;
         g_state = g_pendingTransition;
@@ -168,7 +200,9 @@ REGISTER_CAPABILITY(status_led, "status_led",
 namespace StatusLed {
 void requestState(State) {}
 bool setBlinkOverride(bool) { return false; }
+bool setBlinkOverrideTimed(unsigned long) { return false; }
 bool blinkOverrideActive() { return false; }
+bool consumeBlinkOverrideExpired() { return false; }
 }
 
 #endif

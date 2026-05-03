@@ -34,7 +34,17 @@ void requestState(State s);
 // status echo); false on no-op (already in the requested mode) or when the
 // capability is disabled.
 bool setBlinkOverride(bool on);
+// Same as setBlinkOverride(true), but auto-clears after durationMs. A second
+// call while a timer is active extends/replaces the deadline. Pass 0 for
+// no timer (equivalent to setBlinkOverride(true)). Returns true if the
+// override transitioned from off->on; false if it was already on (timer is
+// still updated in that case).
+bool setBlinkOverrideTimed(unsigned long durationMs);
 bool blinkOverrideActive();
+// One-shot check: returns true if the timed override expired since the last
+// call (and clears the flag). main() polls this each loop to publish a
+// {"blink":"off"} status echo when the identify timer auto-clears.
+bool consumeBlinkOverrideExpired();
 
 }
 

@@ -62,6 +62,7 @@ bool g_setupDone = false;
 unsigned long g_lastDetectionRequest = 0;
 unsigned long g_lastMqttPublish = 0;
 bool g_occupancyChanged = false;
+bool g_oneShotCaptureRequested = false;
 
 TaskHandle_t      g_inferenceTask    = nullptr;
 SemaphoreHandle_t g_inferenceTrigger = nullptr;
@@ -127,6 +128,12 @@ bool isActive() { return g_active; }
 bool captureProvisioningPhoto(uint8_t** outBuf, size_t* outLen) {
     if (!g_active || !outBuf || !outLen) return false;
     return cameraManager.captureJpeg(outBuf, outLen);
+}
+
+bool requestOneShotCapture() {
+    if (!g_active) return false;
+    g_oneShotCaptureRequested = true;
+    return true;
 }
 
 bool detectFn() {
@@ -260,6 +267,64 @@ void tickFn() {
                 Serial.println("[CAP/people_counter] photo upload failed");
             }
         }
+    }
+
+    // Operator-triggered one-shot capture. Independent of shouldUpload()'s
+    // motion/interval gates — the operator wants the photo now. Still gated
+    // by provisioning, OTA, and the post-inference quiet window so we don't
+    // tear down a TLS session mid-handshake.
+    if (g_oneShotCaptureRequested && provisioning.isProvisioned() &&
+        !otaUpdater.inProgress() && networkQuietEnough) {
+        g_oneShotCaptureRequested = false;
+        uint8_t* jpeg = nullptr;
+        size_t jpegLen = 0;
+        const char* uploadStatus = "failed";
+        const char* reason = "capture_failed";
+        if (cameraManager.captureJpeg(&jpeg, &jpegLen)) {
+            Serial.printf("[CAP/people_counter] one-shot capture: uploading %u bytes\n",
+                          (unsigned)jpegLen);
+            PhotoUploader::Result r = photoUploader.uploadPhoto(jpeg, jpegLen, now);
+            free(jpeg);
+            switch (r) {
+                case PhotoUploader::Result::Ok:
+                    uploadStatus = "ok";
+                    reason = "";
+                    break;
+                case PhotoUploader::Result::AuthExpired:
+                    uploadStatus = "failed";
+                    reason = "auth_expired";
+                    provisioning.clear();
+                    break;
+                case PhotoUploader::Result::ServerError:
+                    uploadStatus = "failed";
+                    reason = "server_error";
+                    break;
+                case PhotoUploader::Result::TransportError:
+                    uploadStatus = "failed";
+                    reason = "transport_error";
+                    break;
+                case PhotoUploader::Result::BadResponse:
+                    uploadStatus = "failed";
+                    reason = "bad_response";
+                    break;
+                case PhotoUploader::Result::Skipped:
+                    uploadStatus = "failed";
+                    reason = "skipped";
+                    break;
+            }
+        }
+        char buf[128];
+        if (reason && *reason) {
+            snprintf(buf, sizeof(buf),
+                     "{\"cmd_ack\":\"capture\",\"upload_status\":\"%s\",\"reason\":\"%s\"}",
+                     uploadStatus, reason);
+        } else {
+            snprintf(buf, sizeof(buf),
+                     "{\"cmd_ack\":\"capture\",\"upload_status\":\"%s\"}",
+                     uploadStatus);
+        }
+        mqttClient.publishStatus(buf);
+        Serial.printf("[CAP/people_counter] one-shot capture result: %s\n", buf);
     }
 }
 

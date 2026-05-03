@@ -19,6 +19,16 @@ bool isActive();
 // capture failed.
 bool captureProvisioningPhoto(uint8_t** outBuf, size_t* outLen);
 
+// Queue an operator-triggered one-shot photo capture + upload. The actual
+// capture happens on the next tick once the inference task is idle and the
+// network has quieted (same gating as the periodic uploader). When the
+// upload completes (success or failure), the result is published on the
+// device's MQTT status topic as:
+//   {"cmd_ack":"capture","upload_status":"ok"|"failed","reason":"..."}
+// Returns true if the request was queued; false if the capability is not
+// active.
+bool requestOneShotCapture();
+
 }
 
 #endif

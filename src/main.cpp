@@ -54,6 +54,54 @@ static void setBlinkActive(bool on) {
     debugPrintf("INFO", "CMD", "blink -> %s", on ? "on" : "off");
 }
 
+// Default identify duration when {"cmd":"identify"} is sent without
+// duration_s. Visible-but-not-annoying window for an operator to walk over
+// to the device.
+#ifndef IDENTIFY_DEFAULT_DURATION_S
+#define IDENTIFY_DEFAULT_DURATION_S 30
+#endif
+
+static void publishStatusSnapshot(const char* triggeringCmd) {
+    // Used for {"cmd":"status"} and {"cmd":"ping"} acks. Includes enough
+    // info for an operator to decide "is the device alive and what does it
+    // think it can do" without needing it to actively report.
+    String capsJson = CapabilityRegistry::announcementJson(FORGEKEY_FIRMWARE_VERSION);
+    // capsJson looks like: {"capabilities":[...],"firmware_version":"x"}
+    // Trim the outer braces so we can splice the contents into our payload.
+    String capsInner;
+    if (capsJson.length() >= 2 && capsJson[0] == '{' &&
+        capsJson[capsJson.length() - 1] == '}') {
+        capsInner = capsJson.substring(1, capsJson.length() - 1);
+    } else {
+        capsInner = "";
+    }
+    String payload;
+    payload.reserve(256);
+    payload += "{\"cmd_ack\":\"";
+    payload += triggeringCmd;
+    payload += "\",";
+    payload += capsInner;
+    payload += ",\"free_heap\":";
+    payload += String((unsigned long)ESP.getFreeHeap());
+    payload += ",\"rssi\":";
+    payload += String(WiFi.RSSI());
+    payload += ",\"uptime_ms\":";
+    payload += String(millis());
+    payload += ",\"mac\":\"";
+    payload += macAddress;
+    payload += "\"}";
+    mqttClient.publishStatus(payload.c_str());
+}
+
+static void publishUnknownCommandAck(const char* cmd) {
+    String payload;
+    payload.reserve(64 + strlen(cmd ? cmd : ""));
+    payload += "{\"cmd_ack\":\"";
+    payload += (cmd ? cmd : "");
+    payload += "\",\"error\":\"unknown_command\"}";
+    mqttClient.publishStatus(payload.c_str());
+}
+
 static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned int length) {
     StaticJsonDocument<256> doc;
     DeserializationError err = deserializeJson(doc, payload, length);
@@ -85,7 +133,62 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
         }
         return;
     }
+    if (strcmp(cmd, "identify") == 0) {
+        // Optional "duration_s": seconds before auto-clearing. 0/missing =
+        // IDENTIFY_DEFAULT_DURATION_S. The auto-clear publishes its own
+        // {"blink":"off"} echo from loop().
+        unsigned long durationS = doc["duration_s"] | (unsigned long)IDENTIFY_DEFAULT_DURATION_S;
+        unsigned long durationMs = durationS * 1000UL;
+        bool wasOff = StatusLed::setBlinkOverrideTimed(durationMs);
+        if (wasOff) mqttClient.publishBlinkStatus(true);
+        char ack[96];
+        snprintf(ack, sizeof(ack),
+                 "{\"cmd_ack\":\"identify\",\"duration_s\":%lu}", durationS);
+        mqttClient.publishStatus(ack);
+        debugPrintf("INFO", "CMD", "identify -> %lus (was_off=%d)",
+                    durationS, (int)wasOff);
+        return;
+    }
+    if (strcmp(cmd, "status") == 0 || strcmp(cmd, "ping") == 0) {
+        publishStatusSnapshot(cmd);
+        debugPrintf("INFO", "CMD", "%s -> status snapshot", cmd);
+        return;
+    }
+    if (strcmp(cmd, "capture") == 0 || strcmp(cmd, "capture_photo") == 0) {
+#ifndef FORGEKEY_TEMPERATURE_SENSOR
+        if (PeopleCounter::isActive() && PeopleCounter::requestOneShotCapture()) {
+            mqttClient.publishStatus("{\"cmd_ack\":\"capture\",\"queued\":true}");
+            debugPrint("INFO", "CMD", "capture queued");
+        } else {
+            mqttClient.publishStatus(
+                "{\"cmd_ack\":\"capture\",\"queued\":false,\"error\":\"camera_unavailable\"}");
+            debugPrint("WARN", "CMD", "capture rejected: camera unavailable");
+        }
+#else
+        mqttClient.publishStatus(
+            "{\"cmd_ack\":\"capture\",\"queued\":false,\"error\":\"capability_unsupported\"}");
+        debugPrint("WARN", "CMD", "capture rejected: capability unsupported on this build");
+#endif
+        return;
+    }
+    if (strcmp(cmd, "restart") == 0) {
+        // Ack first so the operator UI can register the device acknowledged
+        // the command, then briefly delay to flush the publish through the
+        // MQTT socket before yanking the chip.
+        mqttClient.publishStatus("{\"cmd_ack\":\"restart\",\"in_ms\":1000}");
+        debugPrint("INFO", "CMD", "restart in 1000ms");
+        // Drive the MQTT loop a few times so PubSubClient actually pushes
+        // the publish out before vTaskDelay parks us.
+        for (int i = 0; i < 10; ++i) {
+            mqttClient.loop();
+            delay(20);
+        }
+        delay(800);
+        ESP.restart();
+        return;  // unreachable
+    }
     debugPrintf("WARN", "CMD", "unknown cmd: '%s'", cmd);
+    publishUnknownCommandAck(cmd);
 }
 
 
@@ -382,6 +485,14 @@ void loop() {
     }
 
     CapabilityRegistry::tickAll();
+
+    // Identify-blink auto-expiry echo. status_led's tick() flips this when a
+    // timed override deadline elapses; mirror it onto the OMS status topic
+    // so the device-control panel reflects the LED's actual state.
+    if (StatusLed::consumeBlinkOverrideExpired()) {
+        mqttClient.publishBlinkStatus(false);
+        debugPrint("INFO", "CMD", "identify expired -> blink off");
+    }
 
     mqttClient.loop();
     delay(10);

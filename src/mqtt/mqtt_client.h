@@ -57,6 +57,9 @@ public:
     // or {"blink":"off"}. Best-effort; returns false if topic unset or socket
     // closed. Caller should still update local state regardless.
     bool publishBlinkStatus(bool on);
+    // Publish an arbitrary JSON payload on statusTopic. Used for command
+    // acks and operator-visible state echoes. Best-effort.
+    bool publishStatus(const char* jsonPayload);
     bool isConnected();
     void loop();
     void end();

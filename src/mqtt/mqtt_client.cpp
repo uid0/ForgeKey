@@ -488,16 +488,20 @@ bool MqttClient::subscribeCommand(MessageHandler handler) {
 }
 
 bool MqttClient::publishBlinkStatus(bool on) {
+    return publishStatus(on ? "{\"blink\":\"on\"}" : "{\"blink\":\"off\"}");
+}
+
+bool MqttClient::publishStatus(const char* jsonPayload) {
     if (!client || !client->connected()) return false;
     if (statusTopic.length() == 0) {
-        Serial.println("[MQTT] publishBlinkStatus: no status topic set, skipping");
+        Serial.println("[MQTT] publishStatus: no status topic set, skipping");
         return false;
     }
-    const char* payload = on ? "{\"blink\":\"on\"}" : "{\"blink\":\"off\"}";
-    bool ok = client->publish(statusTopic.c_str(), payload);
+    if (!jsonPayload) jsonPayload = "{}";
+    bool ok = client->publish(statusTopic.c_str(), jsonPayload);
     if (ok) lastPublishMs = millis();
-    Serial.printf("[MQTT] publishBlinkStatus: topic=%s payload=%s ok=%d\n",
-                  statusTopic.c_str(), payload, (int)ok);
+    Serial.printf("[MQTT] publishStatus: topic=%s payload=%s ok=%d\n",
+                  statusTopic.c_str(), jsonPayload, (int)ok);
     return ok;
 }
 
