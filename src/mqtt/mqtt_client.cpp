@@ -1,6 +1,7 @@
 #include "mqtt_client.h"
 #include "Arduino.h"
 
+#include <WiFi.h>
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
 
@@ -80,10 +81,24 @@ bool MqttClient::begin(const char* brokerHost, int portNum, const char* jwt,
     client = new PubSubClient(*netClient);
     broker = brokerHost;
     port = portNum;
-    client->setServer(broker.c_str(), port);
     client->setCallback(MqttClient::staticCallback);
     client->setBufferSize(1024);  // larger payloads for OTA dispatch JSON
     jwtToken = jwt;
+
+    if (broker.length()) {
+        IPAddress resolvedIp;
+        if (WiFi.hostByName(broker.c_str(), resolvedIp)) {
+            brokerIp = resolvedIp;
+            brokerIpResolved = true;
+            client->setServer(brokerIp, port);
+            Serial.printf("[MQTT] broker host resolved: %s -> %s\n",
+                          broker.c_str(), brokerIp.toString().c_str());
+        } else {
+            client->setServer(broker.c_str(), port);
+            Serial.printf("[MQTT] broker host DNS lookup failed: %s\n",
+                          broker.c_str());
+        }
+    }
 
     // auth_method=jwt-as-password: the JWT travels in the MQTT CONNECT
     // password field, with a fixed username (forgemqtt). TLS is now toggled
@@ -258,6 +273,17 @@ bool MqttClient::connect() {
     Serial.printf("[MQTT] connect: broker=%s:%d client_id=%s username=forgemqtt jwt_len=%u\n",
                   broker.c_str(), port, clientId.c_str(),
                   (unsigned)jwtToken.length());
+
+    if (!brokerIpResolved && broker.length()) {
+        IPAddress resolvedIp;
+        if (WiFi.hostByName(broker.c_str(), resolvedIp)) {
+            brokerIp = resolvedIp;
+            brokerIpResolved = true;
+            client->setServer(brokerIp, port);
+            Serial.printf("[MQTT] broker host resolved on connect: %s -> %s\n",
+                          broker.c_str(), brokerIp.toString().c_str());
+        }
+    }
 
     if (client->connect(clientId.c_str(), "forgemqtt", jwtToken.c_str())) {
         lastConnectState = client->state();
@@ -529,7 +555,20 @@ bool MqttClient::isConnected() {
 }
 
 void MqttClient::loop() {
-    if (client) client->loop();
+    if (!client) return;
+    
+    // Process any pending messages/pings
+    client->loop();
+    
+    // Reconnect if connection is lost (same 5s throttle as publish path)
+    if (!client->connected()) {
+        if (millis() - lastReconnectAttempt > 5000) {
+            Serial.printf("[MQTT] loop: connection lost, attempting reconnect (last_state=%d %s)\n",
+                          client->state(), mqttStateName(client->state()));
+            connect();
+            lastReconnectAttempt = millis();
+        }
+    }
 }
 
 void MqttClient::end() {

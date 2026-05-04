@@ -2,6 +2,7 @@
 #define MQTT_CLIENT_H
 
 #include <PubSubClient.h>
+#include <WiFi.h>
 #include <WiFiClient.h>
 #include <Client.h>
 #include <functional>
@@ -88,6 +89,8 @@ private:
     String capabilitiesTopic;   // capability announcement topic (publish)
     String jwtToken;
     String broker;
+    IPAddress brokerIp;
+    bool brokerIpResolved = false;
     int port = 1883;
     unsigned long lastReconnectAttempt = 0;
     unsigned long lastPublishMs = 0;       // millis() of last publish() == true

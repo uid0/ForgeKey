@@ -41,19 +41,20 @@ void tickFn();
 namespace {
 
 constexpr unsigned long DETECTION_INTERVAL_MS = 2000;
+constexpr unsigned long LOW_MQTT_DETECTION_INTERVAL_MS = 60000;
 constexpr unsigned long MQTT_PUBLISH_INTERVAL_MS = 10000;
 
 // Minimum time that must elapse after an inference finishes before we
 // will start a photo upload. TLS handshake + multi-KB POST on shared
 // WiFi needs the radio to be unstarved; without this gate the upload
 // fails with errno 113 (MISSING_ACKS).
-constexpr unsigned long PHOTO_QUIET_WINDOW_MS = 1500;
+// Increased from 1500ms to 5000ms so the WiFi MAC has more time to recover
+// on congested/weak networks.
+constexpr unsigned long PHOTO_QUIET_WINDOW_MS = 5000;
 
-// Pin the inference task to Core 1 (same core as the Arduino loopTask)
-// so the WiFi/lwIP tasks that live on Core 0 are not contended. Stack
-// size accommodates the TFLite Micro interpreter call chain plus our
-// preprocessing scratch.
-constexpr UBaseType_t INFERENCE_TASK_PRIORITY = 1;
+// Inference should be secondary to the Arduino main loop and MQTT path.
+// Lower priority helps keep command handling and reconnect work responsive.
+constexpr UBaseType_t INFERENCE_TASK_PRIORITY = 0;
 constexpr BaseType_t  INFERENCE_TASK_CORE     = 1;
 constexpr uint32_t    INFERENCE_TASK_STACK    = 16 * 1024;
 
@@ -213,9 +214,12 @@ void tickFn() {
     }
 
     // Trigger the next detection cycle once the cadence has elapsed AND
-    // the worker is idle. Skipping when busy means a slow inference just
-    // back-pressures the cadence rather than queueing up requests.
-    if (!inferenceBusy && now - g_lastDetectionRequest >= DETECTION_INTERVAL_MS) {
+    // the worker is idle. When MQTT is disconnected, slow down detection
+    // dramatically so the device prioritizes reconnect and command handling.
+    unsigned long detectionInterval = mqttClient.isConnected()
+        ? DETECTION_INTERVAL_MS
+        : LOW_MQTT_DETECTION_INTERVAL_MS;
+    if (!inferenceBusy && now - g_lastDetectionRequest >= detectionInterval) {
         g_lastDetectionRequest = now;
         portENTER_CRITICAL(&g_stateMux);
         g_inferenceBusy = true;
@@ -249,8 +253,9 @@ void tickFn() {
         (lastInferenceDoneMs == 0 || now - lastInferenceDoneMs > PHOTO_QUIET_WINDOW_MS);
 
     if (provisioning.isProvisioned() && !otaUpdater.inProgress() && networkQuietEnough &&
+        mqttConnected &&
         photoUploader.shouldUpload(now, PHOTO_UPLOAD_INTERVAL_MS,
-                                   PHOTO_UPLOAD_MOTION_WINDOW_MS)) {
+                                   PHOTO_UPLOAD_MOTION_WINDOW_MS, mqttConnected)) {
         uint8_t* jpeg = nullptr;
         size_t jpegLen = 0;
         if (cameraManager.captureJpeg(&jpeg, &jpegLen)) {
@@ -263,8 +268,14 @@ void tickFn() {
                 provisioning.clear();
             } else if (r == PhotoUploader::Result::Ok) {
                 Serial.println("[CAP/people_counter] photo upload OK");
+            } else if (r == PhotoUploader::Result::TransportError) {
+                Serial.println("[CAP/people_counter] photo upload failed: transport/TLS error");
+            } else if (r == PhotoUploader::Result::ServerError) {
+                Serial.println("[CAP/people_counter] photo upload failed: server error (5xx)");
+            } else if (r == PhotoUploader::Result::BadResponse) {
+                Serial.println("[CAP/people_counter] photo upload failed: bad response (4xx non-401)");
             } else {
-                Serial.println("[CAP/people_counter] photo upload failed");
+                Serial.println("[CAP/people_counter] photo upload failed: unknown error");
             }
         }
     }
@@ -274,7 +285,7 @@ void tickFn() {
     // by provisioning, OTA, and the post-inference quiet window so we don't
     // tear down a TLS session mid-handshake.
     if (g_oneShotCaptureRequested && provisioning.isProvisioned() &&
-        !otaUpdater.inProgress() && networkQuietEnough) {
+        !otaUpdater.inProgress() && networkQuietEnough && mqttConnected) {
         g_oneShotCaptureRequested = false;
         uint8_t* jpeg = nullptr;
         size_t jpegLen = 0;

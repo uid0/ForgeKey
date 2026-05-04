@@ -23,9 +23,11 @@ public:
     void markMotion(unsigned long nowMs) { lastMotionMs = nowMs; }
 
     // True if enough time has elapsed since the last upload AND motion
-    // has been observed within the gating window.
+    // has been observed within the gating window. Uploads are also
+    // suppressed while MQTT is disconnected.
     bool shouldUpload(unsigned long nowMs, unsigned long intervalMs,
-                      unsigned long motionWindowMs) const;
+                      unsigned long motionWindowMs,
+                      bool mqttConnected) const;
 
     // Upload a JPEG buffer. Returns the parsed status.
     Result uploadPhoto(const uint8_t* jpegBuf, size_t jpegLen,
@@ -35,11 +37,15 @@ public:
 
 private:
     String host;
+    IPAddress hostIp;
+    bool hostIpResolved = false;
     uint16_t port = 443;
     String mac;
     String jwtToken;
     unsigned long lastUpload = 0;
     unsigned long lastMotionMs = 0;
+    unsigned long nextUploadAllowedMs = 0;
+    unsigned long uploadBackoffMs = 15000;
 };
 
 extern PhotoUploader photoUploader;
