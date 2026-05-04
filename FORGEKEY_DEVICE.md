@@ -34,7 +34,7 @@ and can be overridden via `-D` flags in `platformio.ini`:
 
 | Macro | Default | Purpose |
 |-------|---------|---------|
-| `OMS_HOST` | `oms.openmakerspace.org` | OMS HTTPS host for `/api/forgekey/...` |
+| `OMS_HOST` | `dms.openmakerspace.org` | OMS HTTPS host for `/api/forgekey/...` |
 | `OMS_PORT` | `443` | TLS port |
 | `FORGEKEY_PROVISIONING_TOKEN` | `REPLACE_ME_PROVISIONING_TOKEN` | Shared bearer for first-boot register POST |
 | `FORGEKEY_SENSOR_KIND` | `people-counter` | Capability tag sent at register time |
