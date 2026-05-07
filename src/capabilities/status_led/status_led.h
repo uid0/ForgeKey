@@ -15,6 +15,7 @@ namespace StatusLed {
 enum class State {
     Boot,            // initial fast blink on power-up
     WifiConnecting,  // slow blink while WiFi/portal is in progress
+    Provisioning,    // after WiFi, before MQTT connected
     Normal,          // short blink every few seconds (steady-state OK)
     Error,           // fast blink (something's wrong)
     MqttConnected,   // brief flurry on (re)connect, then back to Normal
@@ -45,6 +46,13 @@ bool blinkOverrideActive();
 // call (and clears the flag). main() polls this each loop to publish a
 // {"blink":"off"} status echo when the identify timer auto-clears.
 bool consumeBlinkOverrideExpired();
+
+// Trigger a brief LED flash to indicate a message was sent (MQTT publish or
+// HTTP POST). The flash temporarily overrides the current state pattern for
+// ~500ms, then resumes the pattern that was active when it was triggered.
+// Safe to call from anywhere; ignored if the operator blink override is
+// active (identify mode takes priority).
+void triggerMessageFlash();
 
 }
 

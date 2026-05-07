@@ -84,7 +84,7 @@ void inferenceTaskFn(void*) {
         xSemaphoreTake(g_inferenceTrigger, portMAX_DELAY);
 
         DetectionResult result = {0, 0.0f, false, false, 0};
-        camera_fb_t* fb = cameraManager.capture();
+        camera_fb_t* fb = cameraManager.captureRgb565();
         if (!fb) {
             Serial.println("[CAP/people_counter] camera capture failed");
         } else {

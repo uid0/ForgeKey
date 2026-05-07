@@ -135,9 +135,27 @@ void MqttClient::setTopicPrefix(const char* mac) {
     // kind segment, so a single device with multiple capabilities still has
     // one announcement endpoint (forgekey/<mac>/capabilities).
     capabilitiesTopic = String("forgekey/") + mac + "/capabilities";
-    Serial.printf("[MQTT] setTopicPrefix: prefix=%s default_occupancy=%s default_reading=%s capabilities=%s\n",
+
+    // BLE topics also live directly under the MAC (not under the kind
+    // segment) so OMS can subscribe to all BLE data with a single pattern.
+    if (bleDevicesTopic.length() == 0) {
+        bleDevicesTopic = String("forgekey/") + mac + "/ble/devices";
+    }
+    if (bleBeaconsTopic.length() == 0) {
+        bleBeaconsTopic = String("forgekey/") + mac + "/ble/beacons";
+    }
+    if (blePeersTopic.length() == 0) {
+        blePeersTopic = String("forgekey/") + mac + "/ble/peers";
+    }
+    if (bleEquipmentTopic.length() == 0) {
+        bleEquipmentTopic = String("forgekey/") + mac + "/ble/equipment";
+    }
+
+    Serial.printf("[MQTT] setTopicPrefix: prefix=%s default_occupancy=%s default_reading=%s capabilities=%s ble_devices=%s ble_beacons=%s ble_peers=%s ble_equipment=%s\n",
                   topicPrefix.c_str(), occupancyTopic.c_str(),
-                  readingTopic.c_str(), capabilitiesTopic.c_str());
+                  readingTopic.c_str(), capabilitiesTopic.c_str(),
+                  bleDevicesTopic.c_str(), bleBeaconsTopic.c_str(),
+                  blePeersTopic.c_str(), bleEquipmentTopic.c_str());
 }
 
 bool MqttClient::publishCapabilities(const char* jsonPayload) {
@@ -531,22 +549,39 @@ bool MqttClient::publishStatus(const char* jsonPayload) {
     return ok;
 }
 
-bool MqttClient::subscribeConfig(MessageHandler handler) {
-    configHandler = handler;
-    if (configTopic.length() == 0 || !client) {
-        Serial.printf("[MQTT] subscribeConfig DEFERRED: topic_len=%u client=%s\n",
-                      (unsigned)configTopic.length(), client ? "ok" : "(null)");
-        return false;
-    }
-    if (!client->connected()) {
-        Serial.printf("[MQTT] subscribeConfig DEFERRED: not connected (state=%d %s); "
-                      "will resubscribe on next connect\n",
-                      client->state(), mqttStateName(client->state()));
-        return false;
-    }
-    bool ok = client->subscribe(configTopic.c_str());
-    Serial.printf("[MQTT] subscribeConfig: topic=%s ok=%d\n",
-                  configTopic.c_str(), (int)ok);
+bool MqttClient::publishBleDevices(const char* jsonPayload) {
+    if (!client || !client->connected()) return false;
+    if (bleDevicesTopic.length() == 0) return false;
+    if (!jsonPayload) jsonPayload = "{}";
+    bool ok = client->publish(bleDevicesTopic.c_str(), jsonPayload);
+    if (ok) lastPublishMs = millis();
+    return ok;
+}
+
+bool MqttClient::publishBleBeacons(const char* jsonPayload) {
+    if (!client || !client->connected()) return false;
+    if (bleBeaconsTopic.length() == 0) return false;
+    if (!jsonPayload) jsonPayload = "{}";
+    bool ok = client->publish(bleBeaconsTopic.c_str(), jsonPayload);
+    if (ok) lastPublishMs = millis();
+    return ok;
+}
+
+bool MqttClient::publishBlePeers(const char* jsonPayload) {
+    if (!client || !client->connected()) return false;
+    if (blePeersTopic.length() == 0) return false;
+    if (!jsonPayload) jsonPayload = "{}";
+    bool ok = client->publish(blePeersTopic.c_str(), jsonPayload);
+    if (ok) lastPublishMs = millis();
+    return ok;
+}
+
+bool MqttClient::publishEquipmentEvent(const char* jsonPayload) {
+    if (!client || !client->connected()) return false;
+    if (bleEquipmentTopic.length() == 0) return false;
+    if (!jsonPayload) jsonPayload = "{}";
+    bool ok = client->publish(bleEquipmentTopic.c_str(), jsonPayload);
+    if (ok) lastPublishMs = millis();
     return ok;
 }
 
@@ -569,6 +604,25 @@ void MqttClient::loop() {
             lastReconnectAttempt = millis();
         }
     }
+}
+
+bool MqttClient::subscribeConfig(MessageHandler handler) {
+    configHandler = handler;
+    if (configTopic.length() == 0 || !client) {
+        Serial.printf("[MQTT] subscribeConfig DEFERRED: topic_len=%u client=%s\n",
+                      (unsigned)configTopic.length(), client ? "ok" : "(null)");
+        return false;
+    }
+    if (!client->connected()) {
+        Serial.printf("[MQTT] subscribeConfig DEFERRED: not connected (state=%d %s); "
+                      "will resubscribe on next connect\n",
+                      client->state(), mqttStateName(client->state()));
+        return false;
+    }
+    bool ok = client->subscribe(configTopic.c_str());
+    Serial.printf("[MQTT] subscribeConfig: topic=%s ok=%d\n",
+                  configTopic.c_str(), (int)ok);
+    return ok;
 }
 
 void MqttClient::end() {

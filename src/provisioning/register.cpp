@@ -6,6 +6,7 @@
 #include <ArduinoJson.h>
 
 #include "security/oms_ca.h"
+#include "../capabilities/status_led/status_led.h"
 
 Provisioning provisioning;
 
@@ -303,8 +304,13 @@ bool Provisioning::registerDevice(const char* host, uint16_t port,
                   (unsigned)c.jwtToken.length(),
                   c.jwtToken.length() >= 8 ? c.jwtToken.substring(0, 8).c_str() : "(short)");
     Serial.printf("register: NVS persisted mqtt_broker host='%s' port=%u use_tls=%d\n",
-                  c.mqttBrokerHost.c_str(), (unsigned)c.mqttBrokerPort,
-                  (int)c.mqttBrokerUseTls);
+                   c.mqttBrokerHost.c_str(), (unsigned)c.mqttBrokerPort,
+                   (int)c.mqttBrokerUseTls);
     Serial.printf("register: provisioned as %s\n", c.deviceId.c_str());
+
+    // Flash LED to indicate HTTP POST completed
+    extern void triggerMessageFlash();
+    StatusLed::triggerMessageFlash();
+
     return true;
 }

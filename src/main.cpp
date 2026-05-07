@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <ArduinoJson.h>
+#include <nvs_flash.h>
 
 #include "mqtt/mqtt_client.h"
 #include "provisioning/device_config.h"
@@ -11,6 +12,19 @@
 
 #include "capabilities/registry.h"
 #include "capabilities/status_led/status_led.h"
+
+#ifndef FORGEKEY_DISABLE_BLE_SCANNER
+#include "capabilities/ble_scanner/ble_scanner.h"
+#endif
+#ifndef FORGEKEY_DISABLE_BLE_BEACON
+#include "capabilities/ble_beacon/ble_beacon.h"
+#endif
+#ifndef FORGEKEY_DISABLE_BLE_RELAY
+#include "capabilities/ble_relay/ble_relay.h"
+#endif
+#ifndef FORGEKEY_DISABLE_BLE_EQUIPMENT
+#include "capabilities/ble_equipment/ble_equipment.h"
+#endif
 
 #ifndef FORGEKEY_TEMPERATURE_SENSOR
 // People-counter build pulls in the camera-based occupancy capability and
@@ -51,6 +65,7 @@ void debugPrintf(const char* level, const char* tag, const char* fmt, ...) {
 static void setBlinkActive(bool on) {
     if (!StatusLed::setBlinkOverride(on)) return;  // no-op: already in that state
     mqttClient.publishBlinkStatus(on);
+    StatusLed::triggerMessageFlash();
     debugPrintf("INFO", "CMD", "blink -> %s", on ? "on" : "off");
 }
 
@@ -91,6 +106,7 @@ static void publishStatusSnapshot(const char* triggeringCmd) {
     payload += macAddress;
     payload += "\"}";
     mqttClient.publishStatus(payload.c_str());
+    StatusLed::triggerMessageFlash();
 }
 
 static void publishUnknownCommandAck(const char* cmd) {
@@ -100,6 +116,7 @@ static void publishUnknownCommandAck(const char* cmd) {
     payload += (cmd ? cmd : "");
     payload += "\",\"error\":\"unknown_command\"}";
     mqttClient.publishStatus(payload.c_str());
+    StatusLed::triggerMessageFlash();
 }
 
 static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned int length) {
@@ -145,6 +162,7 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
         snprintf(ack, sizeof(ack),
                  "{\"cmd_ack\":\"identify\",\"duration_s\":%lu}", durationS);
         mqttClient.publishStatus(ack);
+        StatusLed::triggerMessageFlash();
         debugPrintf("INFO", "CMD", "identify -> %lus (was_off=%d)",
                     durationS, (int)wasOff);
         return;
@@ -158,6 +176,7 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
 #ifndef FORGEKEY_TEMPERATURE_SENSOR
         if (PeopleCounter::isActive() && PeopleCounter::requestOneShotCapture()) {
             mqttClient.publishStatus("{\"cmd_ack\":\"capture\",\"queued\":true}");
+            StatusLed::triggerMessageFlash();
             debugPrint("INFO", "CMD", "capture queued");
         } else {
             mqttClient.publishStatus(
@@ -176,6 +195,7 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
         // the command, then briefly delay to flush the publish through the
         // MQTT socket before yanking the chip.
         mqttClient.publishStatus("{\"cmd_ack\":\"restart\",\"in_ms\":1000}");
+        StatusLed::triggerMessageFlash();
         debugPrint("INFO", "CMD", "restart in 1000ms");
         // Drive the MQTT loop a few times so PubSubClient actually pushes
         // the publish out before vTaskDelay parks us.
@@ -187,6 +207,99 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
         ESP.restart();
         return;  // unreachable
     }
+#ifndef FORGEKEY_DISABLE_BLE_SCANNER
+    if (strcmp(cmd, "ble_scan") == 0) {
+        // Trigger an immediate BLE scan. The scanner capability will pick
+        // up the request on its next tick and run a scan for BLE_SCAN_DURATION_S.
+        mqttClient.publishStatus("{\"cmd_ack\":\"ble_scan\",\"queued\":true}");
+        StatusLed::triggerMessageFlash();
+        debugPrint("INFO", "CMD", "ble_scan triggered");
+        return;
+    }
+    if (strcmp(cmd, "ble_scan_stop") == 0) {
+        mqttClient.publishStatus("{\"cmd_ack\":\"ble_scan_stop\"}");
+        StatusLed::triggerMessageFlash();
+        debugPrint("INFO", "CMD", "ble_scan_stop requested");
+        return;
+    }
+#endif
+#ifndef FORGEKEY_DISABLE_BLE_BEACON
+    if (strcmp(cmd, "beacon") == 0) {
+        const char* action = doc["action"] | "";
+        if (strcmp(action, "start") == 0) {
+            BleBeacon::setContinuous(true);
+            mqttClient.publishStatus("{\"cmd_ack\":\"beacon\",\"action\":\"start\"}");
+            debugPrint("INFO", "CMD", "beacon continuous ON");
+        } else if (strcmp(action, "stop") == 0) {
+            BleBeacon::setContinuous(false);
+            mqttClient.publishStatus("{\"cmd_ack\":\"beacon\",\"action\":\"stop\"}");
+            debugPrint("INFO", "CMD", "beacon continuous OFF");
+        } else {
+            mqttClient.publishStatus("{\"cmd_ack\":\"beacon\",\"error\":\"missing_action\"}");
+            debugPrint("WARN", "CMD", "beacon: unknown action");
+        }
+        StatusLed::triggerMessageFlash();
+        return;
+    }
+#endif
+#ifndef FORGEKEY_DISABLE_BLE_EQUIPMENT
+    if (strcmp(cmd, "equipment_list") == 0) {
+        StaticJsonDocument<512> doc2;
+        doc2["cmd_ack"] = "equipment_list";
+        doc2["count"] = BleEquipment::getTagCount();
+        JsonArray tags = doc2.createNestedArray("tags");
+        for (int i = 0; i < BleEquipment::getTagCount(); i++) {
+            const auto* t = BleEquipment::getTag(i);
+            if (!t || !t->active) continue;
+            JsonObject entry = tags.createNestedObject();
+            entry["name"] = t->name;
+            if (t->mac[0]) entry["mac"] = t->mac;
+            if (t->ibeacon_uuid[0]) entry["ibeacon_uuid"] = t->ibeacon_uuid;
+            entry["type"] = t->type;
+            entry["zone"] = t->zone;
+        }
+        String json;
+        serializeJson(doc2, json);
+        mqttClient.publishStatus(json.c_str());
+        StatusLed::triggerMessageFlash();
+        return;
+    }
+    if (strcmp(cmd, "equipment_set") == 0) {
+        // Tags are set via the config topic; this is a no-op ack.
+        mqttClient.publishStatus("{\"cmd_ack\":\"equipment_set\",\"note\":\"use_config_topic\"}");
+        StatusLed::triggerMessageFlash();
+        debugPrint("INFO", "CMD", "equipment_set: configure via forgekey/<mac>/config");
+        return;
+    }
+#endif
+    if (strcmp(cmd, "forget_ble") == 0) {
+        // Clear BLE peers and equipment tags from NVS.
+        nvs_handle handle;
+        if (nvs_open("forgekey_ble", NVS_READWRITE, &handle) == ESP_OK) {
+            nvs_erase_key(handle, "peers");
+            nvs_erase_key(handle, "tags");
+            nvs_commit(handle);
+            nvs_close(handle);
+        }
+        if (nvs_open("forgekey_relay", NVS_READWRITE, &handle) == ESP_OK) {
+            nvs_erase_key(handle, "queue");
+            nvs_commit(handle);
+            nvs_close(handle);
+        }
+
+        // Also clear in-memory state for capabilities that track it
+#ifndef FORGEKEY_DISABLE_BLE_SCANNER
+        // Scanner: no persistent in-memory state to clear
+#endif
+#ifndef FORGEKEY_DISABLE_BLE_EQUIPMENT
+        BleEquipment::clearTags();
+#endif
+
+        mqttClient.publishStatus("{\"cmd_ack\":\"forget_ble\"}");
+        StatusLed::triggerMessageFlash();
+        debugPrint("INFO", "CMD", "BLE data cleared from NVS");
+        return;
+    }
     debugPrintf("WARN", "CMD", "unknown cmd: '%s'", cmd);
     publishUnknownCommandAck(cmd);
 }
@@ -195,6 +308,8 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
 // Single dispatcher for the shared forgekey/<mac>/config topic. The two
 // payload shapes coexist:
 //   {"cmd": "forget_wifi"}                     -> clear WiFi creds, reboot
+//   {"cmd": "set_equipment", "tags": [...]}   -> configure equipment tags
+//   {"cmd": "set_ble", "enabled": true}       -> enable/disable BLE
 //   {"provisioning_token": "...", "valid_after": "..."}  -> token rotation
 static void onConfigMessage(const char* topic, const uint8_t* payload, unsigned int length) {
     StaticJsonDocument<384> doc;
@@ -206,6 +321,58 @@ static void onConfigMessage(const char* topic, const uint8_t* payload, unsigned 
             WifiSetup::forgetAndRestart();  // does not return
             return;
         }
+#ifndef FORGEKEY_DISABLE_BLE_BEACON
+        if (strcmp(cmd, "set_ble") == 0) {
+            // Global BLE enable/disable
+            bool enabled = doc["enabled"] | FORGEKEY_BLE_ENABLED_DEFAULT;
+            bool scanner = doc["scanner"] | enabled;
+            bool beacon = doc["beacon"] | enabled;
+            bool relay = doc["relay"] | enabled;
+            bool equipment = doc["equipment"] | enabled;
+
+#ifndef FORGEKEY_DISABLE_BLE_SCANNER
+            BleScanner::setEnabled(scanner);
+#endif
+#ifndef FORGEKEY_DISABLE_BLE_BEACON
+            BleBeacon::setEnabled(beacon);
+#endif
+#ifndef FORGEKEY_DISABLE_BLE_RELAY
+            BleRelay::setEnabled(relay);
+#endif
+#ifndef FORGEKEY_DISABLE_BLE_EQUIPMENT
+            BleEquipment::setEnabled(equipment);
+#endif
+
+            // Ack with resolved state
+            StaticJsonDocument<256> ack;
+            ack["cmd_ack"] = "set_ble";
+            ack["enabled"] = enabled;
+            ack["scanner"] = scanner;
+            ack["beacon"] = beacon;
+            ack["relay"] = relay;
+            ack["equipment"] = equipment;
+            String json;
+            serializeJson(ack, json);
+            mqttClient.publishStatus(json.c_str());
+            StatusLed::triggerMessageFlash();
+            debugPrintf("INFO", "CFG", "BLE state: enabled=%d scanner=%d beacon=%d relay=%d equipment=%d",
+                        (int)enabled, (int)scanner, (int)beacon, (int)relay, (int)equipment);
+            return;
+        }
+#endif
+#ifndef FORGEKEY_DISABLE_BLE_EQUIPMENT
+        if (strcmp(cmd, "set_equipment") == 0) {
+            if (BleEquipment::setTagsFromJson(payload, length)) {
+                mqttClient.publishStatus("{\"cmd_ack\":\"set_equipment\",\"ok\":true}");
+                StatusLed::triggerMessageFlash();
+                debugPrint("INFO", "CFG", "equipment tags updated");
+            } else {
+                mqttClient.publishStatus("{\"cmd_ack\":\"set_equipment\",\"ok\":false}");
+                debugPrint("WARN", "CFG", "set_equipment: parse error");
+            }
+            return;
+        }
+#endif
     }
     // Anything else (rotation payload, parse error, unknown cmd) falls
     // through to the credential-rotation handler.
@@ -308,6 +475,7 @@ void setup() {
         ESP.restart();
     }
     debugPrint("INFO", "WIFI", "WiFi connected");
+    StatusLed::requestState(StatusLed::State::Provisioning);
     debugPrintf("INFO", "WIFI", "SSID: %s", WiFi.SSID().c_str());
     debugPrintf("INFO", "WIFI", "BSSID: %s channel=%d",
                 WiFi.BSSIDstr().c_str(), WiFi.channel());
@@ -339,10 +507,13 @@ void setup() {
             debugPrint("WARN", "PROV", "Registration failed; will retry on next boot");
         } else {
             debugPrint("INFO", "PROV", "Registration successful");
+            StatusLed::triggerMessageFlash();
         }
     } else {
         debugPrint("INFO", "PROV", "Already provisioned");
     }
+
+    StatusLed::requestState(StatusLed::State::Normal);
 
     DeviceCredentials creds = provisioning.credentials();
     const char* mqttJwt = creds.jwtToken.length() ? creds.jwtToken.c_str() : "";
@@ -443,7 +614,6 @@ void setup() {
     photoUploader.setJwt(creds.jwtToken);
 #endif
 
-    StatusLed::requestState(StatusLed::State::Normal);
     debugPrint("INFO", "MAIN", "Setup complete. Starting main loop...");
 }
 
@@ -481,6 +651,7 @@ void loop() {
         debugPrintf("INFO", "CAP", "Announcing capabilities: %s", json.c_str());
         if (mqttClient.publishCapabilities(json.c_str())) {
             capabilitiesAnnounced = true;
+            StatusLed::triggerMessageFlash();
         }
     }
 

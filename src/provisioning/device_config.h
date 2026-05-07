@@ -77,4 +77,26 @@
 #define TEMPERATURE_SAMPLE_INTERVAL_MS 30000UL
 #endif
 
+// ===== BLE compile-time toggles =====
+// Each BLE capability can be disabled individually via -D flags.
+// All are enabled by default (undefined).
+
+// Disable the BLE scanner capability (periodic BLE advertisement scanning)
+// #define FORGEKEY_DISABLE_BLE_SCANNER
+
+// Disable the BLE beacon broadcast capability (ForgeKey iBeacon advertising)
+// #define FORGEKEY_DISABLE_BLE_BEACON
+
+// Disable the inter-device BLE relay capability (message forwarding via BLE GATT)
+// #define FORGEKEY_DISABLE_BLE_RELAY
+
+// Disable the equipment tracking capability (ESP32 beacon tag detection)
+// #define FORGEKEY_DISABLE_BLE_EQUIPMENT
+
+// Default BLE state at boot (1=enabled, 0=disabled). Can be overridden
+// at runtime via the forgekey/<mac>/config topic with {"cmd":"set_ble",...}.
+#ifndef FORGEKEY_BLE_ENABLED_DEFAULT
+#define FORGEKEY_BLE_ENABLED_DEFAULT 1
+#endif
+
 #endif

@@ -4,6 +4,7 @@
 #include <WiFiClientSecure.h>
 
 #include "security/oms_ca.h"
+#include "../capabilities/status_led/status_led.h"
 
 PhotoUploader photoUploader;
 
@@ -139,6 +140,8 @@ PhotoUploader::Result PhotoUploader::uploadPhoto(const uint8_t* jpegBuf, size_t 
         uploadBackoffMs = 15000;
         nextUploadAllowedMs = 0;
         Serial.printf("[photo] SUCCESS: uploaded %u bytes (HTTP %d)\n", (unsigned)jpegLen, code);
+        // Flash LED to indicate HTTP POST completed
+        StatusLed::triggerMessageFlash();
         return Result::Ok;
     }
     if (code == 401) {

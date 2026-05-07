@@ -61,6 +61,19 @@ public:
     // Publish an arbitrary JSON payload on statusTopic. Used for command
     // acks and operator-visible state echoes. Best-effort.
     bool publishStatus(const char* jsonPayload);
+
+    // BLE-specific publish helpers. Each builds a topic from the MAC prefix
+    // and publishes the JSON payload. Best-effort (returns false if not
+    // connected or topic unset).
+    // Topics: forgekey/<mac>/ble/devices
+    bool publishBleDevices(const char* jsonPayload);
+    // Topics: forgekey/<mac>/ble/beacons
+    bool publishBleBeacons(const char* jsonPayload);
+    // Topics: forgekey/<mac>/ble/peers
+    bool publishBlePeers(const char* jsonPayload);
+    // Topics: forgekey/<mac>/ble/equipment
+    bool publishEquipmentEvent(const char* jsonPayload);
+
     bool isConnected();
     void loop();
     void end();
@@ -87,6 +100,10 @@ private:
     String commandTopic;        // per-device control commands (subscribe)
     String statusTopic;         // operator-visible state changes (publish)
     String capabilitiesTopic;   // capability announcement topic (publish)
+    String bleDevicesTopic;     // BLE scan results (publish)
+    String bleBeaconsTopic;     // beacon announcement (publish)
+    String blePeersTopic;       // nearby ForgeKey peers (publish)
+    String bleEquipmentTopic;   // equipment detect/lost events (publish)
     String jwtToken;
     String broker;
     IPAddress brokerIp;

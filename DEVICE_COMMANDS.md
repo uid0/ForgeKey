@@ -176,3 +176,360 @@ No echo on no-op (already in requested state).
 - Capability-specific commands (e.g. people-counter zone reconfiguration) —
   reserved for future per-capability subtopics like
   `forgekey/<mac>/people_counter/command`.
+
+---
+
+# BLE Capabilities
+
+The firmware includes four BLE capabilities that can be toggled at runtime
+via the `forgekey/<mac>/config` topic or disabled at compile time.
+
+## Compile-time toggles
+
+All four BLE capabilities are enabled by default. Each can be disabled by
+uncommenting the corresponding `#define` in `src/provisioning/device_config.h`:
+
+```cpp
+#define FORGEKEY_DISABLE_BLE_SCANNER
+#define FORGEKEY_DISABLE_BLE_BEACON
+#define FORGEKEY_DISABLE_BLE_RELAY
+#define FORGEKEY_DISABLE_BLE_EQUIPMENT
+```
+
+Or via PlatformIO build flags:
+
+```ini
+build_flags =
+    -DFORGEKEY_DISABLE_BLE_SCANNER
+    -DFORGEKEY_DISABLE_BLE_BEACON
+```
+
+## Runtime BLE enable/disable
+
+Control BLE via the config topic (`forgekey/<mac>/config`):
+
+```json
+// Enable all BLE capabilities
+{ "cmd": "set_ble", "enabled": true }
+
+// Disable all BLE capabilities
+{ "cmd": "set_ble", "enabled": false }
+
+// Enable only the scanner
+{ "cmd": "set_ble", "scanner": true, "beacon": false, "relay": false, "equipment": false }
+
+// Enable only the beacon
+{ "cmd": "set_ble", "scanner": false, "beacon": true, "relay": false, "equipment": false }
+```
+
+Ack:
+
+```json
+{ "cmd_ack": "set_ble", "enabled": true, "scanner": true, "beacon": true, "relay": false, "equipment": false }
+```
+
+This is the recommended way to completely disable BLE on a device — it
+stops all BLE scanning and advertising without requiring a reboot.
+
+## BLE MQTT Topics
+
+| Topic | Direction | Producer | Consumer |
+|-------|-----------|----------|----------|
+| `forgekey/<mac>/ble/devices` | Device → OMS | `ble_scanner` | OMS |
+| `forgekey/<mac>/ble/beacons` | Device → OMS | `ble_beacon` | OMS |
+| `forgekey/<mac>/ble/peers` | Device → OMS | `ble_relay` | OMS |
+| `forgekey/<mac>/ble/equipment` | Device → OMS | `ble_equipment` | OMS |
+
+## Capability: BLE Scanner (`ble_scanner`)
+
+Periodically scans for BLE advertisements and publishes unique devices with
+RSSI values to `forgekey/<mac>/ble/devices`.
+
+**Scan cadence:** 60s interval, 5s scan duration (configurable via
+`BLE_SCAN_INTERVAL_MS` and `BLE_SCAN_DURATION_S` at build time).
+
+**Payload:**
+
+```json
+{
+  "devices": [
+    {
+      "mac": "aabbcc112233",
+      "rssi": -55,
+      "type": "general"
+    },
+    {
+      "mac": "ddeeff445566",
+      "rssi": -72,
+      "type": "ibeacon",
+      "uuid": "E2C56DB5-DFFB-48D2-B060-D0F5A7100000",
+      "major": 1,
+      "minor": 2
+    },
+    {
+      "mac": "112233445566",
+      "rssi": -60,
+      "type": "ibeacon",
+      "uuid": "A1B2C3D4-E5F6-7890-ABCD-EF1234567890",
+      "peer": true
+    }
+  ],
+  "count": 3,
+  "timestamp": 1716000000
+}
+```
+
+`type` values:
+- `"general"` — standard BLE advertisement
+- `"ibeacon"` — Apple iBeacon (parsed from manufacturer-specific data)
+- `"peer"` — ForgeKey device (detected via beacon UUID `A1B2C3D4-E5F6-7890-ABCD-EF1234567890`)
+
+**Filtering:**
+- Own MAC excluded
+- RSSI threshold: only devices > -90 dBm (configurable via `BLE_SCAN_RSSI_THRESHOLD`)
+- Deduplication: devices seen in last 60 scan cycles are excluded (configurable via `BLE_DEDUP_WINDOW`)
+- Max devices per scan: 50 (configurable via `BLE_MAX_DEVICES`)
+
+**Commands:**
+
+```json
+// Trigger an immediate scan (regardless of cadence)
+{ "cmd": "ble_scan" }
+
+// Stop an ongoing scan
+{ "cmd": "ble_scan_stop" }
+```
+
+Acks:
+
+```json
+{ "cmd_ack": "ble_scan", "queued": true }
+{ "cmd_ack": "ble_scan_stop" }
+```
+
+## Capability: BLE Beacon (`ble_beacon`)
+
+Broadcasts a ForgeKey iBeacon so other devices and phones can discover us.
+
+**Beacon parameters:**
+- UUID: `A1B2C3D4-E5F6-7890-ABCD-EF1234567890`
+- Major: first 2 hex chars of device MAC (device group)
+- Minor: last 4 hex chars of device MAC (individual device)
+- TX power: -6 dBm (calibrated)
+- Duty cycle: 100ms on, 2460ms off (~10%)
+- Configurable via `BLE_BEACON_INTERVAL_MS` and `BLE_BEACON_ADV_ON_MS`
+
+**Commands:**
+
+```json
+// Start continuous beacon advertising (e.g. during "identify")
+{ "cmd": "beacon", "action": "start" }
+
+// Stop continuous advertising, resume duty-cycled mode
+{ "cmd": "beacon", "action": "stop" }
+```
+
+Acks:
+
+```json
+{ "cmd_ack": "beacon", "action": "start" }
+{ "cmd_ack": "beacon", "action": "stop" }
+```
+
+## Capability: Inter-Device Relay (`ble_relay`)
+
+When MQTT is down, stores messages in an in-memory ring buffer and forwards
+them to nearby ForgeKey devices via BLE GATT.
+
+**Queue parameters:**
+- Max messages: 20 (configurable via `BLE_RELAY_QUEUE_SIZE`)
+- Message TTL: 1 hour (configurable via `BLE_RELAY_MSG_TTL_MS`)
+- Peer timeout: 5 minutes (configurable via `BLE_RELAY_PEER_TIMEOUT_MS`)
+
+**Message format (over BLE GATT):**
+
+```json
+{
+  "src": "aabbcc112233",
+  "dst": "ddeeff445566",
+  "topic": "forgekey/ddeeff445566/ble/devices",
+  "payload": {"devices":[...], "count": 5, "timestamp": 1716000000},
+  "ts": 1716000000,
+  "relay": true
+}
+```
+
+**GATT service UUID:** `B1B2C3D4-E5F6-7890-ABCD-EF1234567891`
+
+**Sync on MQTT reconnect:** When the device reconnects to the broker, all
+undelivered messages in the queue are published to their original topics
+with a `"relay": true` flag so OMS knows they were relayed.
+
+## Capability: Equipment Tracking (`ble_equipment`)
+
+Detects ESP32-based BLE beacon tags (equipment) and reports their proximity
+zones to OMS.
+
+**Configuration** (via `forgekey/<mac>/config`):
+
+```json
+{
+  "cmd": "set_equipment",
+  "tags": [
+    {
+      "name": "Oscilloscope",
+      "mac": "aabbcc112233",
+      "type": "mac",
+      "proximity_zone": "near"
+    },
+    {
+      "name": "3D Printer",
+      "ibeacon_uuid": "11111111-2222-3333-4444-555555555555",
+      "type": "ibeacon",
+      "proximity_zone": "mid"
+    }
+  ]
+}
+```
+
+Tag types:
+- `"mac"` — match by bare MAC address
+- `"ibeacon"` — match by iBeacon UUID
+
+Proximity zones (based on RSSI):
+- `"near"` — RSSI > -60 dBm
+- `"mid"` — RSSI -60 to -75 dBm
+- `"far"` — RSSI < -75 dBm
+
+**Hysteresis:**
+- Detect: 3 consecutive scans showing the tag
+- Lost: 6 consecutive scans without the tag
+
+**Events published to `forgekey/<mac>/ble/equipment`:**
+
+Detected:
+```json
+{
+  "cmd_ack": "equipment",
+  "event": "detected",
+  "name": "Oscilloscope",
+  "mac": "aabbcc112233",
+  "rssi": -55,
+  "zone": "near"
+}
+```
+
+Lost:
+```json
+{
+  "cmd_ack": "equipment",
+  "event": "lost",
+  "name": "Oscilloscope",
+  "mac": "aabbcc112233",
+  "rssi": -55,
+  "zone": "near"
+}
+```
+
+**Commands:**
+
+```json
+// List configured equipment tags
+{ "cmd": "equipment_list" }
+
+// Configure tags (note: actual config goes via forgekey/<mac>/config)
+{ "cmd": "equipment_set", "tags": [...] }
+```
+
+Acks:
+
+```json
+{
+  "cmd_ack": "equipment_list",
+  "count": 2,
+  "tags": [
+    { "name": "Oscilloscope", "mac": "aabbcc112233", "type": "mac", "zone": "near" },
+    { "name": "3D Printer", "ibeacon_uuid": "11111111-...", "type": "ibeacon", "zone": "mid" }
+  ]
+}
+{ "cmd_ack": "equipment_set", "note": "use_config_topic" }
+```
+
+## NVS Storage
+
+| Namespace | Key | Type | Purpose |
+|-----------|-----|------|---------|
+| `forgekey_ble` | `peers` | str | JSON peer table (MAC + RSSI + timestamp) |
+| `forgekey_ble` | `tags` | str | JSON equipment tag list |
+| `forgekey_relay` | `queue` | str | JSON relay message ring buffer |
+
+## Config Topic Commands
+
+The `forgekey/<mac>/config` topic handles both credential rotation and
+capability configuration.
+
+### `set_ble` — Enable/disable BLE capabilities
+
+```json
+{ "cmd": "set_ble", "enabled": true }
+{ "cmd": "set_ble", "enabled": false }
+{ "cmd": "set_ble", "scanner": true, "beacon": false, "relay": false, "equipment": false }
+```
+
+Ack:
+
+```json
+{ "cmd_ack": "set_ble", "enabled": true, "scanner": true, "beacon": true, "relay": false, "equipment": false }
+```
+
+### `set_equipment` — Configure equipment tags
+
+```json
+{
+  "cmd": "set_equipment",
+  "tags": [
+    { "name": "Oscilloscope", "mac": "aabbcc112233", "type": "mac", "proximity_zone": "near" }
+  ]
+}
+```
+
+Ack:
+
+```json
+{ "cmd_ack": "set_equipment", "ok": true }
+```
+
+Tags are persisted to NVS (`forgekey_ble/tags`) and survive reboots.
+
+### `forget_ble` — Clear all BLE data
+
+```json
+{ "cmd": "forget_ble" }
+```
+
+Clears:
+- All BLE peer entries
+- All equipment tags
+- All relay queue messages
+
+Ack:
+
+```json
+{ "cmd_ack": "forget_ble" }
+```
+
+## Configuration Summary
+
+| Setting | Default | Override |
+|---------|---------|----------|
+| BLE enabled at boot | `1` (enabled) | `#define FORGEKEY_BLE_ENABLED_DEFAULT 0` in `device_config.h` |
+| Scan interval | `60000` ms | `-DBLE_SCAN_INTERVAL_MS=NNN` |
+| Scan duration | `5` s | `-DBLE_SCAN_DURATION_S=N` |
+| Scan RSSI threshold | `-90` dBm | `-DBLE_SCAN_RSSI_THRESHOLD=-NN` |
+| Max devices per scan | `50` | `-DBLE_MAX_DEVICES=N` |
+| Dedup window | `60` scans | `-DBLE_DEDUP_WINDOW=N` |
+| Beacon interval | `2560` ms | `-DBLE_BEACON_INTERVAL_MS=NNNN` |
+| Beacon adv on time | `100` ms | `-DBLE_BEACON_ADV_ON_MS=NNN` |
+| Relay queue size | `20` messages | `-DBLE_RELAY_QUEUE_SIZE=N` |
+| Relay peer timeout | `300000` ms | `-DBLE_RELAY_PEER_TIMEOUT_MS=NNNNN` |
+| Relay message TTL | `3600000` ms | `-DBLE_RELAY_MSG_TTL_MS=NNNNNN` |

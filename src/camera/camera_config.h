@@ -26,8 +26,15 @@
 #define XCLK_FREQ_HZ     20000000
 
 // Camera settings
-#define FRAME_SIZE FRAMESIZE_QVGA  // 320x240 for detection
-#define PIXEL_FORMAT PIXFORMAT_GRAYSCALE  // For detection
+// PIXFORMAT_JPEG: OV3660 native JPEG encoding — best quality, smallest file.
+// FRAMESIZE_SXGA: 1280x1024 — highest resolution JPEG mode on OV3660.
+//
+// The OV3660 supports only one pixel format at a time. Person detection
+// (person_detector) needs raw RGB565 data, so the camera is temporarily
+// switched to RGB565 + QVGA for detection via cameraManager.captureRgb565().
+// After detection the camera switches back to JPEG + SXGA for photo uploads.
+#define FRAME_SIZE FRAMESIZE_SXGA  // 1280x1024
+#define PIXEL_FORMAT PIXFORMAT_JPEG
 
 #define CAMERA_MODEL_XIAO_ESP32S3 true
 
