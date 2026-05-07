@@ -3,12 +3,27 @@
 #include <WiFi.h>
 #include <WiFiManager.h>
 #include <WiFiMulti.h>
+#include <esp_netif.h>
 
 #include "secrets.h"
 
 namespace WifiSetup {
 
 namespace {
+
+void set_dns_servers(IPAddress dns1, IPAddress dns2) {
+    esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (!sta) return;
+
+    esp_netif_dns_info_t dns_info{};
+    dns_info.ip.u_addr.ip4.addr = static_cast<uint32_t>(dns1);
+    esp_netif_set_dns_info(sta, ESP_NETIF_DNS_MAIN, &dns_info);
+
+    if (dns2) {
+        dns_info.ip.u_addr.ip4.addr = static_cast<uint32_t>(dns2);
+        esp_netif_set_dns_info(sta, ESP_NETIF_DNS_BACKUP, &dns_info);
+    }
+}
 
 #if defined(FORGEKEY_NETWORK_1_SSID) || defined(FORGEKEY_NETWORK_2_SSID)
 #define FORGEKEY_HAS_PREDEFINED_NETWORKS 1
@@ -37,7 +52,7 @@ bool tryPredefinedNetworks() {
                       WiFi.SSID().c_str());
         IPAddress dns1(8, 8, 8, 8);
         IPAddress dns2(1, 1, 1, 1);
-        WiFi.setDNS(dns1, dns2);
+        set_dns_servers(dns1, dns2);
         Serial.println("wifi: DNS set to 8.8.8.8 / 1.1.1.1");
         return true;
     }
@@ -81,7 +96,7 @@ bool connectOrPortal(unsigned long portalTimeoutSeconds) {
     if (connected && WiFi.status() == WL_CONNECTED) {
         IPAddress dns1(8, 8, 8, 8);
         IPAddress dns2(1, 1, 1, 1);
-        WiFi.setDNS(dns1, dns2);
+        set_dns_servers(dns1, dns2);
         Serial.println("wifi: DNS set to 8.8.8.8 / 1.1.1.1");
     }
     return connected;

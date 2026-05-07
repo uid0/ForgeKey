@@ -16,6 +16,16 @@ To run MQTT component locally during development or testing, use the following c
 pio run -t build
 ```
 
+### Build Verification Before Feature Complete
+A pre-commit hook at `.git/hooks/pre-commit` runs `pio run` automatically when firmware source files (`.cpp`, `.h`, `platformio.ini`, etc.) are staged. This prevents committing code that fails to build.
+
+To manually verify all environments before committing:
+```bash
+pio run
+```
+
+This builds both `seeed_xiao_esp32s3` and `seeed_xiao_esp32s3_temperature` targets.
+
 To run Celery task runner locally during development or testing, use the following command:
 ```bash
 # TODO: Replace with actual command to start Celery task runner
