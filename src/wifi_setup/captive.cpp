@@ -35,6 +35,10 @@ bool tryPredefinedNetworks() {
     if (multi.run(kPredefinedTimeoutMs) == WL_CONNECTED) {
         Serial.printf("wifi: connected to '%s' via predefined list\n",
                       WiFi.SSID().c_str());
+        IPAddress dns1(8, 8, 8, 8);
+        IPAddress dns2(1, 1, 1, 1);
+        WiFi.setDNS(dns1, dns2);
+        Serial.println("wifi: DNS set to 8.8.8.8 / 1.1.1.1");
         return true;
     }
     Serial.println("wifi: predefined networks unavailable, falling back");
@@ -73,7 +77,14 @@ bool connectOrPortal(unsigned long portalTimeoutSeconds) {
     // autoConnect tries the saved creds first; if missing or failing it
     // raises the AP + DNS captive portal and blocks until the user submits
     // creds (or the optional timeout fires).
-    return wm.autoConnect(ssid.c_str(), FORGEKEY_AP_PASSWORD);
+    bool connected = wm.autoConnect(ssid.c_str(), FORGEKEY_AP_PASSWORD);
+    if (connected && WiFi.status() == WL_CONNECTED) {
+        IPAddress dns1(8, 8, 8, 8);
+        IPAddress dns2(1, 1, 1, 1);
+        WiFi.setDNS(dns1, dns2);
+        Serial.println("wifi: DNS set to 8.8.8.8 / 1.1.1.1");
+    }
+    return connected;
 }
 
 void forgetAndRestart() {

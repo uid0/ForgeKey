@@ -73,13 +73,15 @@ PhotoUploader::Result PhotoUploader::uploadPhoto(const uint8_t* jpegBuf, size_t 
     IPAddress serverIp;
     bool haveIp = hostIpResolved;
     if (!haveIp) {
-        if (WiFi.hostByName(host.c_str(), hostIp)) {
-            hostIpResolved = true;
-            haveIp = true;
-            Serial.printf("[photo] cached host IP: %s -> %s\n",
-                          host.c_str(), hostIp.toString().c_str());
-        } else {
-            Serial.printf("[photo] WARNING: DNS resolution failed for %s before TLS connect\n", host.c_str());
+        for (int retry = 0; retry < 3; retry++) {
+            if (WiFi.hostByName(host.c_str(), hostIp)) {
+                hostIpResolved = true;
+                haveIp = true;
+                Serial.printf("[photo] cached host IP: %s -> %s\n",
+                              host.c_str(), hostIp.toString().c_str());
+                break;
+            }
+            delay(500);
         }
     }
 

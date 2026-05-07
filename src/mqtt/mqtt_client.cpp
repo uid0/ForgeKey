@@ -294,12 +294,16 @@ bool MqttClient::connect() {
 
     if (!brokerIpResolved && broker.length()) {
         IPAddress resolvedIp;
-        if (WiFi.hostByName(broker.c_str(), resolvedIp)) {
-            brokerIp = resolvedIp;
-            brokerIpResolved = true;
-            client->setServer(brokerIp, port);
-            Serial.printf("[MQTT] broker host resolved on connect: %s -> %s\n",
-                          broker.c_str(), brokerIp.toString().c_str());
+        for (int retry = 0; retry < 3; retry++) {
+            if (WiFi.hostByName(broker.c_str(), resolvedIp)) {
+                brokerIp = resolvedIp;
+                brokerIpResolved = true;
+                client->setServer(brokerIp, port);
+                Serial.printf("[MQTT] broker host resolved on connect: %s -> %s\n",
+                              broker.c_str(), brokerIp.toString().c_str());
+                break;
+            }
+            delay(500);
         }
     }
 
