@@ -41,10 +41,10 @@
 #define MQTT_BROKER_FALLBACK_HOST "dms.openmakersuite.net"
 #endif
 #ifndef MQTT_BROKER_FALLBACK_PORT
-#define MQTT_BROKER_FALLBACK_PORT 1883
+#define MQTT_BROKER_FALLBACK_PORT 8883
 #endif
 #ifndef MQTT_BROKER_FALLBACK_USE_TLS
-#define MQTT_BROKER_FALLBACK_USE_TLS 0
+#define MQTT_BROKER_FALLBACK_USE_TLS 1
 #endif
 
 // Periodic photo cadence in milliseconds (300s per fo-0z9).

@@ -2,7 +2,7 @@
 # Refresh src/security/oms_ca.h with the live OMS HTTPS root certificate.
 #
 # Usage:
-#     scripts/build/fetch-oms-ca.sh                     # uses oms.openmakerspace.org:443
+#     scripts/build/fetch-oms-ca.sh                     # uses dms.openmakersuite.net:443
 #     scripts/build/fetch-oms-ca.sh staging.example:443
 #
 # What this does:
@@ -15,7 +15,7 @@
 
 set -euo pipefail
 
-HOST_PORT="${1:-oms.openmakerspace.org:443}"
+HOST_PORT="${1:-dms.openmakersuite.net:443}"
 HOST="${HOST_PORT%%:*}"
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

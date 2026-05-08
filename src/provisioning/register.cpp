@@ -226,28 +226,29 @@ bool Provisioning::registerDevice(const char* host, uint16_t port,
 
     Serial.printf("register: HTTP %d (%s) body_len=%u\n",
                   code, statusLine.c_str(), (unsigned)body.length());
-    // Log the full body with the JWT redacted so we can compare what the
-    // server actually returned against what the firmware ends up using.
-    {
-        String redacted = body;
-        int jwtKey = redacted.indexOf("\"jwt_token\"");
-        if (jwtKey >= 0) {
-            int colon = redacted.indexOf(':', jwtKey);
-            int q1 = (colon >= 0) ? redacted.indexOf('"', colon + 1) : -1;
-            int q2 = (q1 >= 0) ? redacted.indexOf('"', q1 + 1) : -1;
-            if (q1 >= 0 && q2 > q1) {
-                String prefix = redacted.substring(q1 + 1, q1 + 1 +
-                    ((q2 - q1 - 1) < 8 ? (q2 - q1 - 1) : 8));
-                redacted = redacted.substring(0, q1 + 1) + prefix +
-                           "...REDACTED(len=" + String(q2 - q1 - 1) + ")" +
-                           redacted.substring(q2);
-            }
-        }
-        Serial.printf("register: response body: %s\n", redacted.c_str());
-    }
 
     if (code < 200 || code >= 300) {
         return false;
+    }
+
+    // Log the full raw response body (with JWT redacted) so we can see
+    // exactly what OMS returned and diagnose missing fields.
+    {
+        String debugBody = body;
+        int jwtKey = debugBody.indexOf("\"jwt_token\"");
+        if (jwtKey >= 0) {
+            int colon = debugBody.indexOf(':', jwtKey);
+            int q1 = (colon >= 0) ? debugBody.indexOf('"', colon + 1) : -1;
+            int q2 = (q1 >= 0) ? debugBody.indexOf('"', q1 + 1) : -1;
+            if (q1 >= 0 && q2 > q1) {
+                String prefix = debugBody.substring(q1 + 1, q1 + 1 +
+                    ((q2 - q1 - 1) < 8 ? (q2 - q1 - 1) : 8));
+                debugBody = debugBody.substring(0, q1 + 1) + prefix +
+                            "...REDACTED(len=" + String(q2 - q1 - 1) + ")" +
+                            debugBody.substring(q2);
+            }
+        }
+        Serial.printf("register: response body (raw): %s\n", debugBody.c_str());
     }
 
     StaticJsonDocument<1024> resp;
@@ -277,11 +278,22 @@ bool Provisioning::registerDevice(const char* host, uint16_t port,
     Serial.printf("register: parsed jwt_token len=%u (present=%d)\n",
                   (unsigned)c.jwtToken.length(), (int)resp.containsKey("jwt_token"));
     Serial.printf("register: parsed mqtt_broker_host='%s' (present=%d)\n",
-                  c.mqttBrokerHost.c_str(), (int)resp.containsKey("mqtt_broker_host"));
+                   c.mqttBrokerHost.c_str(), (int)resp.containsKey("mqtt_broker_host"));
     Serial.printf("register: parsed mqtt_broker_port=%u (present=%d)\n",
-                  (unsigned)c.mqttBrokerPort, (int)resp.containsKey("mqtt_broker_port"));
+                   (unsigned)c.mqttBrokerPort, (int)resp.containsKey("mqtt_broker_port"));
     Serial.printf("register: parsed mqtt_broker_use_tls=%d (present=%d)\n",
-                  (int)c.mqttBrokerUseTls, (int)resp.containsKey("mqtt_broker_use_tls"));
+                   (int)c.mqttBrokerUseTls, (int)resp.containsKey("mqtt_broker_use_tls"));
+
+    // Warn if broker config is missing from the registration response.
+    // Without these fields the device falls back to compile-time defaults,
+    // which may point to the wrong broker or use the wrong port/TLS setting.
+    if (!resp.containsKey("mqtt_broker_host") ||
+        !resp.containsKey("mqtt_broker_port") ||
+        !resp.containsKey("mqtt_broker_use_tls")) {
+        Serial.println("register: WARNING — registration response missing "
+                       "mqtt_broker_host/port/use_tls fields. "
+                       "Device will use compile-time fallback defaults.");
+    }
 
     if (c.deviceId.length() == 0 || c.jwtToken.length() == 0) {
         Serial.println("register: response missing device_id or jwt_token");

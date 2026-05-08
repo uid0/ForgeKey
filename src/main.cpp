@@ -525,7 +525,8 @@ void setup() {
     uint16_t brokerPort;
     bool     brokerUseTls;
     const char* brokerSource;
-    if (creds.mqttBrokerHost.length() && creds.mqttBrokerPort != 0) {
+    bool hasNvsBroker = creds.mqttBrokerHost.length() && creds.mqttBrokerPort != 0;
+    if (hasNvsBroker) {
         brokerHost   = creds.mqttBrokerHost;
         brokerPort   = creds.mqttBrokerPort;
         brokerUseTls = creds.mqttBrokerUseTls;
@@ -536,9 +537,13 @@ void setup() {
         brokerUseTls = (MQTT_BROKER_FALLBACK_USE_TLS != 0);
         brokerSource = "fallback";
     }
-    debugPrintf("INFO", "MQTT", "broker host=%s port=%u use_tls=%d source=%s",
+    debugPrintf("INFO", "MQTT",
+                "broker host=%s port=%u use_tls=%d source=%s "
+                "(nvs_host='%s' nvs_port=%u nvs_tls=%d)",
                 brokerHost.c_str(), (unsigned)brokerPort,
-                (int)brokerUseTls, brokerSource);
+                (int)brokerUseTls, brokerSource,
+                creds.mqttBrokerHost.c_str(), (unsigned)creds.mqttBrokerPort,
+                (int)creds.mqttBrokerUseTls);
 
     mqttClient.begin(brokerHost.c_str(), brokerPort, mqttJwt, brokerUseTls);
     mqttClient.setTopicPrefix(macAddress.c_str());
