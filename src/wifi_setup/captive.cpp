@@ -72,47 +72,32 @@ void debug_dns_state(const char* label) {
 namespace {
 
 void set_dns_servers(IPAddress dns1, IPAddress dns2) {
-    Serial.printf("[DNS] Setting DNS: primary=%s secondary=%s\n",
-                 dns1.toString().c_str(),
-                 dns2.toString().c_str());
-
-    // Method 1: esp-netif DNS config
+    // esp-netif DNS config (used by ESP-IDF network stack)
     esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     if (sta) {
         esp_netif_dns_info_t dns_info{};
         dns_info.ip.u_addr.ip4.addr = static_cast<uint32_t>(dns1);
         esp_netif_set_dns_info(sta, ESP_NETIF_DNS_MAIN, &dns_info);
-        Serial.printf("[DNS]   esp-netif set MAIN DNS = 0x%08X\n", dns_info.ip.u_addr.ip4.addr);
 
         if (dns2) {
             dns_info.ip.u_addr.ip4.addr = static_cast<uint32_t>(dns2);
             esp_netif_set_dns_info(sta, ESP_NETIF_DNS_BACKUP, &dns_info);
-            Serial.printf("[DNS]   esp-netif set BACKUP DNS = 0x%08X\n", dns_info.ip.u_addr.ip4.addr);
         }
-    } else {
-        Serial.println("[DNS]   WARNING: esp-netif STA handle is NULL");
     }
 
-    // Method 2: lwIP DNS server table
+    // lwIP DNS server table (used by WiFi.hostByName / TLS)
     ip_addr_t dns_servers[DNS_MAX_SERVERS];
     memset(dns_servers, 0, sizeof(dns_servers));
 
     dns_servers[0].type = IPADDR_TYPE_V4;
     dns_servers[0].u_addr.ip4.addr = static_cast<uint32_t>(dns1);
     dns_setserver(0, &dns_servers[0]);
-    Serial.printf("[DNS]   lwIP set dns[0] = 0x%08X type=%d\n",
-                 dns_servers[0].u_addr.ip4.addr, dns_servers[0].type);
 
     if (dns2) {
         dns_servers[1].type = IPADDR_TYPE_V4;
         dns_servers[1].u_addr.ip4.addr = static_cast<uint32_t>(dns2);
         dns_setserver(1, &dns_servers[1]);
-        Serial.printf("[DNS]   lwIP set dns[1] = 0x%08X type=%d\n",
-                     dns_servers[1].u_addr.ip4.addr, dns_servers[1].type);
     }
-
-    // Verify what we just set
-    debug_dns_state("after set_dns_servers");
 }
 
 #if defined(FORGEKEY_NETWORK_1_SSID) || defined(FORGEKEY_NETWORK_2_SSID)
