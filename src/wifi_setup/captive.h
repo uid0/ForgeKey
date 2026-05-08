@@ -27,6 +27,9 @@ bool connectOrPortal(unsigned long portalTimeoutSeconds = 0);
 // forgekey/<mac>/config "forget_wifi" MQTT command or a physical reset.
 void forgetAndRestart();
 
+// Debug: dump full DNS state to Serial. Used for diagnosing DNS issues.
+void debug_dns_state(const char* label);
+
 }  // namespace WifiSetup
 
 #endif

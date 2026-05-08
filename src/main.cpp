@@ -506,6 +506,10 @@ void setup() {
                     timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
     }
 
+    // DNS diagnostic: dump full DNS state before any provisioning/MQTT attempts
+    debugPrint("INFO", "MAIN", "DNS diagnostic (pre-provisioning):");
+    WifiSetup::debug_dns_state("pre-provisioning");
+
     provisioning.begin();
     otaUpdater.begin();
     otaUpdater.setStatusCallback([](const char* state,
