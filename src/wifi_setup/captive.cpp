@@ -3,7 +3,7 @@
 #include <WiFi.h>
 #include <WiFiManager.h>
 #include <WiFiMulti.h>
-#include <esp_netif.h>
+#include <lwip/dns.h>
 
 #include "secrets.h"
 
@@ -19,9 +19,15 @@ void set_dns_servers(IPAddress dns1, IPAddress dns2) {
     dns_info.ip.u_addr.ip4.addr = static_cast<uint32_t>(dns1);
     esp_netif_set_dns_info(sta, ESP_NETIF_DNS_MAIN, &dns_info);
 
+    ip_addr_t dns_servers[2];
+    dns_servers[0].u_addr.ip4.addr = static_cast<uint32_t>(dns1);
+    dns_setserver(0, &dns_servers[0]);
+
     if (dns2) {
         dns_info.ip.u_addr.ip4.addr = static_cast<uint32_t>(dns2);
         esp_netif_set_dns_info(sta, ESP_NETIF_DNS_BACKUP, &dns_info);
+        dns_servers[1].u_addr.ip4.addr = static_cast<uint32_t>(dns2);
+        dns_setserver(1, &dns_servers[1]);
     }
 }
 
