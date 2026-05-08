@@ -171,6 +171,21 @@ bool Provisioning::registerDevice(const char* host, uint16_t port,
     WiFiClientSecure tls;
     tls.setCACert(kOmsCaPem);
     tls.setTimeout(15);
+
+    // DNS resolver needs time to initialize after DHCP. Wait first, then retry.
+    delay(2000);
+    IPAddress resolvedIp;
+    for (int retry = 0; retry < 5; retry++) {
+        if (WiFi.hostByName(host, resolvedIp)) {
+            break;
+        }
+        delay(1000);
+    }
+    if (!WiFi.hostByName(host, resolvedIp)) {
+        Serial.printf("register: DNS failed for %s after retries\n", host);
+        return false;
+    }
+
     if (!tls.connect(host, port)) {
         Serial.printf("register: TLS connect to %s:%u failed\n", host, port);
         return false;
