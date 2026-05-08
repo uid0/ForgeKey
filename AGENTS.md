@@ -3,6 +3,7 @@
 ## Documentation References
 - `FORGEKEY_DEVICE.md`: Describes the device lifecycle, OTA apply flow, NVS layout, and security model.
 - `PEOPLE_COUNTER.md`: Details specifics for the people-counter variant of ForgeKey devices.
+- `LOCK_DEVICE.md`: Details the cabinet-lock build: state machine, MQTT protocol, hardware wiring, embedded web page.
 - `docs/OTA_DEPLOYMENT.md`: Walks through the process of shipping new firmware, including signing-key setup, build, upload via OMS, and troubleshooting.
 
 ## Development Network Configuration
@@ -24,7 +25,7 @@ To manually verify all environments before committing:
 pio run
 ```
 
-This builds both `seeed_xiao_esp32s3` and `seeed_xiao_esp32s3_temperature` targets.
+This builds `seeed_xiao_esp32s3` (people-counter), `seeed_xiao_esp32s3_temperature` (temperature sensor), and `seeed_xiao_esp32s3_lock` (cabinet lock).
 
 To run Celery task runner locally during development or testing, use the following command:
 ```bash

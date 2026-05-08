@@ -34,6 +34,13 @@
 #include "photo_upload/uploader.h"
 #endif
 
+#ifdef FORGEKEY_LOCK
+// Cabinet-lock build: non-blocking state machine for lock/unlock operations
+// with MQTT signaling, JWT validation, and embedded status web page.
+#include "lock/lock_capability.h"
+#include "lock/embedded_web.h"
+#endif
+
 // ============= CONFIGURATION =============
 // WiFi credentials are no longer baked in: a first-boot captive portal
 // (see src/wifi_setup/captive.cpp) collects them and persists them to NVS.
@@ -120,6 +127,35 @@ static void publishUnknownCommandAck(const char* cmd) {
     StatusLed::triggerMessageFlash();
 }
 
+#ifdef FORGEKEY_LOCK
+// Lock-specific command handler for cabinets/{mac}/cmd topic.
+// Receives {"token": "<jwt>", "timestamp": <epoch>} payloads.
+static void onLockCommandMessage(const char* topic, const uint8_t* payload, unsigned int length) {
+    StaticJsonDocument<256> doc;
+    DeserializationError err = deserializeJson(doc, payload, length);
+    if (err) {
+        debugPrintf("WARN", "LOCK_CMD", "parse error: %s", err.c_str());
+        return;
+    }
+    const char* token = doc["token"] | "";
+    long timestamp = doc["timestamp"] | 0L;
+    if (!token || strlen(token) == 0) {
+        debugPrint("WARN", "LOCK_CMD", "missing token in payload");
+        return;
+    }
+    debugPrintf("INFO", "LOCK_CMD", "received unlock command (token_len=%u, ts=%ld)",
+                (unsigned)strlen(token), timestamp);
+    if (LockCapability::handleUnlockCommand(token, timestamp)) {
+        mqttClient.publishStatus("{\"cmd_ack\":\"unlock\",\"state\":\"unlocked\"}");
+        StatusLed::triggerMessageFlash();
+        debugPrint("INFO", "LOCK_CMD", "unlock accepted");
+    } else {
+        mqttClient.publishStatus("{\"cmd_ack\":\"unlock\",\"error\":\"invalid_token\"}");
+        debugPrint("WARN", "LOCK_CMD", "unlock rejected: invalid token");
+    }
+}
+#endif
+
 static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned int length) {
     StaticJsonDocument<256> doc;
     DeserializationError err = deserializeJson(doc, payload, length);
@@ -174,7 +210,12 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
         return;
     }
     if (strcmp(cmd, "capture") == 0 || strcmp(cmd, "capture_photo") == 0) {
-#ifndef FORGEKEY_TEMPERATURE_SENSOR
+#ifdef FORGEKEY_LOCK
+        mqttClient.publishStatus(
+            "{\"cmd_ack\":\"capture\",\"queued\":false,\"error\":\"capability_unsupported\"}");
+        debugPrint("WARN", "CMD", "capture rejected: capability unsupported on this build");
+        return;
+#elif !defined(FORGEKEY_TEMPERATURE_SENSOR)
         if (PeopleCounter::isActive() && PeopleCounter::requestOneShotCapture()) {
             mqttClient.publishStatus("{\"cmd_ack\":\"capture\",\"queued\":true}");
             StatusLed::triggerMessageFlash();
@@ -208,6 +249,7 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
         ESP.restart();
         return;  // unreachable
     }
+#ifndef FORGEKEY_LOCK
 #ifndef FORGEKEY_DISABLE_BLE_SCANNER
     if (strcmp(cmd, "ble_scan") == 0) {
         // Trigger an immediate BLE scan. The scanner capability will pick
@@ -301,6 +343,7 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
         debugPrint("INFO", "CMD", "BLE data cleared from NVS");
         return;
     }
+#endif
     debugPrintf("WARN", "CMD", "unknown cmd: '%s'", cmd);
     publishUnknownCommandAck(cmd);
 }
@@ -322,6 +365,7 @@ static void onConfigMessage(const char* topic, const uint8_t* payload, unsigned 
             WifiSetup::forgetAndRestart();  // does not return
             return;
         }
+#ifndef FORGEKEY_LOCK
 #ifndef FORGEKEY_DISABLE_BLE_BEACON
         if (strcmp(cmd, "set_ble") == 0) {
             // Global BLE enable/disable
@@ -374,6 +418,7 @@ static void onConfigMessage(const char* topic, const uint8_t* payload, unsigned 
             return;
         }
 #endif
+#endif
     }
     // Anything else (rotation payload, parse error, unknown cmd) falls
     // through to the credential-rotation handler.
@@ -390,6 +435,7 @@ static void onFirmwareDispatch(const char* topic, const uint8_t* payload, unsign
     debugPrintf("INFO", "OTA", "Target version %s mandatory=%d",
                 spec.version.c_str(), (int)spec.mandatory);
     mqttClient.publishFirmwareStatus("received", spec.version.c_str(), -1, nullptr);
+#ifndef FORGEKEY_LOCK
 #ifndef FORGEKEY_TEMPERATURE_SENSOR
     if (!spec.mandatory) {
         // Best-effort: defer if a photo upload was very recent.
@@ -399,6 +445,7 @@ static void onFirmwareDispatch(const char* topic, const uint8_t* payload, unsign
             return;
         }
     }
+#endif
 #endif
     otaUpdater.apply(spec);  // does not return on success
 }
@@ -411,7 +458,10 @@ static bool runProvisioning() {
     size_t jpegLen = 0;
     bool havePhoto = false;
 
-#ifndef FORGEKEY_TEMPERATURE_SENSOR
+#ifdef FORGEKEY_LOCK
+    // Lock builds have no camera — register with empty photo body.
+    debugPrint("INFO", "PROV", "Registering with OMS (no photo: lock build)");
+#elif !defined(FORGEKEY_TEMPERATURE_SENSOR)
     if (PeopleCounter::isActive() &&
         PeopleCounter::captureProvisioningPhoto(&jpeg, &jpegLen)) {
         havePhoto = true;
@@ -632,9 +682,25 @@ void setup() {
     mqttClient.setStatusTopic(statusTopic.c_str());
     mqttClient.subscribeCommand(onCommandMessage);
 
+#ifdef FORGEKEY_LOCK
+    // Lock-specific: subscribe to the Django unlock command topic.
+    // Topic: cabinets/{mac}/cmd
+    // Payload: {"token": "<jwt>", "timestamp": <epoch>}
+    String lockCmdTopic = String("cabinets/") + macAddress + "/cmd";
+    mqttClient.setLockTopic(lockCmdTopic.c_str());
+    mqttClient.subscribeLock(onLockCommandMessage);
+    debugPrintf("INFO", "LOCK", "subscribed to lock cmd topic: %s", lockCmdTopic.c_str());
+
+    // Start the embedded web server for status page
+    LockWeb::begin();
+    debugPrint("INFO", "LOCK", "embedded web server started");
+#endif
+
+#ifndef FORGEKEY_LOCK
 #ifndef FORGEKEY_TEMPERATURE_SENSOR
     photoUploader.begin(OMS_HOST, OMS_PORT, macAddress);
     photoUploader.setJwt(creds.jwtToken);
+#endif
 #endif
 
     debugPrint("INFO", "MAIN", "Setup complete. Starting main loop...");
@@ -679,6 +745,11 @@ void loop() {
     }
 
     CapabilityRegistry::tickAll();
+
+#ifdef FORGEKEY_LOCK
+    // Tick the embedded web server (handles client connections)
+    LockWeb::tick();
+#endif
 
     // Identify-blink auto-expiry echo. status_led's tick() flips this when a
     // timed override deadline elapses; mirror it onto the OMS status topic

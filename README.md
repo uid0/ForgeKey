@@ -8,6 +8,7 @@ Forgekey is an embedded device firmware that works in step with OpenMakerSpace i
 * Tool Enablement and Metering 
 * Accessory Enablement (For example, always turn on dust collection when a wood shop tool is enabled, regardless of if it is currently powered on or not, and then run it for 3 minutes after the tool is finished being used)
 * Status Lights for Restrooms, tools, and other areas
+* Cabinet Locks (solenoid-controlled lock with Reed switch, latch supervisor, IR beam, and mortise key supervision)
 
 ```
 +---------------------+     +--------------------+                          
@@ -42,6 +43,7 @@ ForgeKey is based off of the adaptable ESP32 series of chips.
 
 - [FORGEKEY_DEVICE.md](FORGEKEY_DEVICE.md) — device lifecycle, OTA apply flow, NVS layout, security model.
 - [PEOPLE_COUNTER.md](PEOPLE_COUNTER.md) — people-counter variant specifics.
+- [LOCK_DEVICE.md](LOCK_DEVICE.md) — cabinet-lock build: state machine, MQTT protocol, hardware wiring, embedded web page.
 - [docs/OTA_DEPLOYMENT.md](docs/OTA_DEPLOYMENT.md) — operator walkthrough for shipping new firmware (signing-key setup, build, upload via OMS, troubleshooting).
 - [DEBUG.md](DEBUG.md) — diagnostic logging reference.
 

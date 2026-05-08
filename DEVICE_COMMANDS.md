@@ -179,6 +179,112 @@ No echo on no-op (already in requested state).
 
 ---
 
+# Lock Device Commands
+
+The cabinet-lock build (`seeed_xiao_esp32s3_lock`) receives unlock commands
+on a separate topic (`cabinets/<mac>/cmd`) rather than the standard command
+topic. This keeps unlock signaling separate from operator commands (blink,
+identify, restart, etc.).
+
+## Topic shape
+
+| Direction | Topic | Producer | Consumer |
+|-----------|-------|----------|----------|
+| Unlock cmd | `cabinets/<mac>/cmd` | Django / OMS | Device |
+| Telemetry | `forgekey/<mac>/cabinet_lock/status` | Device | OMS |
+| Command ack | `forgekey/<mac>/status` | Device | OMS |
+
+## Unlock command
+
+Django publishes a JWT-wrapped unlock command:
+
+```json
+{ "token": "<HS256 JWT>", "timestamp": 1715150000 }
+```
+
+- `token`: HS256 JWT issued by Django. Contains `exp` (30s expiry) and
+  `timestamp` (epoch seconds).
+- `timestamp`: server clock at JWT issue time. Device rejects if the
+  difference from its own NTP-synced clock exceeds `FORGEKEY_LOCK_CMD_TIMESTAMP_TOLERANCE_S` (default 60s).
+
+Device ack (on success):
+
+```json
+{ "cmd_ack": "unlock", "state": "unlocked" }
+```
+
+Device ack (on failure):
+
+```json
+{ "cmd_ack": "unlock", "error": "invalid_token" }
+```
+
+## Telemetry
+
+The lock publishes periodic telemetry to `forgekey/<mac>/cabinet_lock/status`
+at `FORGEKEY_LOCK_TELEMETRY_INTERVAL_MS` (default 10s):
+
+```json
+{
+  "mac": "aabbcc112233",
+  "secure": true,
+  "item_present": true,
+  "uptime": 421337,
+  "last_trigger": "jwt",
+  "state": "SECURE",
+  "reed_closed": true,
+  "latch_locked": true,
+  "ir_broken": false,
+  "mortise_active": false
+}
+```
+
+Fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `mac` | string | Bare lowercase 12-hex device MAC |
+| `secure` | bool | `reed_closed AND latch_locked` (supervision AND) |
+| `item_present` | bool | `!ir_broken` (IR beam intact = item present) |
+| `uptime` | number | `millis()` uptime in ms |
+| `last_trigger` | string | Last unlock trigger: `"jwt"`, `"mortise"`, `"door_close"`, `"alarm_timeout"` |
+| `state` | string | Current state: `INITIALIZING`, `SECURE`, `UNLOCKED`, `ACCESSING`, `ALARM` |
+| `reed_closed` | bool | Raw reed switch state |
+| `latch_locked` | bool | Raw latch supervisor state |
+| `ir_broken` | bool | Raw IR beam state |
+| `mortise_active` | bool | Raw mortise (physical key) switch state |
+
+## Lock States
+
+| State | LED | Description |
+|-------|-----|-------------|
+| `INITIALIZING` | Blinking | WiFi → NTP → MQTT connecting |
+| `SECURE` | Red (steady) | Reed closed AND latch locked. Cabinet is secure. |
+| `UNLOCKED` | Green (steady) | Latch disengaged. Waiting for door to open. |
+| `ACCESSING` | Green (steady) | Door open. IR beam monitoring item removal. |
+| `ALARM` | Rapid Red/Green flash | Door open without valid JWT or physical key |
+
+### Supervision Logic
+
+`SECURE` is reported only when **both** conditions are true:
+- Reed switch == CLOSED (door is shut)
+- Latch supervisor == LOCKED (bolt is thrown)
+
+If either condition is false, the device reports `secure: false`.
+
+## Embedded Web Page
+
+The lock serves a status page at `http://<device-ip>/` showing:
+- Current lock state
+- Real-time sensor readings (reed, latch, IR, mortise)
+- Uptime
+- Link to OpenMakerSuite for generating unlock codes
+
+JSON API at `http://<device-ip>/api/status` returns the same telemetry as
+the MQTT publish.
+
+---
+
 # BLE Capabilities
 
 The firmware includes four BLE capabilities that can be toggled at runtime
