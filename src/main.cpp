@@ -2,6 +2,7 @@
 #include <WiFi.h>
 #include <ArduinoJson.h>
 #include <nvs_flash.h>
+#include <time.h>
 
 #include "mqtt/mqtt_client.h"
 #include "provisioning/device_config.h"
@@ -491,6 +492,19 @@ void setup() {
     macAddress.replace(":", "");
     macAddress.toLowerCase();
     debugPrintf("INFO", "MAIN", "MAC Address: %s", macAddress.c_str());
+
+    // NTP sync: ESP32 has no RTC, so time starts at epoch 0 without it.
+    // TLS certificate verification fails if the device clock is wrong.
+    debugPrint("INFO", "MAIN", "Syncing NTP time...");
+    configTzTime("UTC", "pool.ntp.org", "time.nist.gov");
+    struct tm timeinfo;
+    if (!getLocalTime(&timeinfo)) {
+        debugPrint("WARN", "MAIN", "NTP sync failed — TLS may fail");
+    } else {
+        debugPrintf("INFO", "MAIN", "NTP synced: %04d-%02d-%02d %02d:%02d:%02d",
+                    timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                    timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+    }
 
     provisioning.begin();
     otaUpdater.begin();
