@@ -32,6 +32,7 @@ static const char* TAG = "PROV";
 #define NVS_KEY_B_TLS     "b_tls"
 #define NVS_KEY_BOOTS     "boots"
 #define NVS_KEY_PROV_TOK  "prov_tok"
+#define NVS_KEY_ASSET_ID  "asset_id"
 
 #define BOUNDARY "----ForgekeyBoundary7d3f2c1a"
 
@@ -147,6 +148,12 @@ void provisioning_begin(void) {
     nvs_get_u8(nvs_handle, NVS_KEY_B_TLS, &b_tls);
     s_creds.mqtt_broker_use_tls = (b_tls != 0);
 
+    /* Load asset_id */
+    size_t asset_id_len = sizeof(s_creds.asset_id);
+    if (nvs_get_str(nvs_handle, NVS_KEY_ASSET_ID, s_creds.asset_id, &asset_id_len) != ESP_OK) {
+        s_creds.asset_id[0] = '\0';
+    }
+
     nvs_close(nvs_handle);
 
     ESP_LOGI(TAG, "Loaded: dev_id='%s' jwt_len=%u",
@@ -176,6 +183,9 @@ bool provisioning_persist(const prov_credentials_t* creds) {
     nvs_set_str(nvs_handle, NVS_KEY_B_HOST, creds->mqtt_broker_host);
     nvs_set_u16(nvs_handle, NVS_KEY_B_PORT, creds->mqtt_broker_port);
     nvs_set_u8(nvs_handle, NVS_KEY_B_TLS, creds->mqtt_broker_use_tls ? 1 : 0);
+    if (creds->asset_id[0] != '\0') {
+        nvs_set_str(nvs_handle, NVS_KEY_ASSET_ID, creds->asset_id);
+    }
     nvs_commit(nvs_handle);
     nvs_close(nvs_handle);
 
@@ -196,6 +206,7 @@ void provisioning_clear(void) {
     nvs_erase_key(nvs_handle, NVS_KEY_B_HOST);
     nvs_erase_key(nvs_handle, NVS_KEY_B_PORT);
     nvs_erase_key(nvs_handle, NVS_KEY_B_TLS);
+    nvs_erase_key(nvs_handle, NVS_KEY_ASSET_ID);
     nvs_commit(nvs_handle);
     nvs_close(nvs_handle);
 
@@ -483,6 +494,25 @@ bool provisioning_register(const char* host, uint16_t port,
         }
     }
 
+    /* Parse asset_id (optional) */
+    key = strstr(p, "\"asset_id\"");
+    if (key) {
+        char* colon = strchr(key + 11, ':');
+        if (colon) {
+            char* q1 = strchr(colon + 1, '"');
+            if (q1) {
+                char* q2 = strchr(q1 + 1, '"');
+                if (q2) {
+                    size_t len = q2 - q1 - 1;
+                    if (len < sizeof(new_creds.asset_id)) {
+                        memcpy(new_creds.asset_id, q1 + 1, len);
+                        new_creds.asset_id[len] = '\0';
+                    }
+                }
+            }
+        }
+    }
+
     if (new_creds.device_id[0] == '\0' || new_creds.jwt_token[0] == '\0') {
         ESP_LOGE(TAG, "Registration response missing device_id or jwt_token");
         return false;
@@ -500,4 +530,8 @@ bool provisioning_register(const char* host, uint16_t port,
 
 uint32_t provisioning_boot_count(void) {
     return s_boot_count;
+}
+
+const char* provisioning_get_asset_id(void) {
+    return s_creds.asset_id[0] != '\0' ? s_creds.asset_id : "";
 }

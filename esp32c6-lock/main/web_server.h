@@ -11,6 +11,12 @@
 /* Initialize and start the web server on port 80. */
 void lock_web_server_init(void);
 
+/* Set the OMS host and asset_id for the deep-link URL.
+ * If asset_id is non-empty, the CTA link becomes:
+ *   https://<oms_host>/fks/<asset_id>
+ * Otherwise it falls back to the OMS homepage. */
+void lock_web_server_set_oms_link(const char* oms_host, const char* asset_id);
+
 /* Stop the web server. */
 void lock_web_server_deinit(void);
 

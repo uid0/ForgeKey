@@ -29,6 +29,13 @@ static size_t s_json_len = 0;
 /* HTTP server handle */
 static httpd_handle_t s_server = NULL;
 
+/* OMS deep-link URL components */
+static char s_oms_host[64] = {0};
+static char s_asset_id[64] = {0};
+
+/* Cached deep-link URL */
+static char s_deep_link_url[256] = {0};
+
 /* ===== HTML status page ===== */
 
 static const char* STATUS_PAGE_TEMPLATE =
@@ -83,7 +90,7 @@ static const char* STATUS_PAGE_TEMPLATE =
     "  </div>"
     "  <div class=\"cta-card\">"
     "    <p>Need to unlock this cabinet? Generate an unlock code from the OpenMakerSuite dashboard.</p>"
-    "    <a href=\"https://openmakersuite.com\" target=\"_blank\" class=\"cta-button\">Go to OpenMakerSuite</a>"
+    "    <a href=\"__DEEP_LINK__\" target=\"_blank\" class=\"cta-button\">Go to OpenMakerSuite</a>"
     "  </div>"
     "  <div class=\"footer\">ForgeKey Cabinet Lock - Built with ESP32-C6</div>"
     "</div>"
@@ -116,11 +123,40 @@ static const char* STATUS_PAGE_TEMPLATE =
 /* ===== HTTP handlers ===== */
 
 static esp_err_t root_get_handler(httpd_req_t* req) {
-    if (s_html_len == 0) {
-        lock_web_server_get_html();
+    /* Build HTML with deep-link URL substituted */
+    const char* template = STATUS_PAGE_TEMPLATE;
+    const char* placeholder = "__DEEP_LINK__";
+    size_t tmpl_len = strlen(template);
+    size_t url_len = strlen(s_deep_link_url);
+    size_t placeholder_len = strlen(placeholder);
+
+    /* Allocate buffer: template + (url_len - placeholder_len) + margin */
+    size_t buf_size = tmpl_len + url_len - placeholder_len + 32;
+    char* html_buf = malloc(buf_size);
+    if (!html_buf) {
+        /* Fallback: send raw template */
+        httpd_resp_set_type(req, "text/html");
+        httpd_resp_send(req, template, HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
     }
+
+    /* Copy template up to placeholder */
+    const char* p = strstr(template, placeholder);
+    if (p) {
+        size_t prefix_len = p - template;
+        memcpy(html_buf, template, prefix_len);
+        memcpy(html_buf + prefix_len, s_deep_link_url, url_len);
+        memcpy(html_buf + prefix_len + url_len, p + placeholder_len, tmpl_len - (p - template) - placeholder_len);
+        html_buf[prefix_len + url_len + (tmpl_len - (p - template) - placeholder_len)] = '\0';
+    } else {
+        /* Placeholder not found — just copy template */
+        memcpy(html_buf, template, tmpl_len);
+        html_buf[tmpl_len] = '\0';
+    }
+
     httpd_resp_set_type(req, "text/html");
-    httpd_resp_send(req, s_html_cache, s_html_len);
+    httpd_resp_send(req, html_buf, strlen(html_buf));
+    free(html_buf);
     return ESP_OK;
 }
 
@@ -187,7 +223,8 @@ const char* lock_web_server_get_json_status(void) {
     s_json_len = snprintf(s_json_cache, sizeof(s_json_cache),
         "{\"mac\":\"%s\",\"secure\":%s,\"item_present\":%s,"
         "\"uptime\":%lu,\"state\":\"%s\",\"reed_closed\":%s,"
-        "\"latch_locked\":%s,\"ir_broken\":%s,\"mortise_active\":%s}",
+        "\"latch_locked\":%s,\"ir_broken\":%s,\"mortise_active\":%s,"
+        "\"asset_id\":\"%s\"}",
         lock_state_get_mac_address(),
         tel.secure ? "true" : "false",
         !tel.ir_broken ? "true" : "false",
@@ -196,7 +233,25 @@ const char* lock_web_server_get_json_status(void) {
         tel.reed_closed ? "true" : "false",
         tel.latch_locked ? "true" : "false",
         tel.ir_broken ? "true" : "false",
-        tel.mortise_active ? "true" : "false");
+        tel.mortise_active ? "true" : "false",
+        s_asset_id);
 
     return s_json_cache;
+}
+
+void lock_web_server_set_oms_link(const char* oms_host, const char* asset_id) {
+    if (oms_host) {
+        strncpy(s_oms_host, oms_host, sizeof(s_oms_host) - 1);
+        s_oms_host[sizeof(s_oms_host) - 1] = '\0';
+    }
+    if (asset_id && asset_id[0] != '\0') {
+        strncpy(s_asset_id, asset_id, sizeof(s_asset_id) - 1);
+        s_asset_id[sizeof(s_asset_id) - 1] = '\0';
+        snprintf(s_deep_link_url, sizeof(s_deep_link_url),
+                 "https://%s/fks/%s", s_oms_host, s_asset_id);
+    } else {
+        s_asset_id[0] = '\0';
+        snprintf(s_deep_link_url, sizeof(s_deep_link_url),
+                 "https://%s", s_oms_host);
+    }
 }

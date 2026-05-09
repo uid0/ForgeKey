@@ -190,6 +190,15 @@ void app_main(void) {
     /* ===== 7. Web server init ===== */
     lock_web_server_init();
 
+    /* Set the OMS deep-link URL (uses asset_id if available) */
+    const char* asset_id = provisioning_get_asset_id();
+    lock_web_server_set_oms_link(OMS_HOST, asset_id);
+    if (asset_id[0]) {
+        LOCK_LOGI("OMS deep-link: https://%s/fks/%s", OMS_HOST, asset_id);
+    } else {
+        LOCK_LOGI("OMS deep-link (no asset_id): https://%s", OMS_HOST);
+    }
+
     /* ===== 8. Main loop ===== */
     uint32_t last_telemetry_ms = 0;
     bool mqtt_was_connected = false;

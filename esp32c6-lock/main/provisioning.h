@@ -13,6 +13,7 @@
 #define FORGEKEY_PROV_MAX_TOPIC      128
 #define FORGEKEY_PROV_MAX_JWT        512
 #define FORGEKEY_PROV_MAX_BROKER     64
+#define FORGEKEY_PROV_MAX_ASSET_ID   64
 
 typedef struct {
     char device_id[FORGEKEY_PROV_MAX_DEVICES_ID];
@@ -22,6 +23,7 @@ typedef struct {
     char mqtt_broker_host[FORGEKEY_PROV_MAX_BROKER];
     uint16_t mqtt_broker_port;
     bool mqtt_broker_use_tls;
+    char asset_id[FORGEKEY_PROV_MAX_ASSET_ID];
 } prov_credentials_t;
 
 /* Initialize NVS-backed storage and increment boot counter. */
@@ -55,5 +57,8 @@ bool provisioning_register(const char* host, uint16_t port,
 
 /* Get the boot count. */
 uint32_t provisioning_boot_count(void);
+
+/* Get the asset ID from provisioning (empty string if not available). */
+const char* provisioning_get_asset_id(void);
 
 #endif /* FORGEKEY_PROVISIONING_H */
