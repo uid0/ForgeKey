@@ -1,0 +1,79 @@
+# ESP32-C6 Lock Device - Kconfig options
+
+config FORGEKEY_LOCK_SOLENOID_PIN
+    int "Solenoid control pin"
+    default 0
+    help
+        GPIO pin for solenoid MOSFET control.
+
+config FORGEKEY_LOCK_REED_PIN
+    int "Reed switch pin"
+    default 1
+    help
+        GPIO pin for reed switch (door closed sensor).
+
+config FORGEKEY_LOCK_MORTISE_PIN
+    int "Mortise switch pin"
+    default 5
+    help
+        GPIO pin for mortise (physical key) switch.
+
+config FORGEKEY_LOCK_LATCH_SUPERVISOR_PIN
+    int "Latch supervisor pin"
+    default 6
+    help
+        GPIO pin for latch bolt position sensor.
+
+config FORGEKEY_LOCK_IR_BEAM_PIN
+    int "IR breakbeam pin"
+    default 4
+    help
+        GPIO pin for IR breakbeam receiver.
+
+config FORGEKEY_LOCK_SOLENOID_PULSE_MS
+    int "Solenoid pulse duration (ms)"
+    default 1500
+    help
+        Duration of solenoid unlock pulse in milliseconds.
+
+config FORGEKEY_LOCK_TELEMETRY_INTERVAL_MS
+    int "Telemetry publish interval (ms)"
+    default 10000
+    help
+        Interval between telemetry publishes in milliseconds.
+
+config FORGEKEY_LOCK_CMD_TIMESTAMP_TOLERANCE_S
+    int "Command timestamp tolerance (seconds)"
+    default 60
+    help
+        Maximum allowed time difference for command timestamps.
+
+config FORGEKEY_LOCK_JWT_EXPIRY_S
+    int "JWT expiry window (seconds)"
+    default 30
+    help
+        Maximum JWT expiry time in seconds.
+
+config FORGEKEY_LOCK_JWT_SECRET
+    string "JWT shared secret"
+    default "forgekey-lock-secret-change-in-production"
+    help
+        HMAC-SHA256 shared secret for JWT validation.
+
+config FORGEKEY_LOCK_WEB_PORT
+    int "Embedded web server port"
+    default 80
+    help
+        HTTP port for embedded status page.
+
+config FORGEKEY_SENSOR_KIND
+    string "Sensor kind for OMS registration"
+    default "cabinet-lock"
+    help
+        Sensor kind sent to OMS during device registration.
+
+config FORGEKEY_MQTT_TOPIC_KIND
+    string "MQTT topic kind segment"
+    default "cabinet_lock"
+    help
+        MQTT topic kind segment for this device type.
