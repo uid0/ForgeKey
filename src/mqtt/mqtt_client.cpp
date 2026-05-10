@@ -92,15 +92,18 @@ bool MqttClient::begin(const char* brokerHost, int portNum, const char* jwt,
     jwtToken = jwt;
 
     if (broker.length()) {
+        // Always configure PubSubClient with the hostname. WiFiClientSecure
+        // needs the original host name for SNI and certificate name checks;
+        // passing only the resolved IP can make a valid cert fail
+        // verification because it no longer matches the peer identity.
+        client->setServer(broker.c_str(), port);
         IPAddress resolvedIp;
         if (WiFi.hostByName(broker.c_str(), resolvedIp)) {
             brokerIp = resolvedIp;
             brokerIpResolved = true;
-            client->setServer(brokerIp, port);
             Serial.printf("[MQTT] broker host resolved: %s -> %s\n",
                           broker.c_str(), brokerIp.toString().c_str());
         } else {
-            client->setServer(broker.c_str(), port);
             Serial.printf("[MQTT] broker host DNS lookup failed: %s\n",
                           broker.c_str());
         }
@@ -304,7 +307,6 @@ bool MqttClient::connect() {
             if (WiFi.hostByName(broker.c_str(), resolvedIp)) {
                 brokerIp = resolvedIp;
                 brokerIpResolved = true;
-                client->setServer(brokerIp, port);
                 Serial.printf("[MQTT] broker host resolved on connect: %s -> %s\n",
                               broker.c_str(), brokerIp.toString().c_str());
                 break;

@@ -18,7 +18,7 @@
 // /api/forgekey/devices/register/. Devices are physically controlled
 // in v1, so a shared token is acceptable; rotation arrives over OTA.
 #ifndef FORGEKEY_PROVISIONING_TOKEN
-#define FORGEKEY_PROVISIONING_TOKEN "REPLACE_ME_PROVISIONING_TOKEN"
+#define FORGEKEY_PROVISIONING_TOKEN "019de078-eb77-706a-a52a-5901e10bcf8b"
 #endif
 
 // Static identity broadcast at registration. The OMS register endpoint

@@ -112,6 +112,7 @@ publishes.
 ```json
 {
   "cmd_ack": "status",
+  "requested_cmd": "ping",
   "capabilities": ["people_counter", "status_led"],
   "firmware_version": "0.1.0",
   "free_heap": 187344,
@@ -120,6 +121,9 @@ publishes.
   "mac": "aabbcc112233"
 }
 ```
+
+`cmd_ack` is always `"status"` for both commands. `requested_cmd` shows
+whether the caller sent `status` or `ping`.
 
 ### `identify`
 

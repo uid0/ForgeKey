@@ -84,10 +84,13 @@ static void setBlinkActive(bool on) {
 #define IDENTIFY_DEFAULT_DURATION_S 30
 #endif
 
-static void publishStatusSnapshot(const char* triggeringCmd) {
-    // Used for {"cmd":"status"} and {"cmd":"ping"} acks. Includes enough
-    // info for an operator to decide "is the device alive and what does it
-    // think it can do" without needing it to actively report.
+static void publishStatusSnapshot(const char* requestedCmd) {
+    // Used for {"cmd":"status"} and {"cmd":"ping"} acks. We normalize
+    // cmd_ack to "status" for both so OMS/UI callers can treat ping as a
+    // status alias while still seeing which command triggered the snapshot.
+    // Includes enough info for an operator to decide "is the device alive
+    // and what does it think it can do" without needing it to actively
+    // report.
     String capsJson = CapabilityRegistry::announcementJson(FORGEKEY_FIRMWARE_VERSION);
     // capsJson looks like: {"capabilities":[...],"firmware_version":"x"}
     // Trim the outer braces so we can splice the contents into our payload.
@@ -99,10 +102,14 @@ static void publishStatusSnapshot(const char* triggeringCmd) {
         capsInner = "";
     }
     String payload;
-    payload.reserve(256);
-    payload += "{\"cmd_ack\":\"";
-    payload += triggeringCmd;
-    payload += "\",";
+    payload.reserve(320);
+    payload += "{\"cmd_ack\":\"status\"";
+    if (requestedCmd && *requestedCmd) {
+        payload += ",\"requested_cmd\":\"";
+        payload += requestedCmd;
+        payload += "\"";
+    }
+    payload += ",";
     payload += capsInner;
     payload += ",\"free_heap\":";
     payload += String((unsigned long)ESP.getFreeHeap());
@@ -164,6 +171,10 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
         return;
     }
     const char* cmd = doc["cmd"] | "";
+    debugPrintf("INFO", "CMD", "rx topic=%s cmd=%s len=%u",
+                topic ? topic : "(null)",
+                cmd[0] ? cmd : "(missing)",
+                length);
     if (strcmp(cmd, "blink") == 0) {
         // Three accepted forms:
         //   {"cmd":"blink"}                     -> toggle (back-compat)
