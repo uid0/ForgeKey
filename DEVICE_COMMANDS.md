@@ -190,6 +190,11 @@ on a separate topic (`cabinets/<mac>/cmd`) rather than the standard command
 topic. This keeps unlock signaling separate from operator commands (blink,
 identify, restart, etc.).
 
+Standard operator commands still use the normal per-device control topic
+`forgekey/<mac>/command`. On the current lock build, `status`, `ping`, and
+`restart` are implemented there; `blink` and `identify` reply with
+`{"error":"unsupported"}`.
+
 ## Topic shape
 
 | Direction | Topic | Producer | Consumer |

@@ -33,6 +33,7 @@ static bool s_mqtt_connected = false;
 
 /* Topics */
 static char s_topic_prefix[FORGEKEY_MQTT_MAX_TOPIC] = {0};
+static char s_command_topic[FORGEKEY_MQTT_MAX_TOPIC] = {0};
 static char s_lock_topic[FORGEKEY_MQTT_MAX_TOPIC] = {0};
 static char s_config_topic[FORGEKEY_MQTT_MAX_TOPIC] = {0};
 static char s_firmware_topic[FORGEKEY_MQTT_MAX_TOPIC] = {0};
@@ -41,6 +42,7 @@ static char s_status_topic[FORGEKEY_MQTT_MAX_TOPIC] = {0};
 static char s_capabilities_topic[FORGEKEY_MQTT_MAX_TOPIC] = {0};
 
 /* Handlers */
+static mqtt_message_handler_t s_command_handler = NULL;
 static mqtt_message_handler_t s_lock_handler = NULL;
 static mqtt_message_handler_t s_config_handler = NULL;
 static mqtt_message_handler_t s_firmware_handler = NULL;
@@ -56,6 +58,24 @@ static time_t s_last_reconnect = 0;
 
 /* ===== MQTT event handler ===== */
 
+static void subscribe_if_set(const char* topic) {
+    if (topic && topic[0]) {
+        int msg_id = mqtt_handler_subscribe(topic, 0);
+        ESP_LOGI(TAG, "Subscribe topic=%s msg_id=%d", topic, msg_id);
+    }
+}
+
+static void copy_topic(char* dest, size_t dest_size, const char* topic, int topic_len) {
+    size_t copy_len = 0;
+    if (dest_size == 0) return;
+    if (topic && topic_len > 0) {
+        copy_len = (size_t)topic_len;
+        if (copy_len > dest_size - 1) copy_len = dest_size - 1;
+        memcpy(dest, topic, copy_len);
+    }
+    dest[copy_len] = '\0';
+}
+
 static void mqtt_event_handler(void* handler_args, esp_event_base_t base,
                                 int32_t event_id, void* event_data) {
     esp_mqtt_event_handle_t event = event_data;
@@ -67,15 +87,10 @@ static void mqtt_event_handler(void* handler_args, esp_event_base_t base,
             s_mqtt_connected = true;
 
             /* Resubscribe to all topics */
-            if (s_lock_topic[0]) {
-                mqtt_handler_subscribe(s_lock_topic, 0);
-            }
-            if (s_config_topic[0]) {
-                mqtt_handler_subscribe(s_config_topic, 0);
-            }
-            if (s_firmware_topic[0] && s_firmware_handler) {
-                mqtt_handler_subscribe(s_firmware_topic, 0);
-            }
+            subscribe_if_set(s_command_topic);
+            subscribe_if_set(s_lock_topic);
+            subscribe_if_set(s_config_topic);
+            subscribe_if_set(s_firmware_topic);
             break;
 
         case MQTT_EVENT_DISCONNECTED:
@@ -85,15 +100,27 @@ static void mqtt_event_handler(void* handler_args, esp_event_base_t base,
             break;
 
         case MQTT_EVENT_DATA:
-            ESP_LOGI(TAG, "MQTT data on topic: %.*s", event->topic_len, event->topic);
+            {
+                char topic_buf[FORGEKEY_MQTT_MAX_TOPIC];
+                copy_topic(topic_buf, sizeof(topic_buf), event->topic, event->topic_len);
+                ESP_LOGI(TAG, "MQTT data on topic: %s", topic_buf);
 
-            /* Dispatch to appropriate handler */
-            if (s_lock_handler && strncmp(event->topic, s_lock_topic, FORGEKEY_MQTT_MAX_TOPIC) == 0) {
-                s_lock_handler(event->topic, event->data, event->data_len);
-            } else if (s_config_handler && strncmp(event->topic, s_config_topic, FORGEKEY_MQTT_MAX_TOPIC) == 0) {
-                s_config_handler(event->topic, event->data, event->data_len);
-            } else if (s_firmware_handler && strncmp(event->topic, s_firmware_topic, FORGEKEY_MQTT_MAX_TOPIC) == 0) {
-                s_firmware_handler(event->topic, event->data, event->data_len);
+                /* Dispatch to appropriate handler */
+                if (s_command_handler && s_command_topic[0] &&
+                    strcmp(topic_buf, s_command_topic) == 0) {
+                    s_command_handler(topic_buf, (const uint8_t*)event->data, event->data_len);
+                } else if (s_lock_handler && s_lock_topic[0] &&
+                           strcmp(topic_buf, s_lock_topic) == 0) {
+                    s_lock_handler(topic_buf, (const uint8_t*)event->data, event->data_len);
+                } else if (s_config_handler && s_config_topic[0] &&
+                           strcmp(topic_buf, s_config_topic) == 0) {
+                    s_config_handler(topic_buf, (const uint8_t*)event->data, event->data_len);
+                } else if (s_firmware_handler && s_firmware_topic[0] &&
+                           strcmp(topic_buf, s_firmware_topic) == 0) {
+                    s_firmware_handler(topic_buf, (const uint8_t*)event->data, event->data_len);
+                } else {
+                    ESP_LOGW(TAG, "Unhandled MQTT topic: %s", topic_buf);
+                }
             }
             break;
 
@@ -162,6 +189,7 @@ bool mqtt_handler_begin(const char* broker_host, int port,
 
 void mqtt_handler_set_topic_prefix(const char* mac) {
     snprintf(s_topic_prefix, sizeof(s_topic_prefix), "forgekey/%s/cabinet_lock", mac);
+    snprintf(s_command_topic, sizeof(s_command_topic), "forgekey/%s/command", mac);
     snprintf(s_status_topic, sizeof(s_status_topic), "forgekey/%s/status", mac);
     snprintf(s_capabilities_topic, sizeof(s_capabilities_topic), "forgekey/%s/capabilities", mac);
     ESP_LOGI(TAG, "Topic prefix set: %s", s_topic_prefix);
@@ -178,6 +206,10 @@ esp_err_t mqtt_handler_publish(const char* topic, const char* data,
     return esp_mqtt_client_publish(s_mqtt_client, topic, data, data_len, qos, retain);
 }
 
+void mqtt_handler_set_command_handler(mqtt_message_handler_t handler) {
+    s_command_handler = handler;
+}
+
 void mqtt_handler_set_lock_handler(mqtt_message_handler_t handler) {
     s_lock_handler = handler;
 }
@@ -190,11 +222,25 @@ void mqtt_handler_set_firmware_handler(mqtt_message_handler_t handler) {
     s_firmware_handler = handler;
 }
 
+void mqtt_handler_set_command_topic(const char* topic) {
+    if (topic && topic[0]) {
+        strncpy(s_command_topic, topic, sizeof(s_command_topic) - 1);
+        s_command_topic[sizeof(s_command_topic) - 1] = '\0';
+        ESP_LOGI(TAG, "Command topic set: %s", s_command_topic);
+        if (s_mqtt_connected) {
+            subscribe_if_set(s_command_topic);
+        }
+    }
+}
+
 void mqtt_handler_set_lock_topic(const char* topic) {
     if (topic && topic[0]) {
         strncpy(s_lock_topic, topic, sizeof(s_lock_topic) - 1);
         s_lock_topic[sizeof(s_lock_topic) - 1] = '\0';
         ESP_LOGI(TAG, "Lock topic set: %s", s_lock_topic);
+        if (s_mqtt_connected) {
+            subscribe_if_set(s_lock_topic);
+        }
     }
 }
 
@@ -203,6 +249,9 @@ void mqtt_handler_set_config_topic(const char* topic) {
         strncpy(s_config_topic, topic, sizeof(s_config_topic) - 1);
         s_config_topic[sizeof(s_config_topic) - 1] = '\0';
         ESP_LOGI(TAG, "Config topic set: %s", s_config_topic);
+        if (s_mqtt_connected) {
+            subscribe_if_set(s_config_topic);
+        }
     }
 }
 
@@ -214,6 +263,9 @@ void mqtt_handler_set_firmware_topic(const char* topic) {
         if (!s_firmware_status_topic[0]) {
             snprintf(s_firmware_status_topic, sizeof(s_firmware_status_topic),
                      "%s/status", s_firmware_topic);
+        }
+        if (s_mqtt_connected) {
+            subscribe_if_set(s_firmware_topic);
         }
     }
 }
@@ -236,6 +288,10 @@ const char* mqtt_handler_get_status_topic(void) {
 
 const char* mqtt_handler_get_lock_topic(void) {
     return s_lock_topic;
+}
+
+const char* mqtt_handler_get_command_topic(void) {
+    return s_command_topic;
 }
 
 const char* mqtt_handler_get_firmware_status_topic(void) {

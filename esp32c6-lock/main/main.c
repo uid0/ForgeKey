@@ -57,9 +57,15 @@ static const char* TAG = "LOCK";
 #define LOCK_LOGE(fmt, ...) ESP_LOGE(TAG, fmt, ##__VA_ARGS__)
 
 /* Forward declarations for MQTT handlers */
+static void on_command_message(const char* topic, const uint8_t* payload, uint32_t length);
 static void on_lock_command(const char* topic, const uint8_t* payload, uint32_t length);
 static void on_config_message(const char* topic, const uint8_t* payload, uint32_t length);
 static void on_firmware_dispatch(const char* topic, const uint8_t* payload, uint32_t length);
+
+static void publish_status_snapshot(const char* mac_str, const char* requested_cmd);
+static void publish_unknown_command_ack(const char* cmd);
+static void publish_unsupported_command_ack(const char* cmd);
+static int current_wifi_rssi(void);
 
 /* Application entry point */
 void app_main(void) {
@@ -168,15 +174,19 @@ void app_main(void) {
     mqtt_handler_set_topic_prefix(mac_str);
 
     /* Set up topics */
+    char command_topic[128];
     char lock_cmd_topic[128];
     char config_topic[128];
+    snprintf(command_topic, sizeof(command_topic), "forgekey/%s/command", mac_str);
     snprintf(lock_cmd_topic, sizeof(lock_cmd_topic), "cabinets/%s/cmd", mac_str);
     credential_rotation_get_topic(config_topic, sizeof(config_topic), mac_str);
 
-    mqtt_handler_set_lock_topic(lock_cmd_topic);
-    mqtt_handler_set_config_topic(config_topic);
+    mqtt_handler_set_command_handler(on_command_message);
     mqtt_handler_set_lock_handler(on_lock_command);
     mqtt_handler_set_config_handler(on_config_message);
+    mqtt_handler_set_command_topic(command_topic);
+    mqtt_handler_set_lock_topic(lock_cmd_topic);
+    mqtt_handler_set_config_topic(config_topic);
 
     /* Subscribe to firmware topic if available */
     if (creds.mqtt_firmware_topic[0]) {
@@ -297,7 +307,7 @@ void app_main(void) {
 /* ===== MQTT message handlers ===== */
 
 static void on_lock_command(const char* topic, const uint8_t* payload, uint32_t length) {
-    LOCK_LOGI("Lock command on %.*s", (int)strlen(topic), topic);
+    LOCK_LOGI("Lock command on %s", topic);
 
     char payload_copy[length + 1];
     memcpy(payload_copy, payload, length);
@@ -339,6 +349,111 @@ static void on_lock_command(const char* topic, const uint8_t* payload, uint32_t 
     }
 
     cJSON_Delete(doc);
+}
+
+static void on_command_message(const char* topic, const uint8_t* payload, uint32_t length) {
+    LOCK_LOGI("Command message on %s", topic);
+
+    char payload_copy[length + 1];
+    memcpy(payload_copy, payload, length);
+    payload_copy[length] = '\0';
+
+    cJSON* doc = cJSON_Parse(payload_copy);
+    if (!doc) {
+        LOCK_LOGW("Command message: JSON parse error");
+        return;
+    }
+
+    cJSON* cmd = cJSON_GetObjectItem(doc, "cmd");
+    if (!cmd || !cJSON_IsString(cmd) || !cmd->valuestring || cmd->valuestring[0] == '\0') {
+        LOCK_LOGW("Command message: missing cmd");
+        cJSON_Delete(doc);
+        return;
+    }
+
+    const char* cmd_str = cmd->valuestring;
+    if (strcmp(cmd_str, "status") == 0 || strcmp(cmd_str, "ping") == 0) {
+        publish_status_snapshot(lock_state_get_mac_address(), cmd_str);
+    } else if (strcmp(cmd_str, "restart") == 0) {
+        mqtt_handler_publish(mqtt_handler_get_status_topic(),
+                             "{\"cmd_ack\":\"restart\",\"in_ms\":1000}", -1, 0, 0);
+        cJSON_Delete(doc);
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+        esp_restart();
+        return;
+    } else if (strcmp(cmd_str, "blink") == 0 || strcmp(cmd_str, "identify") == 0) {
+        publish_unsupported_command_ack(cmd_str);
+        LOCK_LOGW("Command %s unsupported on ESP32-C6 lock build", cmd_str);
+    } else {
+        publish_unknown_command_ack(cmd_str);
+    }
+
+    cJSON_Delete(doc);
+}
+
+static void publish_status_snapshot(const char* mac_str, const char* requested_cmd) {
+    const char* status_topic = mqtt_handler_get_status_topic();
+    if (!status_topic[0]) {
+        LOCK_LOGW("Status snapshot skipped: status topic unset");
+        return;
+    }
+
+    lock_telemetry_t tel = lock_state_get_telemetry();
+    cJSON* caps = cJSON_CreateArray();
+    cJSON_AddItemToArray(caps, cJSON_CreateString("cabinet_lock"));
+
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "cmd_ack", "status");
+    cJSON_AddStringToObject(root, "requested_cmd", requested_cmd ? requested_cmd : "status");
+    cJSON_AddItemToObject(root, "capabilities", caps);
+    cJSON_AddStringToObject(root, "firmware_version", FORGEKEY_FIRMWARE_VERSION);
+    cJSON_AddStringToObject(root, "build_target", FORGEKEY_BUILD_TARGET);
+    cJSON_AddStringToObject(root, "framework", FORGEKEY_BUILD_FRAMEWORK);
+    cJSON_AddNumberToObject(root, "free_heap", esp_get_free_heap_size());
+    cJSON_AddNumberToObject(root, "rssi", current_wifi_rssi());
+    cJSON_AddNumberToObject(root, "uptime_ms", tel.uptime_ms);
+    cJSON_AddStringToObject(root, "mac", mac_str ? mac_str : "");
+    cJSON_AddStringToObject(root, "state", lock_state_state_name(lock_state_get_state()));
+    cJSON_AddBoolToObject(root, "secure", tel.secure);
+
+    char* json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (json_str) {
+        mqtt_handler_publish(status_topic, json_str, strlen(json_str), 0, 0);
+        cJSON_free(json_str);
+    }
+}
+
+static void publish_unsupported_command_ack(const char* cmd) {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "cmd_ack", cmd ? cmd : "");
+    cJSON_AddStringToObject(root, "error", "unsupported");
+    char* json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (json_str) {
+        mqtt_handler_publish(mqtt_handler_get_status_topic(), json_str, strlen(json_str), 0, 0);
+        cJSON_free(json_str);
+    }
+}
+
+static void publish_unknown_command_ack(const char* cmd) {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "cmd_ack", cmd ? cmd : "");
+    cJSON_AddStringToObject(root, "error", "unknown_command");
+    char* json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (json_str) {
+        mqtt_handler_publish(mqtt_handler_get_status_topic(), json_str, strlen(json_str), 0, 0);
+        cJSON_free(json_str);
+    }
+}
+
+static int current_wifi_rssi(void) {
+    wifi_ap_record_t ap_info;
+    if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+        return ap_info.rssi;
+    }
+    return 0;
 }
 
 static void on_config_message(const char* topic, const uint8_t* payload, uint32_t length) {
