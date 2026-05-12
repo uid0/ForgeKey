@@ -48,14 +48,31 @@ Import("env")  # noqa: F821  (provided by PlatformIO at script time)
 
 
 PROJECT_DIR = Path(env["PROJECT_DIR"])  # noqa: F821
-DEVICE_CONFIG = PROJECT_DIR / "src" / "provisioning" / "device_config.h"
-ARTIFACT_DIR = PROJECT_DIR / "artifacts"
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parent.parent
+ARTIFACT_DIR = REPO_ROOT / "artifacts"
+
+DEVICE_CONFIG_CANDIDATES = [
+    PROJECT_DIR / "src" / "provisioning" / "device_config.h",
+    PROJECT_DIR / "main" / "device_config.h",
+    REPO_ROOT / "src" / "provisioning" / "device_config.h",
+]
+
+
+def _resolve_device_config():
+    for path in DEVICE_CONFIG_CANDIDATES:
+        if path.is_file():
+            return path
+    return DEVICE_CONFIG_CANDIDATES[0]
+
+
+DEVICE_CONFIG = _resolve_device_config()
 
 
 def _run(cmd):
     try:
         return subprocess.check_output(
-            cmd, cwd=str(PROJECT_DIR), stderr=subprocess.DEVNULL
+            cmd, cwd=str(REPO_ROOT), stderr=subprocess.DEVNULL
         ).decode().strip()
     except (subprocess.CalledProcessError, FileNotFoundError):
         return ""
@@ -121,14 +138,16 @@ def _export_artifact(source, target, env):  # noqa: ARG001 (PIO callback signatu
         return
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Variant slug derived from the PlatformIO env name, so the people-counter
-    # and temperature-sensor builds don't overwrite each other's artifacts —
-    # cross-flashing the wrong binary would be a serious OTA foot-gun.
+    # Variant slug derived from the PlatformIO env name, so the different
+    # firmware targets do not overwrite each other's artifacts — cross-flashing
+    # the wrong binary would be a serious OTA foot-gun.
     pioenv = env["PIOENV"]  # noqa: F821
     if pioenv == "seeed_xiao_esp32s3":
         variant = "people-counter"
     elif pioenv == "seeed_xiao_esp32s3_temperature":
         variant = "temperature-sensor"
+    elif pioenv == "seeed_xiao_esp32c6_lock":
+        variant = "cabinet-lock"
     else:
         variant = pioenv
 

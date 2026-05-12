@@ -36,6 +36,34 @@ const char* mqttStateName(int state) {
         default: return "UNKNOWN";
     }
 }
+
+String escapeJsonString(const char* value) {
+    String out;
+    if (!value) return out;
+
+    while (*value) {
+        const char ch = *value++;
+        switch (ch) {
+            case '\\': out += "\\\\"; break;
+            case '"':  out += "\\\""; break;
+            case '\b': out += "\\b"; break;
+            case '\f': out += "\\f"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if ((unsigned char)ch < 0x20) {
+                    char buf[7];
+                    snprintf(buf, sizeof(buf), "\\u%04x", (unsigned char)ch);
+                    out += buf;
+                } else {
+                    out += ch;
+                }
+                break;
+        }
+    }
+    return out;
+}
 }  // namespace
 
 void MqttClient::staticCallback(char* topic, uint8_t* payload, unsigned int length) {
@@ -159,12 +187,16 @@ void MqttClient::setTopicPrefix(const char* mac) {
     if (bleEquipmentTopic.length() == 0) {
         bleEquipmentTopic = String("forgekey/") + mac + "/ble/equipment";
     }
+    if (logTopic.length() == 0) {
+        logTopic = String("forgekey/") + mac + "/logs";
+    }
 
-    Serial.printf("[MQTT] setTopicPrefix: prefix=%s default_occupancy=%s default_reading=%s capabilities=%s ble_devices=%s ble_beacons=%s ble_peers=%s ble_equipment=%s\n",
+    Serial.printf("[MQTT] setTopicPrefix: prefix=%s default_occupancy=%s default_reading=%s capabilities=%s ble_devices=%s ble_beacons=%s ble_peers=%s ble_equipment=%s logs=%s\n",
                   topicPrefix.c_str(), occupancyTopic.c_str(),
                   readingTopic.c_str(), capabilitiesTopic.c_str(),
                   bleDevicesTopic.c_str(), bleBeaconsTopic.c_str(),
-                  blePeersTopic.c_str(), bleEquipmentTopic.c_str());
+                  blePeersTopic.c_str(), bleEquipmentTopic.c_str(),
+                  logTopic.c_str());
 }
 
 bool MqttClient::publishCapabilities(const char* jsonPayload) {
@@ -287,6 +319,16 @@ void MqttClient::setStatusTopic(const char* topic) {
         statusTopic = topic;
     } else {
         Serial.println("[MQTT] setStatusTopic: empty value ignored");
+    }
+}
+
+void MqttClient::setLogTopic(const char* topic) {
+    if (topic && *topic) {
+        Serial.printf("[MQTT] setLogTopic: '%s' -> '%s'\n",
+                      logTopic.c_str(), topic);
+        logTopic = topic;
+    } else {
+        Serial.println("[MQTT] setLogTopic: empty value ignored");
     }
 }
 
@@ -558,6 +600,30 @@ bool MqttClient::publishStatus(const char* jsonPayload) {
     if (ok) lastPublishMs = millis();
     Serial.printf("[MQTT] publishStatus: topic=%s payload=%s ok=%d\n",
                   statusTopic.c_str(), jsonPayload, (int)ok);
+    return ok;
+}
+
+bool MqttClient::publishLog(unsigned long timestampMs,
+                            const char* level,
+                            const char* tag,
+                            const char* message) {
+    if (!client || !client->connected()) return false;
+    if (logTopic.length() == 0) return false;
+
+    String payload;
+    payload.reserve(256);
+    payload += "{\"timestamp\":";
+    payload += String(timestampMs);
+    payload += ",\"level\":\"";
+    payload += escapeJsonString(level ? level : "");
+    payload += "\",\"tag\":\"";
+    payload += escapeJsonString(tag ? tag : "");
+    payload += "\",\"message\":\"";
+    payload += escapeJsonString(message ? message : "");
+    payload += "\"}";
+
+    bool ok = client->publish(logTopic.c_str(), payload.c_str());
+    if (ok) lastPublishMs = millis();
     return ok;
 }
 

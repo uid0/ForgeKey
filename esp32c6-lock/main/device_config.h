@@ -31,6 +31,15 @@
 #define FORGEKEY_FIRMWARE_VERSION "0.1.0"
 #endif
 
+/* Build identity */
+#ifndef FORGEKEY_BUILD_TARGET
+#define FORGEKEY_BUILD_TARGET "esp32c6-lock"
+#endif
+
+#ifndef FORGEKEY_BUILD_FRAMEWORK
+#define FORGEKEY_BUILD_FRAMEWORK "esp-idf"
+#endif
+
 /* MQTT broker fallback */
 #ifndef MQTT_BROKER_FALLBACK_HOST
 #define MQTT_BROKER_FALLBACK_HOST "dms.openmakersuite.net"

@@ -4,6 +4,23 @@ Verbose diagnostic logging is **on by default** in this branch. Every key
 transition on the boot → register → MQTT-connect → publish path emits a
 labelled serial line so you can identify which step is silently failing.
 
+Application-level logs emitted through `debugPrint` / `debugPrintf` are also
+mirrored to MQTT on:
+
+```text
+forgekey/<mac>/logs
+```
+
+Each payload is JSON:
+
+```json
+{"timestamp":1234,"level":"INFO","tag":"MAIN","message":"WiFi connected"}
+```
+
+This is best-effort and currently covers the shared debug helper path in
+`src/main.cpp`; lower-level direct `Serial.*` logs still appear only on the
+serial monitor unless they are migrated to the shared helper.
+
 ## Flash and capture
 
 ```bash

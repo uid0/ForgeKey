@@ -6,6 +6,7 @@
 #include "web_server.h"
 #include "lock_state.h"
 #include "lock_config.h"
+#include "device_config.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -23,7 +24,7 @@ static char s_html_cache[4096] = {0};
 static size_t s_html_len = 0;
 
 /* Cached JSON status */
-static char s_json_cache[512] = {0};
+static char s_json_cache[768] = {0};
 static size_t s_json_len = 0;
 
 /* HTTP server handle */
@@ -75,12 +76,14 @@ static const char* STATUS_PAGE_TEMPLATE =
     "</head><body>"
     "<div class=\"container\">"
     "  <div class=\"logo\">ForgeKey</div>"
-    "  <div class=\"subtitle\">Cabinet Lock</div>"
+    "  <div class=\"subtitle\">Cabinet Lock / ESP32-C6</div>"
     "  <div class=\"status-card\" id=\"statusCard\">"
     "    <div class=\"status-label\">Lock Status</div>"
     "    <div class=\"status-value\" id=\"statusValue\">--</div>"
     "    <div class=\"details\">"
     "      <div><span>MAC</span><span id=\"macAddr\">--</span></div>"
+    "      <div><span>Version</span><span id=\"versionValue\">--</span></div>"
+    "      <div><span>Target</span><span id=\"targetValue\">--</span></div>"
     "      <div><span>Reed Switch</span><span id=\"reedStatus\">--</span></div>"
     "      <div><span>Latch Supervisor</span><span id=\"latchStatus\">--</span></div>"
     "      <div><span>IR Beam</span><span id=\"irStatus\">--</span></div>"
@@ -92,7 +95,7 @@ static const char* STATUS_PAGE_TEMPLATE =
     "    <p>Need to unlock this cabinet? Generate an unlock code from the OpenMakerSuite dashboard.</p>"
     "    <a href=\"__DEEP_LINK__\" target=\"_blank\" class=\"cta-button\">Go to OpenMakerSuite</a>"
     "  </div>"
-    "  <div class=\"footer\">ForgeKey Cabinet Lock - Built with ESP32-C6</div>"
+    "  <div class=\"footer\">ForgeKey Cabinet Lock - ESP-IDF on ESP32-C6</div>"
     "</div>"
     "<script>"
     "function updateStatus() {"
@@ -103,6 +106,8 @@ static const char* STATUS_PAGE_TEMPLATE =
     "      document.getElementById('statusValue').className = 'status-value status-' + (data.state || '');"
     "      document.getElementById('statusCard').className = 'status-card status-' + (data.state || '');"
     "      document.getElementById('macAddr').textContent = data.mac || '--';"
+    "      document.getElementById('versionValue').textContent = data.firmware_version || '--';"
+    "      document.getElementById('targetValue').textContent = data.build_target || '--';"
     "      document.getElementById('reedStatus').textContent = data.reed_closed ? 'Closed' : 'Open';"
     "      document.getElementById('latchStatus').textContent = data.latch_locked ? 'Locked' : 'Unlocked';"
     "      document.getElementById('irStatus').textContent = data.ir_broken ? 'Broken' : 'Intact';"
@@ -222,13 +227,18 @@ const char* lock_web_server_get_json_status(void) {
 
     s_json_len = snprintf(s_json_cache, sizeof(s_json_cache),
         "{\"mac\":\"%s\",\"secure\":%s,\"item_present\":%s,"
-        "\"uptime\":%lu,\"state\":\"%s\",\"reed_closed\":%s,"
+        "\"uptime\":%lu,\"firmware_version\":\"%s\","
+        "\"build_target\":\"%s\",\"framework\":\"%s\","
+        "\"state\":\"%s\",\"reed_closed\":%s,"
         "\"latch_locked\":%s,\"ir_broken\":%s,\"mortise_active\":%s,"
         "\"asset_id\":\"%s\"}",
         lock_state_get_mac_address(),
         tel.secure ? "true" : "false",
         !tel.ir_broken ? "true" : "false",
         (unsigned long)tel.uptime_ms,
+        FORGEKEY_FIRMWARE_VERSION,
+        FORGEKEY_BUILD_TARGET,
+        FORGEKEY_BUILD_FRAMEWORK,
         state_name,
         tel.reed_closed ? "true" : "false",
         tel.latch_locked ? "true" : "false",

@@ -3,7 +3,7 @@
 ## Documentation References
 - `FORGEKEY_DEVICE.md`: Describes the device lifecycle, OTA apply flow, NVS layout, and security model.
 - `PEOPLE_COUNTER.md`: Details specifics for the people-counter variant of ForgeKey devices.
-- `LOCK_DEVICE.md`: Details the cabinet-lock build: state machine, MQTT protocol, hardware wiring, embedded web page.
+- `LOCK_DEVICE.md`: Details the cabinet-lock build: state machine, MQTT protocol, hardware wiring, embedded web page. The active lock firmware lives under `esp32c6-lock/`.
 - `docs/OTA_DEPLOYMENT.md`: Walks through the process of shipping new firmware, including signing-key setup, build, upload via OMS, and troubleshooting.
 
 ## Development Network Configuration
@@ -25,7 +25,15 @@ To manually verify all environments before committing:
 pio run
 ```
 
-This builds `seeed_xiao_esp32s3` (people-counter), `seeed_xiao_esp32s3_temperature` (temperature sensor), and `seeed_xiao_esp32s3_lock` (cabinet lock).
+This builds `seeed_xiao_esp32s3` (people-counter) and `seeed_xiao_esp32s3_temperature` (temperature sensor).
+
+The cabinet-lock firmware is the standalone ESP-IDF project in `esp32c6-lock/`.
+Verify it separately with:
+```bash
+cd esp32c6-lock
+. $IDF_PATH/export.sh
+idf.py build
+```
 
 To run Celery task runner locally during development or testing, use the following command:
 ```bash

@@ -4,6 +4,10 @@ Cabinet-lock build for ForgeKey devices. This variant controls a solenoid-driven
 mortise lock with full supervision (reed switch + latch supervisor), IR beam
 item detection, and physical key (mortise) override.
 
+The active lock firmware is the ESP-IDF project under `esp32c6-lock/` for the
+Seeed Studio XIAO ESP32-C6. The older Arduino prototype under `src/lock/` is
+retained as a reference only and is not built by default.
+
 ## High-level flow
 
 ```
@@ -67,7 +71,7 @@ When the mortise key is turned, the switch closes and D5 reads LOW.
 ## State Machine
 
 The lock operates in five states. All transitions are non-blocking (driven by
-`millis()` timing in `LockDevice::tick()`).
+`esp_timer_get_time()` timing in `lock_state_tick()`).
 
 ### INITIALIZING
 
@@ -179,6 +183,9 @@ The device validates:
   "secure": true,
   "item_present": true,
   "uptime": 3600,
+  "firmware_version": "0.1.0",
+  "build_target": "esp32c6-lock",
+  "framework": "esp-idf",
   "last_trigger": "jwt",
   "state": "SECURE",
   "reed_closed": true,
@@ -225,7 +232,9 @@ dashboard to generate an unlock request or code.
 
 ## Compile-Time Configuration
 
-All settings are in `src/lock/lock_config.h`:
+Primary defaults live in `esp32c6-lock/main/lock_config.h`. The ESP-IDF lock
+project also exposes matching Kconfig entries in `esp32c6-lock/main/Kconfig.projbuild`
+for native `idf.py` workflows.
 
 | Macro | Default | Description |
 |-------|---------|-------------|
@@ -250,23 +259,26 @@ All settings are in `src/lock/lock_config.h`:
 ## Building
 
 ```bash
-# Build only the lock variant
-pio run -e seeed_xiao_esp32s3_lock
+# Build the active ESP32-C6 lock variant
+cd esp32c6-lock
+. $IDF_PATH/export.sh
+idf.py build
+```
 
-# Build all variants
+```bash
+# From the repo root, build the Arduino variants
 pio run
 ```
 
 ## Security Notes
 
 1. **JWT Secret:** `FORGEKEY_LOCK_JWT_SECRET` must be changed before any
-   production deployment. The default value is known and the HMAC verification
-   is a placeholder — production should implement full HS256 verification.
+   production deployment. The default value is intentionally unsafe.
 
-2. **HMAC Verification:** The current implementation validates JWT timestamp
-   and expiry but does not verify the HMAC-SHA256 signature. Add the
-   `esp32-hal-hmac` library and implement signature verification before
-   deploying to production.
+2. **HMAC Verification:** The ESP32-C6 lock firmware verifies HS256 JWT
+   signatures with mbedTLS HMAC-SHA256 in `esp32c6-lock/main/lock_state.c`.
+   Valid tokens still depend on the device clock being NTP-synced because the
+   firmware enforces both timestamp tolerance and token expiry.
 
 3. **Solenoid Safety:** The solenoid pulse is short (default 1.5s) to prevent
    coil overheating. The latch supervisor feedback ensures the bolt actually
@@ -275,6 +287,10 @@ pio run
 4. **Supervision AND:** The `secure` status requires both reed closed AND
    latch locked. Django should treat `secure: false` as a potential intrusion
    and trigger appropriate alerts.
+
+5. **Security Header Sync:** If you rotate the OTA signing key or OMS CA in
+   `src/security/`, run `python3 esp32c6-lock/scripts/esp32c6-sync-security.py`
+   before building the lock firmware so `esp32c6-lock/main/` stays in sync.
 
 ## Telemetry Change Detection
 

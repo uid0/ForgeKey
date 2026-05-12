@@ -53,17 +53,81 @@
 String macAddress;
 
 // ============= DEBUG HELPERS =============
+namespace {
+constexpr size_t kDebugLevelMax = 8;
+constexpr size_t kDebugTagMax = 16;
+constexpr size_t kDebugMessageMax = 160;
+constexpr size_t kBufferedDebugLogCount = 24;
+
+struct BufferedDebugLog {
+    unsigned long timestampMs;
+    char level[kDebugLevelMax];
+    char tag[kDebugTagMax];
+    char message[kDebugMessageMax];
+};
+
+BufferedDebugLog g_bufferedDebugLogs[kBufferedDebugLogCount];
+size_t g_bufferedDebugLogStart = 0;
+size_t g_bufferedDebugLogCount = 0;
+
+void copyDebugField(char* dest, size_t destSize, const char* src) {
+    if (destSize == 0) return;
+    snprintf(dest, destSize, "%s", src ? src : "");
+}
+
+void bufferDebugLog(unsigned long timestampMs,
+                    const char* level,
+                    const char* tag,
+                    const char* message) {
+    size_t index;
+    if (g_bufferedDebugLogCount < kBufferedDebugLogCount) {
+        index = (g_bufferedDebugLogStart + g_bufferedDebugLogCount) % kBufferedDebugLogCount;
+        g_bufferedDebugLogCount++;
+    } else {
+        index = g_bufferedDebugLogStart;
+        g_bufferedDebugLogStart = (g_bufferedDebugLogStart + 1) % kBufferedDebugLogCount;
+    }
+
+    g_bufferedDebugLogs[index].timestampMs = timestampMs;
+    copyDebugField(g_bufferedDebugLogs[index].level,
+                   sizeof(g_bufferedDebugLogs[index].level), level);
+    copyDebugField(g_bufferedDebugLogs[index].tag,
+                   sizeof(g_bufferedDebugLogs[index].tag), tag);
+    copyDebugField(g_bufferedDebugLogs[index].message,
+                   sizeof(g_bufferedDebugLogs[index].message), message);
+}
+
+void flushBufferedDebugLogs() {
+    while (g_bufferedDebugLogCount > 0) {
+        BufferedDebugLog& entry = g_bufferedDebugLogs[g_bufferedDebugLogStart];
+        if (!mqttClient.publishLog(entry.timestampMs, entry.level, entry.tag, entry.message)) {
+            return;
+        }
+        g_bufferedDebugLogStart = (g_bufferedDebugLogStart + 1) % kBufferedDebugLogCount;
+        g_bufferedDebugLogCount--;
+    }
+}
+
+void emitDebugLog(const char* level, const char* tag, const char* message) {
+    unsigned long timestampMs = millis();
+    Serial.printf("[%6lu] [%s] %s: %s\n", timestampMs, level, tag, message);
+    if (!mqttClient.publishLog(timestampMs, level, tag, message)) {
+        bufferDebugLog(timestampMs, level, tag, message);
+    }
+}
+}  // namespace
+
 void debugPrint(const char* level, const char* tag, const char* msg) {
-    Serial.printf("[%6lu] [%s] %s: %s\n", millis(), level, tag, msg);
+    emitDebugLog(level, tag, msg ? msg : "");
 }
 
 void debugPrintf(const char* level, const char* tag, const char* fmt, ...) {
-    char buf[160];
+    char buf[kDebugMessageMax];
     va_list args;
     va_start(args, fmt);
     vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
-    Serial.printf("[%6lu] [%s] %s: %s\n", millis(), level, tag, buf);
+    emitDebugLog(level, tag, buf);
 }
 // =========================================
 
@@ -723,6 +787,7 @@ void loop() {
 
     bool mqttConnected = mqttClient.isConnected();
     if (mqttConnected && !mqttWasConnected) {
+        flushBufferedDebugLogs();
         debugPrint("INFO", "MQTT", "MQTT connected");
         // status_led's tick() preserves the operator blink override across
         // this transition (a reconnect during identify shouldn't silently stop

@@ -1,7 +1,9 @@
 #ifndef FORGEKEY_LOCK_CONFIG_H
 #define FORGEKEY_LOCK_CONFIG_H
 
-// Compile-time configuration for the cabinet-lock build variant.
+// Legacy Arduino cabinet-lock prototype configuration.
+// The active lock firmware now lives under esp32c6-lock/ and is built via the
+// standalone ESP-IDF project there.
 
 // GPIO pin assignments
 #ifndef FORGEKEY_LOCK_SOLENOID_PIN

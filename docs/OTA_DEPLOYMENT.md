@@ -19,9 +19,11 @@ each release.
 ## 1. One-time signing-key setup
 
 ForgeKey OTA images are signed with **ECDSA P-256**. The device verifies
-each dispatch against a public key compiled into firmware
-(`src/security/firmware_pubkey.h`). The matching private key lives only on
-the OMS server, exported as the `FORGEKEY_FIRMWARE_SIGNING_KEY` env var.
+each dispatch against a public key compiled into firmware. Arduino targets
+read that key from `src/security/firmware_pubkey.h`; the ESP32-C6 cabinet-lock
+target carries a synced copy in `esp32c6-lock/main/firmware_pubkey.h`. The
+matching private key lives only on the OMS server, exported as the
+`FORGEKEY_FIRMWARE_SIGNING_KEY` env var.
 
 You only do this once per fleet — every device flashed with the same
 `firmware_pubkey.h` will accept any image signed by the matching private
@@ -55,6 +57,13 @@ This rewrites `src/security/firmware_pubkey.h` in place from
 `.firmware-keys/firmware-signing.pub`. **Commit the updated header.** Every
 device flashed from that point forward will trust signatures from the
 matching private key.
+
+If you ship the ESP32-C6 cabinet-lock firmware, also sync the generated lock
+copy before building:
+
+```bash
+python3 esp32c6-lock/scripts/esp32c6-sync-security.py
+```
 
 ```bash
 git add src/security/firmware_pubkey.h
@@ -142,21 +151,23 @@ build needed.
 
 ## 2. Build a deployable binary
 
-ForgeKey ships two device variants from one tree, each as its own
-PlatformIO env:
+ForgeKey ships three device variants from one tree:
 
-| PlatformIO env | Variant slug | Purpose |
+| Build target | Variant slug | Purpose |
 |---|---|---|
 | `seeed_xiao_esp32s3` | `people-counter` | Camera-based occupancy counting |
 | `seeed_xiao_esp32s3_temperature` | `temperature-sensor` | DHT 21 temperature/humidity |
+| `esp32c6-lock/` (`idf.py build`) | `cabinet-lock` | Cabinet lock on ESP32-C6 / ESP-IDF |
 
-The two binaries are **not interchangeable**. A temperature-sensor device
-cannot run a people-counter image and vice versa — dispatch the right one.
+These binaries are **not interchangeable**. Dispatch the right image for the
+target hardware and firmware family.
 
 ### 2.1 Bump the version
 
 ```bash
 # Edit src/provisioning/device_config.h, bump FORGEKEY_FIRMWARE_VERSION.
+# If shipping the cabinet-lock build, keep esp32c6-lock/main/device_config.h
+# in sync before building.
 # Commit the bump (the build embeds the git SHA, so commit-then-build keeps
 # the artifact name and the embedded version coherent).
 git add src/provisioning/device_config.h
@@ -172,13 +183,15 @@ git commit -m "chore(release): bump firmware to <version>"
 # Temperature-sensor variant:
 ~/.platformio/penv/bin/platformio run -e seeed_xiao_esp32s3_temperature
 
-# Or build both in one go:
-~/.platformio/penv/bin/platformio run -e seeed_xiao_esp32s3 -e seeed_xiao_esp32s3_temperature
+# Cabinet-lock variant:
+cd esp32c6-lock
+. $IDF_PATH/export.sh
+idf.py build
 ```
 
 ### 2.3 Locate the binary
 
-PlatformIO writes the raw build output to:
+PlatformIO writes the Arduino build outputs to:
 
 ```
 .pio/build/<env>/firmware.bin
@@ -216,6 +229,14 @@ cat artifacts/forgekey-people-counter-latest.bin.sha256
 If the working tree was dirty at build time the embedded git commit will
 have a `-dirty` suffix. **Don't ship `-dirty` artifacts to production.**
 Commit first, then rebuild.
+
+For the ESP32-C6 cabinet-lock build, `idf.py build` writes binaries under
+`esp32c6-lock/build/`, typically including `lock_device.bin`. Hash those
+artifacts directly when preparing an OTA upload:
+
+```bash
+shasum -a 256 esp32c6-lock/build/lock_device.bin
+```
 
 ---
 

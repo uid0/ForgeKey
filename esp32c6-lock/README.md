@@ -1,6 +1,7 @@
 # ESP32-C6 Lock Device
 
 ESP-IDF native build for the ForgeKey cabinet-lock on Seeed Studio XIAO ESP32-C6.
+This is the active lock firmware target in the repo.
 
 ## Build Instructions
 
@@ -11,7 +12,7 @@ ESP-IDF native build for the ForgeKey cabinet-lock on Seeed Studio XIAO ESP32-C6
 # Set up ESP-IDF environment
 . $IDF_PATH/export.sh
 
-# Build
+# Build from esp32c6-lock/
 idf.py build
 
 # Flash
@@ -33,7 +34,10 @@ idf.py monitor
 
 ## Configuration
 
-Configurable via `sdkconfig`:
+Default values live in `main/lock_config.h`. Matching Kconfig entries live in
+`main/Kconfig.projbuild` for native ESP-IDF workflows.
+
+Configurable values include:
 - `FORGEKEY_LOCK_SOLENOID_PIN` - Solenoid control pin (default: 0)
 - `FORGEKEY_LOCK_REED_PIN` - Reed switch pin (default: 1)
 - `FORGEKEY_LOCK_MORTISE_PIN` - Mortise switch pin (default: 5)
@@ -54,5 +58,7 @@ Configurable via `sdkconfig`:
 ## Security Notes
 
 1. Change `FORGEKEY_LOCK_JWT_SECRET` before production deployment
-2. Implement full HMAC-SHA256 JWT verification
+2. JWT validation already includes HMAC-SHA256 signature verification via mbedTLS
 3. The solenoid pulse is short (1.5s) to prevent coil overheating
+4. After rotating `src/security/firmware_pubkey.h` or `src/security/oms_ca.h`,
+   run `python3 esp32c6-lock/scripts/esp32c6-sync-security.py` before building

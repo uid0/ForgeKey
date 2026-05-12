@@ -32,6 +32,7 @@ public:
     // by MAC alone before OMS knows its id.
     void setCommandTopic(const char* topic);
     void setStatusTopic(const char* topic);
+    void setLogTopic(const char* topic);
 
     bool publishOccupancy(int count);
     // Publish a temperature/humidity reading on the device's reading topic.
@@ -67,6 +68,13 @@ public:
     // Publish an arbitrary JSON payload on statusTopic. Used for command
     // acks and operator-visible state echoes. Best-effort.
     bool publishStatus(const char* jsonPayload);
+    // Publish one structured device log event on logTopic. Payload:
+    //   {"timestamp":1234,"level":"INFO","tag":"MAIN","message":"..."}
+    // Best-effort and intentionally silent on failure to avoid log storms.
+    bool publishLog(unsigned long timestampMs,
+                    const char* level,
+                    const char* tag,
+                    const char* message);
 
     // BLE-specific publish helpers. Each builds a topic from the MAC prefix
     // and publishes the JSON payload. Best-effort (returns false if not
@@ -105,6 +113,7 @@ private:
     String configTopic;         // credential-rotation / config command topic
     String commandTopic;        // per-device control commands (subscribe)
     String statusTopic;         // operator-visible state changes (publish)
+    String logTopic;            // device logs (publish)
     String capabilitiesTopic;   // capability announcement topic (publish)
     String bleDevicesTopic;     // BLE scan results (publish)
     String bleBeaconsTopic;     // beacon announcement (publish)

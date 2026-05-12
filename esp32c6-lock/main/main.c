@@ -224,6 +224,8 @@ void app_main(void) {
                 cJSON* root = cJSON_CreateObject();
                 cJSON_AddItemToObject(root, "capabilities", caps);
                 cJSON_AddStringToObject(root, "firmware_version", FORGEKEY_FIRMWARE_VERSION);
+                cJSON_AddStringToObject(root, "build_target", FORGEKEY_BUILD_TARGET);
+                cJSON_AddStringToObject(root, "framework", FORGEKEY_BUILD_FRAMEWORK);
                 char* json_str = cJSON_PrintUnformatted(root);
                 cJSON_Delete(root);
 
@@ -263,6 +265,9 @@ void app_main(void) {
             cJSON_AddBoolToObject(root, "secure", tel.secure);
             cJSON_AddBoolToObject(root, "item_present", !tel.ir_broken);
             cJSON_AddNumberToObject(root, "uptime", tel.uptime_ms);
+            cJSON_AddStringToObject(root, "firmware_version", FORGEKEY_FIRMWARE_VERSION);
+            cJSON_AddStringToObject(root, "build_target", FORGEKEY_BUILD_TARGET);
+            cJSON_AddStringToObject(root, "framework", FORGEKEY_BUILD_FRAMEWORK);
             cJSON_AddStringToObject(root, "last_trigger", trigger_str);
             cJSON_AddStringToObject(root, "state", lock_state_state_name(lock_state_get_state()));
             cJSON_AddBoolToObject(root, "reed_closed", tel.reed_closed);

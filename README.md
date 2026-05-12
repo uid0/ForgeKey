@@ -43,9 +43,20 @@ ForgeKey is based off of the adaptable ESP32 series of chips.
 
 - [FORGEKEY_DEVICE.md](FORGEKEY_DEVICE.md) — device lifecycle, OTA apply flow, NVS layout, security model.
 - [PEOPLE_COUNTER.md](PEOPLE_COUNTER.md) — people-counter variant specifics.
-- [LOCK_DEVICE.md](LOCK_DEVICE.md) — cabinet-lock build: state machine, MQTT protocol, hardware wiring, embedded web page.
+- [LOCK_DEVICE.md](LOCK_DEVICE.md) — cabinet-lock build on ESP32-C6 / ESP-IDF: state machine, MQTT protocol, hardware wiring, embedded web page.
+- [esp32c6-lock/README.md](esp32c6-lock/README.md) — ESP-IDF-specific build, flash, and project-layout notes for the cabinet-lock firmware.
 - [docs/OTA_DEPLOYMENT.md](docs/OTA_DEPLOYMENT.md) — operator walkthrough for shipping new firmware (signing-key setup, build, upload via OMS, troubleshooting).
 - [DEBUG.md](DEBUG.md) — diagnostic logging reference.
+
+## Active Firmware Targets
+
+- `seeed_xiao_esp32s3` — people-counter firmware on Arduino / PlatformIO.
+- `seeed_xiao_esp32s3_temperature` — temperature-sensor firmware on Arduino / PlatformIO.
+- `esp32c6-lock/` — cabinet-lock firmware on ESP-IDF for the ESP32-C6.
+
+The older Arduino cabinet-lock prototype remains under `src/lock/` as a reference,
+but it is excluded from the default Arduino builds and is no longer the primary
+lock implementation.
 
 ## Predefined Dev Networks (optional)
 

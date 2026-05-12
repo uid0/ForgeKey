@@ -185,7 +185,7 @@ No echo on no-op (already in requested state).
 
 # Lock Device Commands
 
-The cabinet-lock build (`seeed_xiao_esp32s3_lock`) receives unlock commands
+The ESP32-C6 / ESP-IDF cabinet-lock build receives unlock commands
 on a separate topic (`cabinets/<mac>/cmd`) rather than the standard command
 topic. This keeps unlock signaling separate from operator commands (blink,
 identify, restart, etc.).
@@ -234,6 +234,9 @@ at `FORGEKEY_LOCK_TELEMETRY_INTERVAL_MS` (default 10s):
   "secure": true,
   "item_present": true,
   "uptime": 421337,
+  "firmware_version": "0.1.0",
+  "build_target": "esp32c6-lock",
+  "framework": "esp-idf",
   "last_trigger": "jwt",
   "state": "SECURE",
   "reed_closed": true,
@@ -251,6 +254,9 @@ Fields:
 | `secure` | bool | `reed_closed AND latch_locked` (supervision AND) |
 | `item_present` | bool | `!ir_broken` (IR beam intact = item present) |
 | `uptime` | number | `millis()` uptime in ms |
+| `firmware_version` | string | Firmware version reported by the ESP-IDF lock build |
+| `build_target` | string | Build target identifier, currently `esp32c6-lock` |
+| `framework` | string | Firmware stack identifier, currently `esp-idf` |
 | `last_trigger` | string | Last unlock trigger: `"jwt"`, `"mortise"`, `"door_close"`, `"alarm_timeout"` |
 | `state` | string | Current state: `INITIALIZING`, `SECURE`, `UNLOCKED`, `ACCESSING`, `ALARM` |
 | `reed_closed` | bool | Raw reed switch state |
