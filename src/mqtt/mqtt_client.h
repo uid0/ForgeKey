@@ -33,6 +33,7 @@ public:
     void setCommandTopic(const char* topic);
     void setStatusTopic(const char* topic);
     void setLogTopic(const char* topic);
+    void setStateTopic(const char* topic);
 
     bool publishOccupancy(int count);
     // Publish a temperature/humidity reading on the device's reading topic.
@@ -68,6 +69,9 @@ public:
     // Publish an arbitrary JSON payload on statusTopic. Used for command
     // acks and operator-visible state echoes. Best-effort.
     bool publishStatus(const char* jsonPayload);
+    // Publish the retained device state JSON on stateTopic so subscribers can
+    // immediately see the device's last known online/offline state.
+    bool publishStateJson(const char* jsonPayload);
     // Publish one structured device log event on logTopic. Payload:
     //   {"timestamp":1234,"level":"INFO","tag":"MAIN","message":"..."}
     // Best-effort and intentionally silent on failure to avoid log storms.
@@ -114,6 +118,7 @@ private:
     String commandTopic;        // per-device control commands (subscribe)
     String statusTopic;         // operator-visible state changes (publish)
     String logTopic;            // device logs (publish)
+    String stateTopic;          // retained device state topic (publish + LWT)
     String capabilitiesTopic;   // capability announcement topic (publish)
     String bleDevicesTopic;     // BLE scan results (publish)
     String bleBeaconsTopic;     // beacon announcement (publish)

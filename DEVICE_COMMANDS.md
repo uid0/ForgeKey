@@ -2,7 +2,8 @@
 
 Per-device control plane between OMS and ForgeKey firmware. OMS publishes
 JSON commands on `forgekey/<mac>/command`; the device replies with structured
-acks on `forgekey/<mac>/status`.
+acks on `forgekey/<mac>/status`. Device connection state is published
+separately on `forgekey/<mac>/state`.
 
 `<mac>` is the bare lowercase 12-hex MAC (no separators), e.g.
 `aabbcc112233`.
@@ -13,9 +14,24 @@ acks on `forgekey/<mac>/status`.
 |-----------|-------|----------|----------|
 | Command   | `forgekey/<mac>/command` | OMS | Device |
 | Ack/state | `forgekey/<mac>/status`  | Device | OMS |
+| LWT/state | `forgekey/<mac>/state` | Device/broker LWT | OMS |
 
-Both use QoS 0, retain=false. The MQTT username is `forgemqtt`; the password
-is the per-device JWT issued at registration.
+Command and status messages use QoS 0, retain=false. The MQTT username is
+`forgemqtt`; the password is the per-device JWT issued at registration.
+
+The state topic is retained. Devices publish this birth message after a
+successful MQTT connect:
+
+```json
+{ "online": true, "ip": "192.168.1.50" }
+```
+
+The broker publishes this retained Last Will payload if the connection drops
+unexpectedly:
+
+```json
+{ "online": false, "reason": "unexpected_disconnect" }
+```
 
 ## Common ack shape
 

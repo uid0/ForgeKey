@@ -688,8 +688,8 @@ void setup() {
                 creds.mqttBrokerHost.c_str(), (unsigned)creds.mqttBrokerPort,
                 (int)creds.mqttBrokerUseTls);
 
-    mqttClient.begin(brokerHost.c_str(), brokerPort, mqttJwt, brokerUseTls);
     mqttClient.setTopicPrefix(macAddress.c_str());
+    mqttClient.begin(brokerHost.c_str(), brokerPort, mqttJwt, brokerUseTls);
 
     // Validate the stored pings topic against the OMS contract before
     // applying it. A topic from an older firmware (leading '/') or from a

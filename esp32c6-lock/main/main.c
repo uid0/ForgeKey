@@ -164,14 +164,14 @@ void app_main(void) {
                   broker_host, broker_port, (int)broker_use_tls);
     }
 
+    /* Set topic prefix */
+    mqtt_handler_set_topic_prefix(mac_str);
+
     if (!mqtt_handler_begin(broker_host, broker_port, mqtt_jwt, broker_use_tls)) {
         LOCK_LOGE("MQTT init failed");
         vTaskDelay(2000 / portTICK_PERIOD_MS);
         esp_restart();
     }
-
-    /* Set topic prefix */
-    mqtt_handler_set_topic_prefix(mac_str);
 
     /* Set up topics */
     char command_topic[128];

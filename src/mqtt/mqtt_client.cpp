@@ -64,6 +64,33 @@ String escapeJsonString(const char* value) {
     }
     return out;
 }
+
+String defaultStateTopic() {
+    uint64_t chipMac = ESP.getEfuseMac();
+    char macBuf[13];
+    snprintf(macBuf, sizeof(macBuf), "%012llx",
+             static_cast<unsigned long long>(chipMac));
+    return String("forgekey/") + macBuf + "/state";
+}
+
+String buildStatePayload(bool online, const char* ip, const char* reason) {
+    String payload;
+    payload.reserve(96);
+    payload += "{\"online\":";
+    payload += online ? "true" : "false";
+    if (ip && *ip) {
+        payload += ",\"ip\":\"";
+        payload += escapeJsonString(ip);
+        payload += "\"";
+    }
+    if (reason && *reason) {
+        payload += ",\"reason\":\"";
+        payload += escapeJsonString(reason);
+        payload += "\"";
+    }
+    payload += "}";
+    return payload;
+}
 }  // namespace
 
 void MqttClient::staticCallback(char* topic, uint8_t* payload, unsigned int length) {
@@ -190,13 +217,16 @@ void MqttClient::setTopicPrefix(const char* mac) {
     if (logTopic.length() == 0) {
         logTopic = String("forgekey/") + mac + "/logs";
     }
+    if (stateTopic.length() == 0) {
+        stateTopic = String("forgekey/") + mac + "/state";
+    }
 
-    Serial.printf("[MQTT] setTopicPrefix: prefix=%s default_occupancy=%s default_reading=%s capabilities=%s ble_devices=%s ble_beacons=%s ble_peers=%s ble_equipment=%s logs=%s\n",
+    Serial.printf("[MQTT] setTopicPrefix: prefix=%s default_occupancy=%s default_reading=%s capabilities=%s ble_devices=%s ble_beacons=%s ble_peers=%s ble_equipment=%s logs=%s state=%s\n",
                   topicPrefix.c_str(), occupancyTopic.c_str(),
                   readingTopic.c_str(), capabilitiesTopic.c_str(),
                   bleDevicesTopic.c_str(), bleBeaconsTopic.c_str(),
                   blePeersTopic.c_str(), bleEquipmentTopic.c_str(),
-                  logTopic.c_str());
+                  logTopic.c_str(), stateTopic.c_str());
 }
 
 bool MqttClient::publishCapabilities(const char* jsonPayload) {
@@ -332,6 +362,16 @@ void MqttClient::setLogTopic(const char* topic) {
     }
 }
 
+void MqttClient::setStateTopic(const char* topic) {
+    if (topic && *topic) {
+        Serial.printf("[MQTT] setStateTopic: '%s' -> '%s'\n",
+                      stateTopic.c_str(), topic);
+        stateTopic = topic;
+    } else {
+        Serial.println("[MQTT] setStateTopic: empty value ignored");
+    }
+}
+
 bool MqttClient::connect() {
     if (!client) {
         Serial.println("[MQTT] connect: no client (begin() not called)");
@@ -339,6 +379,11 @@ bool MqttClient::connect() {
     }
 
     String clientId = "ForgeKey_" + String((uint32_t)ESP.getEfuseMac(), HEX);
+    if (stateTopic.length() == 0) {
+        stateTopic = defaultStateTopic();
+        Serial.printf("[MQTT] stateTopic defaulted during connect: %s\n",
+                      stateTopic.c_str());
+    }
     Serial.printf("[MQTT] connect: broker=%s:%d client_id=%s username=forgemqtt jwt_len=%u\n",
                   broker.c_str(), port, clientId.c_str(),
                   (unsigned)jwtToken.length());
@@ -357,10 +402,17 @@ bool MqttClient::connect() {
         }
     }
 
-    if (client->connect(clientId.c_str(), "forgemqtt", jwtToken.c_str())) {
+    static const char* kUnexpectedDisconnectPayload =
+        "{\"online\":false,\"reason\":\"unexpected_disconnect\"}";
+    if (client->connect(clientId.c_str(), "forgemqtt", jwtToken.c_str(),
+                        stateTopic.c_str(), 0, true,
+                        kUnexpectedDisconnectPayload)) {
         lastConnectState = client->state();
         Serial.printf("[MQTT] connected: state=%d (%s)\n",
                       lastConnectState, mqttStateName(lastConnectState));
+        String ip = WiFi.localIP().toString();
+        String birthPayload = buildStatePayload(true, ip.c_str(), nullptr);
+        publishStateJson(birthPayload.c_str());
         resubscribeAll();
         return true;
     }
@@ -603,6 +655,20 @@ bool MqttClient::publishStatus(const char* jsonPayload) {
     return ok;
 }
 
+bool MqttClient::publishStateJson(const char* jsonPayload) {
+    if (!client || !client->connected()) return false;
+    if (stateTopic.length() == 0) {
+        Serial.println("[MQTT] publishStateJson: no state topic set, skipping");
+        return false;
+    }
+    if (!jsonPayload) jsonPayload = "{}";
+    bool ok = client->publish(stateTopic.c_str(), jsonPayload, true);
+    if (ok) lastPublishMs = millis();
+    Serial.printf("[MQTT] publishStateJson: topic=%s retained=true payload=%s ok=%d\n",
+                  stateTopic.c_str(), jsonPayload, (int)ok);
+    return ok;
+}
+
 bool MqttClient::publishLog(unsigned long timestampMs,
                             const char* level,
                             const char* tag,
@@ -732,7 +798,12 @@ void MqttClient::subscribeLock(MessageHandler handler) {
 
 void MqttClient::end() {
     if (client) {
-        client->disconnect();
+        if (client->connected()) {
+            String offlinePayload =
+                buildStatePayload(false, nullptr, "graceful_disconnect");
+            publishStateJson(offlinePayload.c_str());
+            client->disconnect();
+        }
         delete client;
         client = nullptr;
     }

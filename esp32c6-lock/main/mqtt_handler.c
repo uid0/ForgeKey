@@ -17,6 +17,7 @@
 #include "esp_system.h"
 #include "esp_log.h"
 #include "esp_event.h"
+#include "esp_netif.h"
 #include "esp_tls.h"
 #include "nvs_flash.h"
 
@@ -40,6 +41,7 @@ static char s_firmware_topic[FORGEKEY_MQTT_MAX_TOPIC] = {0};
 static char s_firmware_status_topic[FORGEKEY_MQTT_MAX_TOPIC] = {0};
 static char s_status_topic[FORGEKEY_MQTT_MAX_TOPIC] = {0};
 static char s_capabilities_topic[FORGEKEY_MQTT_MAX_TOPIC] = {0};
+static char s_state_topic[FORGEKEY_MQTT_MAX_TOPIC] = {0};
 
 /* Handlers */
 static mqtt_message_handler_t s_command_handler = NULL;
@@ -55,6 +57,65 @@ static char s_jwt_token[512] = {0};
 
 /* Last reconnect attempt time (seconds since epoch) */
 static time_t s_last_reconnect = 0;
+static const char kUnexpectedDisconnectState[] =
+    "{\"online\":false,\"reason\":\"unexpected_disconnect\"}";
+
+static void build_state_payload(char* dest, size_t dest_size, bool online,
+                                const char* ip, const char* reason) {
+    if (!dest || dest_size == 0) {
+        return;
+    }
+
+    if (ip && ip[0]) {
+        snprintf(dest, dest_size, "{\"online\":%s,\"ip\":\"%s\"}",
+                 online ? "true" : "false", ip);
+        return;
+    }
+    if (reason && reason[0]) {
+        snprintf(dest, dest_size, "{\"online\":%s,\"reason\":\"%s\"}",
+                 online ? "true" : "false", reason);
+        return;
+    }
+    snprintf(dest, dest_size, "{\"online\":%s}",
+             online ? "true" : "false");
+}
+
+static void current_ip_string(char* dest, size_t dest_size) {
+    if (!dest || dest_size == 0) {
+        return;
+    }
+    dest[0] = '\0';
+
+    esp_netif_t* sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (!sta) {
+        return;
+    }
+
+    esp_netif_ip_info_t ip_info;
+    if (esp_netif_get_ip_info(sta, &ip_info) != ESP_OK) {
+        return;
+    }
+
+    snprintf(dest, dest_size, IPSTR, IP2STR(&ip_info.ip));
+}
+
+static void publish_state_json(bool online, const char* ip, const char* reason) {
+    if (!s_mqtt_client || !s_mqtt_connected) {
+        return;
+    }
+    if (!s_state_topic[0]) {
+        ESP_LOGW(TAG, "State topic unset; skipping online=%d", (int)online);
+        return;
+    }
+
+    char payload[128];
+    build_state_payload(payload, sizeof(payload), online, ip, reason);
+
+    int msg_id = esp_mqtt_client_publish(s_mqtt_client, s_state_topic,
+                                         payload, 0, 0, true);
+    ESP_LOGI(TAG, "State publish topic=%s payload=%s msg_id=%d",
+             s_state_topic, payload, msg_id);
+}
 
 /* ===== MQTT event handler ===== */
 
@@ -91,6 +152,11 @@ static void mqtt_event_handler(void* handler_args, esp_event_base_t base,
             subscribe_if_set(s_lock_topic);
             subscribe_if_set(s_config_topic);
             subscribe_if_set(s_firmware_topic);
+            {
+                char ip_str[16];
+                current_ip_string(ip_str, sizeof(ip_str));
+                publish_state_json(true, ip_str, NULL);
+            }
             break;
 
         case MQTT_EVENT_DISCONNECTED:
@@ -159,6 +225,11 @@ bool mqtt_handler_begin(const char* broker_host, int port,
         .credentials.username = "forgemqtt",
         .credentials.authentication.password = jwt_token,
         .session.keepalive = 60,
+        .session.last_will.topic = s_state_topic[0] ? s_state_topic : NULL,
+        .session.last_will.msg = kUnexpectedDisconnectState,
+        .session.last_will.msg_len = sizeof(kUnexpectedDisconnectState) - 1,
+        .session.last_will.qos = 0,
+        .session.last_will.retain = true,
         .session.disable_clean_session = false,
         .session.reconnect_timeout_ms = 10000,
         .network.disable_auto_reconnect = false,
@@ -192,6 +263,7 @@ void mqtt_handler_set_topic_prefix(const char* mac) {
     snprintf(s_command_topic, sizeof(s_command_topic), "forgekey/%s/command", mac);
     snprintf(s_status_topic, sizeof(s_status_topic), "forgekey/%s/status", mac);
     snprintf(s_capabilities_topic, sizeof(s_capabilities_topic), "forgekey/%s/capabilities", mac);
+    snprintf(s_state_topic, sizeof(s_state_topic), "forgekey/%s/state", mac);
     ESP_LOGI(TAG, "Topic prefix set: %s", s_topic_prefix);
 }
 
@@ -311,6 +383,10 @@ const char* mqtt_handler_get_capabilities_topic(void) {
 
 void mqtt_handler_end(void) {
     if (s_mqtt_client) {
+        if (s_mqtt_connected) {
+            publish_state_json(false, NULL, "graceful_disconnect");
+            esp_mqtt_client_disconnect(s_mqtt_client);
+        }
         esp_mqtt_client_stop(s_mqtt_client);
         esp_mqtt_client_destroy(s_mqtt_client);
         s_mqtt_client = NULL;
