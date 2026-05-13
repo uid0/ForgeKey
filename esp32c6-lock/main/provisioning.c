@@ -15,10 +15,14 @@
 #include "freertos/task.h"
 
 #include "esp_system.h"
+#include "esp_chip_info.h"
+#include "esp_flash.h"
 #include "esp_log.h"
 #include "esp_http_client.h"
+#include "esp_mac.h"
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "cJSON.h"
 
 static const char* TAG = "PROV";
 
@@ -38,6 +42,99 @@ static const char* TAG = "PROV";
 
 static prov_credentials_t s_creds;
 static uint32_t s_boot_count = 0;
+
+static const char* chip_model_name(esp_chip_model_t model) {
+    switch (model) {
+        case CHIP_ESP32:
+            return "ESP32";
+        case CHIP_ESP32S2:
+            return "ESP32-S2";
+        case CHIP_ESP32S3:
+            return "ESP32-S3";
+        case CHIP_ESP32C3:
+            return "ESP32-C3";
+        case CHIP_ESP32H2:
+            return "ESP32-H2";
+        default:
+            return "Unknown";
+    }
+}
+
+static void add_chip_features_json(cJSON* features, uint32_t chip_features) {
+    cJSON_AddBoolToObject(features, "embedded_flash",
+                          (chip_features & CHIP_FEATURE_EMB_FLASH) != 0);
+    cJSON_AddBoolToObject(features, "wifi_bgn",
+                          (chip_features & CHIP_FEATURE_WIFI_BGN) != 0);
+    cJSON_AddBoolToObject(features, "ble",
+                          (chip_features & CHIP_FEATURE_BLE) != 0);
+    cJSON_AddBoolToObject(features, "bt",
+                          (chip_features & CHIP_FEATURE_BT) != 0);
+    cJSON_AddBoolToObject(features, "ieee802154",
+                          (chip_features & CHIP_FEATURE_IEEE802154) != 0);
+    cJSON_AddBoolToObject(features, "embedded_psram",
+                          (chip_features & CHIP_FEATURE_EMB_PSRAM) != 0);
+}
+
+static char* build_registration_metadata_json(const char* mac, const char* ip_addr) {
+    cJSON* meta = cJSON_CreateObject();
+    if (!meta) {
+        return NULL;
+    }
+
+    esp_chip_info_t chip_info = {0};
+    esp_chip_info(&chip_info);
+
+    cJSON_AddStringToObject(meta, "mac_address", mac);
+    cJSON_AddStringToObject(meta, "firmware_version", FORGEKEY_FIRMWARE_VERSION);
+    cJSON_AddStringToObject(meta, "sensor_kind", FORGEKEY_SENSOR_KIND);
+    cJSON_AddNumberToObject(meta, "boot_count", (double)s_boot_count);
+    cJSON_AddNumberToObject(meta, "free_heap", (double)esp_get_free_heap_size());
+    cJSON_AddStringToObject(meta, "ip", ip_addr);
+
+    cJSON* chip_info_json = cJSON_AddObjectToObject(meta, "chip_info");
+    if (chip_info_json) {
+        cJSON_AddStringToObject(chip_info_json, "model", chip_model_name(chip_info.model));
+        cJSON_AddNumberToObject(chip_info_json, "cores", chip_info.cores);
+        cJSON_AddNumberToObject(chip_info_json, "revision", chip_info.revision);
+        cJSON_AddNumberToObject(chip_info_json, "full_revision", chip_info.full_revision);
+
+        cJSON* features = cJSON_AddObjectToObject(chip_info_json, "features");
+        if (features) {
+            add_chip_features_json(features, chip_info.features);
+        }
+    }
+
+    uint8_t base_mac[6];
+    if (esp_efuse_mac_get_default(base_mac) == ESP_OK) {
+        uint64_t unique_chip_id = 0;
+        for (size_t i = 0; i < sizeof(base_mac); i++) {
+            unique_chip_id = (unique_chip_id << 8) | base_mac[i];
+        }
+        char unique_chip_id_hex[17];
+        snprintf(unique_chip_id_hex, sizeof(unique_chip_id_hex), "%016llx",
+                 (unsigned long long)unique_chip_id);
+        cJSON_AddStringToObject(meta, "unique_chip_id", unique_chip_id_hex);
+    } else {
+        cJSON_AddNullToObject(meta, "unique_chip_id");
+        ESP_LOGW(TAG, "Failed to read eFuse MAC for unique chip id");
+    }
+
+    uint32_t flash_memory_id = 0;
+    esp_err_t flash_id_err = esp_flash_read_id(NULL, &flash_memory_id);
+    if (flash_id_err == ESP_OK) {
+        char flash_memory_id_hex[11];
+        snprintf(flash_memory_id_hex, sizeof(flash_memory_id_hex), "0x%06lx",
+                 (unsigned long)flash_memory_id);
+        cJSON_AddStringToObject(meta, "flash_memory_id", flash_memory_id_hex);
+    } else {
+        cJSON_AddNullToObject(meta, "flash_memory_id");
+        ESP_LOGW(TAG, "Failed to read flash memory id: %s", esp_err_to_name(flash_id_err));
+    }
+
+    char* meta_json = cJSON_PrintUnformatted(meta);
+    cJSON_Delete(meta);
+    return meta_json;
+}
 
 /* Multipart body builder */
 typedef struct {
@@ -253,10 +350,11 @@ bool provisioning_register(const char* host, uint16_t port,
                            const uint8_t* jpeg_buf, size_t jpeg_len) {
     bool has_photo = (jpeg_buf != NULL && jpeg_len > 0);
 
-    /* Build metadata JSON */
-    const char* meta_json =
-        "{\"mac_address\":\"%s\",\"firmware_version\":\"%s\",\"sensor_kind\":\"%s\","
-        "\"boot_count\":%lu,\"ip\":\"%s\"}";
+    char* meta_json = build_registration_metadata_json(mac, ip_addr);
+    if (!meta_json) {
+        ESP_LOGE(TAG, "Failed to build registration metadata JSON");
+        return false;
+    }
 
     /* Build multipart body */
     multipart_buf_t mb;
@@ -270,11 +368,8 @@ bool provisioning_register(const char* host, uint16_t port,
     mb_append(&mb, meta_header, meta_hdr_len);
 
     /* metadata part body */
-    char meta_body[512];
-    int meta_body_len = snprintf(meta_body, sizeof(meta_body), meta_json,
-        mac, FORGEKEY_FIRMWARE_VERSION, FORGEKEY_SENSOR_KIND,
-        (unsigned long)s_boot_count, ip_addr);
-    mb_append(&mb, meta_body, meta_body_len);
+    mb_append_str(&mb, meta_json);
+    free(meta_json);
 
     /* photo part header */
     if (has_photo) {

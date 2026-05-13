@@ -23,6 +23,7 @@ idf_component_register(
         nvs_flash
         json
         esp_partition
+        spi_flash
         update
         driver
         esp_timer

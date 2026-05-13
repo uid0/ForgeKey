@@ -4,6 +4,8 @@
 #include <Preferences.h>
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
+#include <esp_chip_info.h>
+#include <esp_flash.h>
 
 #include "security/oms_ca.h"
 #include "../capabilities/status_led/status_led.h"
@@ -25,6 +27,32 @@ constexpr const char* kPlaceholderToken = "REPLACE_ME_PROVISIONING_TOKEN";
 
 // Multipart boundary used for the multipart/form-data registration POST.
 constexpr const char* kBoundary = "----ForgekeyBoundary7d3f2c1a";
+
+const char* chipModelName(esp_chip_model_t model) {
+    switch (model) {
+        case CHIP_ESP32:
+            return "ESP32";
+        case CHIP_ESP32S2:
+            return "ESP32-S2";
+        case CHIP_ESP32S3:
+            return "ESP32-S3";
+        case CHIP_ESP32C3:
+            return "ESP32-C3";
+        case CHIP_ESP32H2:
+            return "ESP32-H2";
+        default:
+            return "Unknown";
+    }
+}
+
+void addChipFeatures(JsonObject features, uint32_t chipFeatures) {
+    features["embedded_flash"] = (chipFeatures & CHIP_FEATURE_EMB_FLASH) != 0;
+    features["wifi_bgn"] = (chipFeatures & CHIP_FEATURE_WIFI_BGN) != 0;
+    features["ble"] = (chipFeatures & CHIP_FEATURE_BLE) != 0;
+    features["bt"] = (chipFeatures & CHIP_FEATURE_BT) != 0;
+    features["ieee802154"] = (chipFeatures & CHIP_FEATURE_IEEE802154) != 0;
+    features["embedded_psram"] = (chipFeatures & CHIP_FEATURE_EMB_PSRAM) != 0;
+}
 }  // namespace
 
 void Provisioning::begin() {
@@ -129,18 +157,55 @@ bool Provisioning::registerDevice(const char* host, uint16_t port,
     const bool hasPhoto = (jpegBuf != nullptr && jpegLen > 0);
 
     // Build the JSON metadata part once so we can compute Content-Length.
-    StaticJsonDocument<384> meta;
+    StaticJsonDocument<1024> meta;
+    esp_chip_info_t chipInfo{};
+    esp_chip_info(&chipInfo);
+
+    char uniqueChipId[17];
+    snprintf(uniqueChipId, sizeof(uniqueChipId), "%016llx",
+             (unsigned long long)ESP.getEfuseMac());
+
+    uint32_t flashMemoryId = 0;
+    esp_err_t flashIdErr = esp_flash_read_id(nullptr, &flashMemoryId);
+
     meta["mac_address"]      = mac;
     meta["firmware_version"] = FORGEKEY_FIRMWARE_VERSION;
     meta["sensor_kind"]      = FORGEKEY_SENSOR_KIND;
     meta["boot_count"]       = cachedBootCount;
     meta["free_heap"]        = ESP.getFreeHeap();
     meta["ip"]               = ipAddr;
+    meta["unique_chip_id"]   = uniqueChipId;
+    if (flashIdErr == ESP_OK) {
+        char flashMemoryIdHex[11];
+        snprintf(flashMemoryIdHex, sizeof(flashMemoryIdHex), "0x%06lx",
+                 (unsigned long)flashMemoryId);
+        meta["flash_memory_id"] = flashMemoryIdHex;
+    } else {
+        meta["flash_memory_id"] = nullptr;
+        Serial.printf("register: failed to read flash memory id: %s\n",
+                      esp_err_to_name(flashIdErr));
+    }
+
+    JsonObject chipInfoJson = meta.createNestedObject("chip_info");
+    chipInfoJson["model"] = chipModelName(chipInfo.model);
+    chipInfoJson["cores"] = chipInfo.cores;
+    chipInfoJson["revision"] = chipInfo.revision;
+    chipInfoJson["full_revision"] = chipInfo.full_revision;
+    addChipFeatures(chipInfoJson.createNestedObject("features"), chipInfo.features);
+
+    Serial.printf("register: chip_info model=%s cores=%u revision=%u full_revision=%u "
+                  "unique_chip_id=%s flash_memory_id=%s\n",
+                  chipInfoJson["model"].as<const char*>(),
+                  (unsigned)chipInfo.cores,
+                  (unsigned)chipInfo.revision,
+                  (unsigned)chipInfo.full_revision,
+                  uniqueChipId,
+                  flashIdErr == ESP_OK ? meta["flash_memory_id"].as<const char*>() : "(unavailable)");
     String metaJson;
     serializeJson(meta, metaJson);
 
     String head;
-    head.reserve(512);
+    head.reserve(1024);
     head += "--"; head += kBoundary; head += "\r\n";
     head += "Content-Disposition: form-data; name=\"metadata\"\r\n";
     head += "Content-Type: application/json\r\n\r\n";
