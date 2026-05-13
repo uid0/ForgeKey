@@ -6,7 +6,7 @@
  *   1. NVS init + GPIO init
  *   2. WiFi connect (with captive portal fallback)
  *   3. NTP sync
- *   4. OMS provisioning (first-boot registration)
+ *   4. OMS provisioning (first-boot enrollment)
  *   5. MQTT connect + topic subscription
  *   6. Web server + lock state machine + OTA
  */
@@ -122,7 +122,7 @@ void app_main(void) {
     provisioning_begin();
 
     if (!provisioning_is_provisioned()) {
-        LOCK_LOGI("First boot - registering with OMS");
+        LOCK_LOGI("First boot - enrolling with OMS");
 
         /* Get IP address */
         esp_netif_ip_info_t ip_info;
@@ -130,11 +130,11 @@ void app_main(void) {
         char ip_str[16];
         snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ip_info.ip));
 
-        /* Register with OMS (no photo for lock build) */
-        if (provisioning_register(OMS_HOST, OMS_PORT, mac_str, ip_str, NULL, 0)) {
-            LOCK_LOGI("Registration successful");
+        /* Enroll with OMS (no photo for lock build) */
+        if (provisioning_enroll(OMS_HOST, OMS_PORT, mac_str, ip_str, NULL, 0)) {
+            LOCK_LOGI("Enrollment successful");
         } else {
-            LOCK_LOGW("Registration failed; will retry on next boot");
+            LOCK_LOGW("Enrollment failed; will retry on next boot");
         }
     } else {
         LOCK_LOGI("Already provisioned as %s", provisioning_credentials().device_id);
@@ -142,7 +142,6 @@ void app_main(void) {
 
     /* Get credentials */
     prov_credentials_t creds = provisioning_credentials();
-    const char* mqtt_jwt = creds.jwt_token[0] ? creds.jwt_token : "";
 
     /* ===== 6. MQTT connect ===== */
     /* Resolve broker info: NVS > fallback */
@@ -167,7 +166,10 @@ void app_main(void) {
     /* Set topic prefix */
     mqtt_handler_set_topic_prefix(mac_str);
 
-    if (!mqtt_handler_begin(broker_host, broker_port, mqtt_jwt, broker_use_tls)) {
+    if (!mqtt_handler_begin(broker_host, broker_port,
+                            creds.client_certificate_pem,
+                            creds.client_private_key_pem,
+                            broker_use_tls)) {
         LOCK_LOGE("MQTT init failed");
         vTaskDelay(2000 / portTICK_PERIOD_MS);
         esp_restart();
@@ -262,7 +264,7 @@ void app_main(void) {
 
             const char* trigger_str = "unknown";
             switch (trigger) {
-                case LOCK_TRIGGER_JWT: trigger_str = "jwt"; break;
+                case LOCK_TRIGGER_SIGNED_COMMAND: trigger_str = "signed_command"; break;
                 case LOCK_TRIGGER_MORTISE: trigger_str = "mortise"; break;
                 case LOCK_TRIGGER_AUTO_UNLOCK: trigger_str = "auto_unlock"; break;
                 case LOCK_TRIGGER_DOOR_CLOSE: trigger_str = "door_close"; break;

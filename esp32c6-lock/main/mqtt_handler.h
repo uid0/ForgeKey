@@ -1,6 +1,6 @@
 /*
  * MQTT handler for ESP32-C6 lock device.
- * ESP-IDF MQTT client with TLS, JWT auth, topic management, and auto-reconnect.
+ * ESP-IDF MQTT client with TLS, mutual TLS auth, topic management, and auto-reconnect.
  */
 
 #ifndef FORGEKEY_MQTT_HANDLER_H
@@ -15,9 +15,11 @@
 
 typedef void (*mqtt_message_handler_t)(const char* topic, const uint8_t* payload, uint32_t length);
 
-/* Initialize MQTT client with broker, port, JWT token, and TLS flag. */
+/* Initialize MQTT client with broker, port, client certificate/key, and TLS flag. */
 bool mqtt_handler_begin(const char* broker_host, int port,
-                        const char* jwt_token, bool use_tls);
+                        const char* client_certificate_pem,
+                        const char* client_private_key_pem,
+                        bool use_tls);
 
 /* Set the MAC-derived topic prefix. */
 void mqtt_handler_set_topic_prefix(const char* mac);

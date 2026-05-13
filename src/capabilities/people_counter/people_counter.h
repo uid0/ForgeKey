@@ -14,7 +14,7 @@ namespace PeopleCounter {
 // photo for OMS registration.
 bool isActive();
 
-// Capture a JPEG suitable for OMS first-boot registration. Caller must
+// Capture a JPEG suitable for OMS first-boot enrollment. Caller must
 // free(*outBuf). Returns false if the capability is not active or if the
 // capture failed.
 bool captureProvisioningPhoto(uint8_t** outBuf, size_t* outLen);

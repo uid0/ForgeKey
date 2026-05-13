@@ -1,11 +1,12 @@
 /*
  * Provisioning implementation for ESP32-C6 lock device.
- * NVS-backed credential storage + OMS registration via esp_http_client.
+ * NVS-backed credential storage + OMS enrollment via esp_http_client.
  */
 
 #include "provisioning.h"
 #include "device_config.h"
 #include "oms_ca.h"
+#include "oms_command_pubkey.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -23,6 +24,10 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "cJSON.h"
+#include "mbedtls/ctr_drbg.h"
+#include "mbedtls/entropy.h"
+#include "mbedtls/pk.h"
+#include "mbedtls/x509_csr.h"
 
 static const char* TAG = "PROV";
 
@@ -30,7 +35,9 @@ static const char* TAG = "PROV";
 #define NVS_KEY_DEV_ID    "dev_id"
 #define NVS_KEY_FW_TOPIC  "fw_topic"
 #define NVS_KEY_P_TOPIC   "p_topic"
-#define NVS_KEY_JWT       "jwt"
+#define NVS_KEY_CERT      "c_cert"
+#define NVS_KEY_KEY       "c_key"
+#define NVS_KEY_CMD_PUB   "cmd_pub"
 #define NVS_KEY_B_HOST    "b_host"
 #define NVS_KEY_B_PORT    "b_port"
 #define NVS_KEY_B_TLS     "b_tls"
@@ -75,7 +82,83 @@ static void add_chip_features_json(cJSON* features, uint32_t chip_features) {
                           (chip_features & CHIP_FEATURE_EMB_PSRAM) != 0);
 }
 
-static char* build_registration_metadata_json(const char* mac, const char* ip_addr) {
+static bool generate_device_key_and_csr(const char* mac,
+                                        char* private_key_pem,
+                                        size_t private_key_len,
+                                        char* csr_pem,
+                                        size_t csr_len) {
+    const char* personalization = "forgekey-enroll";
+    char subject_name[64];
+    snprintf(subject_name, sizeof(subject_name), "CN=forgekey-%s", mac);
+
+    mbedtls_pk_context pk;
+    mbedtls_pk_init(&pk);
+    mbedtls_entropy_context entropy;
+    mbedtls_entropy_init(&entropy);
+    mbedtls_ctr_drbg_context ctr_drbg;
+    mbedtls_ctr_drbg_init(&ctr_drbg);
+    mbedtls_x509write_csr req;
+    mbedtls_x509write_csr_init(&req);
+
+    int rc = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy,
+                                   (const unsigned char*)personalization,
+                                   strlen(personalization));
+    if (rc != 0) {
+        ESP_LOGE(TAG, "ctr_drbg_seed failed: -0x%04x", -rc);
+        goto fail;
+    }
+
+    rc = mbedtls_pk_setup(&pk, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY));
+    if (rc != 0) {
+        ESP_LOGE(TAG, "pk_setup failed: -0x%04x", -rc);
+        goto fail;
+    }
+
+    rc = mbedtls_ecp_gen_key(MBEDTLS_ECP_DP_SECP256R1, mbedtls_pk_ec(pk),
+                             mbedtls_ctr_drbg_random, &ctr_drbg);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "ecp_gen_key failed: -0x%04x", -rc);
+        goto fail;
+    }
+
+    rc = mbedtls_pk_write_key_pem(&pk, (unsigned char*)private_key_pem, private_key_len);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "write_key_pem failed: -0x%04x", -rc);
+        goto fail;
+    }
+
+    mbedtls_x509write_csr_set_md_alg(&req, MBEDTLS_MD_SHA256);
+    mbedtls_x509write_csr_set_key(&req, &pk);
+    rc = mbedtls_x509write_csr_set_subject_name(&req, subject_name);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "set_subject_name failed: -0x%04x", -rc);
+        goto fail;
+    }
+
+    rc = mbedtls_x509write_csr_pem(&req, (unsigned char*)csr_pem, csr_len,
+                                   mbedtls_ctr_drbg_random, &ctr_drbg);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "write_csr_pem failed: -0x%04x", -rc);
+        goto fail;
+    }
+
+    mbedtls_x509write_csr_free(&req);
+    mbedtls_ctr_drbg_free(&ctr_drbg);
+    mbedtls_entropy_free(&entropy);
+    mbedtls_pk_free(&pk);
+    return true;
+
+fail:
+    mbedtls_x509write_csr_free(&req);
+    mbedtls_ctr_drbg_free(&ctr_drbg);
+    mbedtls_entropy_free(&entropy);
+    mbedtls_pk_free(&pk);
+    return false;
+}
+
+static char* build_enrollment_metadata_json(const char* mac,
+                                            const char* ip_addr,
+                                            const char* csr_pem) {
     cJSON* meta = cJSON_CreateObject();
     if (!meta) {
         return NULL;
@@ -90,6 +173,7 @@ static char* build_registration_metadata_json(const char* mac, const char* ip_ad
     cJSON_AddNumberToObject(meta, "boot_count", (double)s_boot_count);
     cJSON_AddNumberToObject(meta, "free_heap", (double)esp_get_free_heap_size());
     cJSON_AddStringToObject(meta, "ip", ip_addr);
+    cJSON_AddStringToObject(meta, "csr_pem", csr_pem);
 
     cJSON* chip_info_json = cJSON_AddObjectToObject(meta, "chip_info");
     if (chip_info_json) {
@@ -211,7 +295,6 @@ void provisioning_begin(void) {
     boots++;
     nvs_set_u32(nvs_handle, NVS_KEY_BOOTS, boots);
     nvs_commit(nvs_handle);
-    nvs_close(nvs_handle);
 
     s_boot_count = boots;
     ESP_LOGI(TAG, "Boot count: %lu", (unsigned long)boots);
@@ -220,7 +303,9 @@ void provisioning_begin(void) {
     size_t dev_id_len = sizeof(s_creds.device_id);
     size_t fw_topic_len = sizeof(s_creds.mqtt_firmware_topic);
     size_t p_topic_len = sizeof(s_creds.mqtt_pings_topic);
-    size_t jwt_len = sizeof(s_creds.jwt_token);
+    size_t cert_len = sizeof(s_creds.client_certificate_pem);
+    size_t key_len = sizeof(s_creds.client_private_key_pem);
+    size_t cmd_pub_len = sizeof(s_creds.command_public_key_pem);
     size_t b_host_len = sizeof(s_creds.mqtt_broker_host);
     uint16_t b_port = 0;
     uint8_t b_tls = 0;
@@ -234,8 +319,14 @@ void provisioning_begin(void) {
     if (nvs_get_str(nvs_handle, NVS_KEY_P_TOPIC, s_creds.mqtt_pings_topic, &p_topic_len) != ESP_OK) {
         s_creds.mqtt_pings_topic[0] = '\0';
     }
-    if (nvs_get_str(nvs_handle, NVS_KEY_JWT, s_creds.jwt_token, &jwt_len) != ESP_OK) {
-        s_creds.jwt_token[0] = '\0';
+    if (nvs_get_str(nvs_handle, NVS_KEY_CERT, s_creds.client_certificate_pem, &cert_len) != ESP_OK) {
+        s_creds.client_certificate_pem[0] = '\0';
+    }
+    if (nvs_get_str(nvs_handle, NVS_KEY_KEY, s_creds.client_private_key_pem, &key_len) != ESP_OK) {
+        s_creds.client_private_key_pem[0] = '\0';
+    }
+    if (nvs_get_str(nvs_handle, NVS_KEY_CMD_PUB, s_creds.command_public_key_pem, &cmd_pub_len) != ESP_OK) {
+        s_creds.command_public_key_pem[0] = '\0';
     }
     if (nvs_get_str(nvs_handle, NVS_KEY_B_HOST, s_creds.mqtt_broker_host, &b_host_len) != ESP_OK) {
         s_creds.mqtt_broker_host[0] = '\0';
@@ -253,12 +344,23 @@ void provisioning_begin(void) {
 
     nvs_close(nvs_handle);
 
-    ESP_LOGI(TAG, "Loaded: dev_id='%s' jwt_len=%u",
-             s_creds.device_id, (unsigned)s_creds.jwt_token[0] ? strlen(s_creds.jwt_token) : 0);
+    if (s_creds.command_public_key_pem[0] == '\0') {
+        strncpy(s_creds.command_public_key_pem, kOmsCommandPubKeyPem,
+                sizeof(s_creds.command_public_key_pem) - 1);
+        s_creds.command_public_key_pem[sizeof(s_creds.command_public_key_pem) - 1] = '\0';
+    }
+
+    ESP_LOGI(TAG, "Loaded: dev_id='%s' cert_len=%u key_len=%u cmd_pub_len=%u",
+             s_creds.device_id,
+             (unsigned)strlen(s_creds.client_certificate_pem),
+             (unsigned)strlen(s_creds.client_private_key_pem),
+             (unsigned)strlen(s_creds.command_public_key_pem));
 }
 
 bool provisioning_is_provisioned(void) {
-    return s_creds.device_id[0] != '\0' && s_creds.jwt_token[0] != '\0';
+    return s_creds.device_id[0] != '\0' &&
+           s_creds.client_certificate_pem[0] != '\0' &&
+           s_creds.client_private_key_pem[0] != '\0';
 }
 
 prov_credentials_t provisioning_credentials(void) {
@@ -276,7 +378,9 @@ bool provisioning_persist(const prov_credentials_t* creds) {
     nvs_set_str(nvs_handle, NVS_KEY_DEV_ID, creds->device_id);
     nvs_set_str(nvs_handle, NVS_KEY_FW_TOPIC, creds->mqtt_firmware_topic);
     nvs_set_str(nvs_handle, NVS_KEY_P_TOPIC, creds->mqtt_pings_topic);
-    nvs_set_str(nvs_handle, NVS_KEY_JWT, creds->jwt_token);
+    nvs_set_str(nvs_handle, NVS_KEY_CERT, creds->client_certificate_pem);
+    nvs_set_str(nvs_handle, NVS_KEY_KEY, creds->client_private_key_pem);
+    nvs_set_str(nvs_handle, NVS_KEY_CMD_PUB, creds->command_public_key_pem);
     nvs_set_str(nvs_handle, NVS_KEY_B_HOST, creds->mqtt_broker_host);
     nvs_set_u16(nvs_handle, NVS_KEY_B_PORT, creds->mqtt_broker_port);
     nvs_set_u8(nvs_handle, NVS_KEY_B_TLS, creds->mqtt_broker_use_tls ? 1 : 0);
@@ -299,7 +403,9 @@ void provisioning_clear(void) {
     nvs_erase_key(nvs_handle, NVS_KEY_DEV_ID);
     nvs_erase_key(nvs_handle, NVS_KEY_FW_TOPIC);
     nvs_erase_key(nvs_handle, NVS_KEY_P_TOPIC);
-    nvs_erase_key(nvs_handle, NVS_KEY_JWT);
+    nvs_erase_key(nvs_handle, NVS_KEY_CERT);
+    nvs_erase_key(nvs_handle, NVS_KEY_KEY);
+    nvs_erase_key(nvs_handle, NVS_KEY_CMD_PUB);
     nvs_erase_key(nvs_handle, NVS_KEY_B_HOST);
     nvs_erase_key(nvs_handle, NVS_KEY_B_PORT);
     nvs_erase_key(nvs_handle, NVS_KEY_B_TLS);
@@ -345,14 +451,22 @@ bool provisioning_set_token(const char* token) {
     return true;
 }
 
-bool provisioning_register(const char* host, uint16_t port,
-                           const char* mac, const char* ip_addr,
-                           const uint8_t* jpeg_buf, size_t jpeg_len) {
+bool provisioning_enroll(const char* host, uint16_t port,
+                         const char* mac, const char* ip_addr,
+                         const uint8_t* jpeg_buf, size_t jpeg_len) {
     bool has_photo = (jpeg_buf != NULL && jpeg_len > 0);
+    char private_key_pem[FORGEKEY_PROV_MAX_KEY];
+    char csr_pem[FORGEKEY_PROV_MAX_CERT];
 
-    char* meta_json = build_registration_metadata_json(mac, ip_addr);
+    if (!generate_device_key_and_csr(mac, private_key_pem, sizeof(private_key_pem),
+                                     csr_pem, sizeof(csr_pem))) {
+        ESP_LOGE(TAG, "Failed to generate device keypair/CSR");
+        return false;
+    }
+
+    char* meta_json = build_enrollment_metadata_json(mac, ip_addr, csr_pem);
     if (!meta_json) {
-        ESP_LOGE(TAG, "Failed to build registration metadata JSON");
+        ESP_LOGE(TAG, "Failed to build enrollment metadata JSON");
         return false;
     }
 
@@ -380,22 +494,19 @@ bool provisioning_register(const char* host, uint16_t port,
         mb_append(&mb, photo_header, photo_hdr_len);
     }
 
-    /* tail */
     const char* tail = "\r\n--" BOUNDARY "--\r\n";
-    mb_append(&mb, tail, strlen(tail));
-
-    size_t total_len = mb.len + (has_photo ? jpeg_len : 0);
+    size_t total_len = mb.len + (has_photo ? jpeg_len : 0) + strlen(tail);
     const char* active_token = provisioning_active_token();
 
-    ESP_LOGI(TAG, "Registering: host=%s port=%u mac=%s body=%u",
-             host, port, mac, (unsigned)total_len);
+    ESP_LOGI(TAG, "Enrolling: host=%s port=%u mac=%s body=%u csr_len=%u",
+             host, port, mac, (unsigned)total_len, (unsigned)strlen(csr_pem));
     if (strcmp(active_token, "REPLACE_ME_PROVISIONING_TOKEN") == 0) {
         ESP_LOGW(TAG, "WARNING: using placeholder provisioning token");
     }
 
     /* Build URL */
     char url[256];
-    snprintf(url, sizeof(url), "https://%s:%u/api/forgekey/devices/register/", host, port);
+    snprintf(url, sizeof(url), "https://%s:%u/api/forgekey/devices/enroll/", host, port);
 
     /* HTTP client config */
     esp_http_client_config_t http_cfg = {
@@ -451,14 +562,22 @@ bool provisioning_register(const char* host, uint16_t port,
         }
     }
 
-    esp_http_client_close(http_client);
+    written = esp_http_client_write(http_client, tail, (int)strlen(tail));
+    if (written < 0) {
+        ESP_LOGE(TAG, "HTTP write failed for multipart tail");
+        esp_http_client_close(http_client);
+        esp_http_client_cleanup(http_client);
+        mb_free(&mb);
+        return false;
+    }
 
+    int fetch_len = esp_http_client_fetch_headers(http_client);
     int status_code = esp_http_client_get_status_code(http_client);
-    ESP_LOGI(TAG, "Registration HTTP %d", status_code);
+    ESP_LOGI(TAG, "Enrollment HTTP %d content_len=%d", status_code, fetch_len);
 
     /* Read response body */
-    char resp_buf[1024];
-    int body_len = esp_http_client_read(http_client, resp_buf, sizeof(resp_buf) - 1);
+    char resp_buf[8192];
+    int body_len = esp_http_client_read_response(http_client, resp_buf, sizeof(resp_buf) - 1);
     esp_http_client_cleanup(http_client);
     mb_free(&mb);
 
@@ -469,7 +588,7 @@ bool provisioning_register(const char* host, uint16_t port,
     resp_buf[body_len] = '\0';
 
     if (status_code < 200 || status_code >= 300) {
-        ESP_LOGE(TAG, "Registration failed: HTTP %d", status_code);
+        ESP_LOGE(TAG, "Enrollment failed: HTTP %d", status_code);
         return false;
     }
 
@@ -477,143 +596,89 @@ bool provisioning_register(const char* host, uint16_t port,
     prov_credentials_t new_creds;
     memset(&new_creds, 0, sizeof(new_creds));
 
-    /* Simple JSON field extraction */
-    char* p = resp_buf;
-    char* key = strstr(p, "\"device_id\"");
-    if (key) {
-        char* colon = strchr(key + 11, ':');
-        if (colon) {
-            char* q1 = strchr(colon + 1, '"');
-            if (q1) {
-                char* q2 = strchr(q1 + 1, '"');
-                if (q2) {
-                    size_t len = q2 - q1 - 1;
-                    if (len < sizeof(new_creds.device_id)) {
-                        memcpy(new_creds.device_id, q1 + 1, len);
-                        new_creds.device_id[len] = '\0';
-                    }
-                }
-            }
-        }
-    }
-
-    key = strstr(p, "\"mqtt_topic_for_firmware\"");
-    if (key) {
-        char* colon = strchr(key + 23, ':');
-        if (colon) {
-            char* q1 = strchr(colon + 1, '"');
-            if (q1) {
-                char* q2 = strchr(q1 + 1, '"');
-                if (q2) {
-                    size_t len = q2 - q1 - 1;
-                    if (len < sizeof(new_creds.mqtt_firmware_topic)) {
-                        memcpy(new_creds.mqtt_firmware_topic, q1 + 1, len);
-                        new_creds.mqtt_firmware_topic[len] = '\0';
-                    }
-                }
-            }
-        }
-    }
-
-    key = strstr(p, "\"mqtt_topic_for_pings\"");
-    if (key) {
-        char* colon = strchr(key + 20, ':');
-        if (colon) {
-            char* q1 = strchr(colon + 1, '"');
-            if (q1) {
-                char* q2 = strchr(q1 + 1, '"');
-                if (q2) {
-                    size_t len = q2 - q1 - 1;
-                    if (len < sizeof(new_creds.mqtt_pings_topic)) {
-                        memcpy(new_creds.mqtt_pings_topic, q1 + 1, len);
-                        new_creds.mqtt_pings_topic[len] = '\0';
-                    }
-                }
-            }
-        }
-    }
-
-    key = strstr(p, "\"jwt_token\"");
-    if (key) {
-        char* colon = strchr(key + 11, ':');
-        if (colon) {
-            char* q1 = strchr(colon + 1, '"');
-            if (q1) {
-                char* q2 = strchr(q1 + 1, '"');
-                if (q2) {
-                    size_t len = q2 - q1 - 1;
-                    if (len < sizeof(new_creds.jwt_token)) {
-                        memcpy(new_creds.jwt_token, q1 + 1, len);
-                        new_creds.jwt_token[len] = '\0';
-                    }
-                }
-            }
-        }
-    }
-
-    key = strstr(p, "\"mqtt_broker_host\"");
-    if (key) {
-        char* colon = strchr(key + 18, ':');
-        if (colon) {
-            char* q1 = strchr(colon + 1, '"');
-            if (q1) {
-                char* q2 = strchr(q1 + 1, '"');
-                if (q2) {
-                    size_t len = q2 - q1 - 1;
-                    if (len < sizeof(new_creds.mqtt_broker_host)) {
-                        memcpy(new_creds.mqtt_broker_host, q1 + 1, len);
-                        new_creds.mqtt_broker_host[len] = '\0';
-                    }
-                }
-            }
-        }
-    }
-
-    key = strstr(p, "\"mqtt_broker_port\"");
-    if (key) {
-        char* colon = strchr(key + 18, ':');
-        if (colon) {
-            char* num_start = colon + 1;
-            while (*num_start == ' ' || *num_start == '"') num_start++;
-            new_creds.mqtt_broker_port = (uint16_t)atoi(num_start);
-        }
-    }
-
-    key = strstr(p, "\"mqtt_broker_use_tls\"");
-    if (key) {
-        char* colon = strchr(key + 19, ':');
-        if (colon) {
-            char* val = colon + 1;
-            while (*val == ' ' || *val == '"') val++;
-            new_creds.mqtt_broker_use_tls = (*val == 't' || *val == '1');
-        }
-    }
-
-    /* Parse asset_id (optional) */
-    key = strstr(p, "\"asset_id\"");
-    if (key) {
-        char* colon = strchr(key + 11, ':');
-        if (colon) {
-            char* q1 = strchr(colon + 1, '"');
-            if (q1) {
-                char* q2 = strchr(q1 + 1, '"');
-                if (q2) {
-                    size_t len = q2 - q1 - 1;
-                    if (len < sizeof(new_creds.asset_id)) {
-                        memcpy(new_creds.asset_id, q1 + 1, len);
-                        new_creds.asset_id[len] = '\0';
-                    }
-                }
-            }
-        }
-    }
-
-    if (new_creds.device_id[0] == '\0' || new_creds.jwt_token[0] == '\0') {
-        ESP_LOGE(TAG, "Registration response missing device_id or jwt_token");
+    cJSON* root = cJSON_Parse(resp_buf);
+    if (!root) {
+        ESP_LOGE(TAG, "Enrollment response is not valid JSON");
         return false;
     }
 
-    ESP_LOGI(TAG, "Registered as %s", new_creds.device_id);
+    cJSON* policy = cJSON_GetObjectItemCaseSensitive(root, "policy");
+    if (!cJSON_IsObject(policy)) {
+        policy = root;
+    }
+
+    cJSON* field = cJSON_GetObjectItemCaseSensitive(root, "device_id");
+    if (cJSON_IsString(field) && field->valuestring) {
+        snprintf(new_creds.device_id, sizeof(new_creds.device_id), "%s", field->valuestring);
+    }
+    field = cJSON_GetObjectItemCaseSensitive(root, "client_certificate_pem");
+    if (!cJSON_IsString(field) || !field->valuestring) {
+        field = cJSON_GetObjectItemCaseSensitive(root, "certificate_pem");
+    }
+    if (cJSON_IsString(field) && field->valuestring) {
+        snprintf(new_creds.client_certificate_pem,
+                 sizeof(new_creds.client_certificate_pem), "%s", field->valuestring);
+    }
+    snprintf(new_creds.client_private_key_pem,
+             sizeof(new_creds.client_private_key_pem), "%s", private_key_pem);
+
+    field = cJSON_GetObjectItemCaseSensitive(root, "command_public_key_pem");
+    if (!cJSON_IsString(field) || !field->valuestring) {
+        field = cJSON_GetObjectItemCaseSensitive(root, "oms_command_public_key_pem");
+    }
+    if (cJSON_IsString(field) && field->valuestring) {
+        snprintf(new_creds.command_public_key_pem,
+                 sizeof(new_creds.command_public_key_pem), "%s", field->valuestring);
+    } else {
+        snprintf(new_creds.command_public_key_pem,
+                 sizeof(new_creds.command_public_key_pem), "%s", kOmsCommandPubKeyPem);
+    }
+
+    field = cJSON_GetObjectItemCaseSensitive(policy, "mqtt_topic_for_firmware");
+    if (cJSON_IsString(field) && field->valuestring) {
+        snprintf(new_creds.mqtt_firmware_topic,
+                 sizeof(new_creds.mqtt_firmware_topic), "%s", field->valuestring);
+    }
+    field = cJSON_GetObjectItemCaseSensitive(policy, "mqtt_topic_for_pings");
+    if (cJSON_IsString(field) && field->valuestring) {
+        snprintf(new_creds.mqtt_pings_topic,
+                 sizeof(new_creds.mqtt_pings_topic), "%s", field->valuestring);
+    }
+    field = cJSON_GetObjectItemCaseSensitive(policy, "mqtt_broker_host");
+    if (cJSON_IsString(field) && field->valuestring) {
+        snprintf(new_creds.mqtt_broker_host,
+                 sizeof(new_creds.mqtt_broker_host), "%s", field->valuestring);
+    }
+    field = cJSON_GetObjectItemCaseSensitive(policy, "mqtt_broker_port");
+    if (cJSON_IsNumber(field)) {
+        new_creds.mqtt_broker_port = (uint16_t)field->valuedouble;
+    }
+    field = cJSON_GetObjectItemCaseSensitive(policy, "mqtt_broker_use_tls");
+    if (cJSON_IsBool(field)) {
+        new_creds.mqtt_broker_use_tls = cJSON_IsTrue(field);
+    }
+    field = cJSON_GetObjectItemCaseSensitive(policy, "asset_id");
+    if (!cJSON_IsString(field) || !field->valuestring) {
+        field = cJSON_GetObjectItemCaseSensitive(root, "asset_id");
+    }
+    if (cJSON_IsString(field) && field->valuestring) {
+        snprintf(new_creds.asset_id, sizeof(new_creds.asset_id), "%s", field->valuestring);
+    }
+
+    cJSON_Delete(root);
+
+    if (new_creds.device_id[0] == '\0' ||
+        new_creds.client_certificate_pem[0] == '\0' ||
+        new_creds.client_private_key_pem[0] == '\0') {
+        ESP_LOGE(TAG, "Enrollment response missing device_id or client certificate bundle");
+        return false;
+    }
+
+    ESP_LOGI(TAG, "Enrolled as %s cert_len=%u key_len=%u cmd_pub_len=%u",
+             new_creds.device_id,
+             (unsigned)strlen(new_creds.client_certificate_pem),
+             (unsigned)strlen(new_creds.client_private_key_pem),
+             (unsigned)strlen(new_creds.command_public_key_pem));
 
     if (!provisioning_persist(&new_creds)) {
         ESP_LOGE(TAG, "Failed to persist credentials");

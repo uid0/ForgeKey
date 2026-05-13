@@ -1,7 +1,7 @@
 /*
  * Lock state machine for ESP32-C6 lock device.
  * Non-blocking state machine with GPIO debouncing, solenoid pulse,
- * and full HMAC-SHA256 JWT verification via mbedtls.
+ * and ES256 signed-command verification via mbedtls.
  */
 
 #ifndef FORGEKEY_LOCK_STATE_H
@@ -22,7 +22,7 @@ typedef enum {
 /* Lock trigger types */
 typedef enum {
     LOCK_TRIGGER_NONE,
-    LOCK_TRIGGER_JWT,
+    LOCK_TRIGGER_SIGNED_COMMAND,
     LOCK_TRIGGER_MORTISE,
     LOCK_TRIGGER_AUTO_UNLOCK,
     LOCK_TRIGGER_DOOR_CLOSE,
@@ -60,14 +60,14 @@ lock_trigger_t lock_state_get_last_trigger(void);
 /* Get current telemetry. */
 lock_telemetry_t lock_state_get_telemetry(void);
 
-/* Handle an incoming unlock command with JWT token.
+/* Handle an incoming unlock command with a signed token.
  * Returns true if token was valid and solenoid was pulsed. */
 bool lock_state_handle_unlock(const char* token, long timestamp);
 
-/* Validate a JWT token (header.payload.signature).
- * Performs HMAC-SHA256 signature verification.
+/* Validate a signed command token (header.payload.signature).
+ * Performs ES256 signature verification against the OMS command public key.
  * Returns true if valid. */
-bool lock_state_validate_jwt(const char* token, long timestamp);
+bool lock_state_validate_signed_command(const char* token, long timestamp);
 
 /* Get MAC address string (caller must free). */
 char* lock_state_get_mac_address(void);

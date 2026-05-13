@@ -1,6 +1,6 @@
 /*
  * MQTT handler implementation for ESP32-C6 lock device.
- * ESP-IDF MQTT client with TLS, JWT auth, topic management, and auto-reconnect.
+ * ESP-IDF MQTT client with TLS, mutual TLS auth, topic management, and auto-reconnect.
  */
 
 #include "mqtt_handler.h"
@@ -12,11 +12,11 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/queue.h"
 
 #include "esp_system.h"
 #include "esp_log.h"
 #include "esp_event.h"
+#include "esp_idf_version.h"
 #include "esp_netif.h"
 #include "esp_tls.h"
 #include "nvs_flash.h"
@@ -24,9 +24,6 @@
 #include "mqtt_client.h"
 
 static const char* TAG = "MQTT";
-
-/* MQTT event queue */
-static QueueHandle_t s_mqtt_event_queue = NULL;
 
 /* MQTT client handle */
 static esp_mqtt_client_handle_t s_mqtt_client = NULL;
@@ -53,7 +50,8 @@ static mqtt_message_handler_t s_firmware_handler = NULL;
 static char s_broker_host[64] = {0};
 static int s_broker_port = 1883;
 static bool s_use_tls = false;
-static char s_jwt_token[512] = {0};
+static char s_client_cert_pem[2048] = {0};
+static char s_client_key_pem[2048] = {0};
 
 /* Last reconnect attempt time (seconds since epoch) */
 static time_t s_last_reconnect = 0;
@@ -140,7 +138,6 @@ static void copy_topic(char* dest, size_t dest_size, const char* topic, int topi
 static void mqtt_event_handler(void* handler_args, esp_event_base_t base,
                                 int32_t event_id, void* event_data) {
     esp_mqtt_event_handle_t event = event_data;
-    esp_mqtt_client_handle_t client = event->client;
 
     switch (event->event_id) {
         case MQTT_EVENT_CONNECTED:
@@ -202,42 +199,76 @@ static void mqtt_event_handler(void* handler_args, esp_event_base_t base,
 /* ===== Public API ===== */
 
 bool mqtt_handler_begin(const char* broker_host, int port,
-                        const char* jwt_token, bool use_tls) {
+                        const char* client_certificate_pem,
+                        const char* client_private_key_pem,
+                        bool use_tls) {
     strncpy(s_broker_host, broker_host, sizeof(s_broker_host) - 1);
     s_broker_port = port;
     s_use_tls = use_tls;
-    if (jwt_token) {
-        strncpy(s_jwt_token, jwt_token, sizeof(s_jwt_token) - 1);
+    s_client_cert_pem[0] = '\0';
+    s_client_key_pem[0] = '\0';
+    if (client_certificate_pem) {
+        strncpy(s_client_cert_pem, client_certificate_pem, sizeof(s_client_cert_pem) - 1);
+    }
+    if (client_private_key_pem) {
+        strncpy(s_client_key_pem, client_private_key_pem, sizeof(s_client_key_pem) - 1);
     }
 
-    ESP_LOGI(TAG, "MQTT begin: broker=%s:%d tls=%d jwt_len=%u",
+    ESP_LOGI(TAG, "MQTT begin: broker=%s:%d tls=%d auth=mtls cert_len=%u key_len=%u",
              broker_host, port, (int)use_tls,
-             jwt_token ? (unsigned)strlen(jwt_token) : 0);
+             (unsigned)strlen(s_client_cert_pem),
+             (unsigned)strlen(s_client_key_pem));
 
     if (s_mqtt_client) {
         esp_mqtt_client_destroy(s_mqtt_client);
         s_mqtt_client = NULL;
     }
 
-    esp_mqtt_client_config_t mqtt_cfg = {
-        .broker.address.hostname = broker_host,
-        .broker.address.port = port,
-        .credentials.username = "forgemqtt",
-        .credentials.authentication.password = jwt_token,
-        .session.keepalive = 60,
-        .session.last_will.topic = s_state_topic[0] ? s_state_topic : NULL,
-        .session.last_will.msg = kUnexpectedDisconnectState,
-        .session.last_will.msg_len = sizeof(kUnexpectedDisconnectState) - 1,
-        .session.last_will.qos = 0,
-        .session.last_will.retain = true,
-        .session.disable_clean_session = false,
-        .session.reconnect_timeout_ms = 10000,
-        .network.disable_auto_reconnect = false,
-    };
+    esp_mqtt_client_config_t mqtt_cfg = {0};
+
+#if ESP_IDF_VERSION_MAJOR >= 5
+    mqtt_cfg.broker.address.hostname = broker_host;
+    mqtt_cfg.broker.address.port = port;
+    mqtt_cfg.credentials.authentication.certificate = client_certificate_pem;
+    mqtt_cfg.credentials.authentication.key = client_private_key_pem;
+    mqtt_cfg.session.keepalive = 60;
+    mqtt_cfg.session.last_will.topic = s_state_topic[0] ? s_state_topic : NULL;
+    mqtt_cfg.session.last_will.msg = kUnexpectedDisconnectState;
+    mqtt_cfg.session.last_will.msg_len = sizeof(kUnexpectedDisconnectState) - 1;
+    mqtt_cfg.session.last_will.qos = 0;
+    mqtt_cfg.session.last_will.retain = true;
+    mqtt_cfg.session.disable_clean_session = false;
+    mqtt_cfg.session.reconnect_timeout_ms = 10000;
+    mqtt_cfg.network.disable_auto_reconnect = false;
+#else
+    mqtt_cfg.host = broker_host;
+    mqtt_cfg.port = port;
+    mqtt_cfg.client_cert_pem = client_certificate_pem;
+    mqtt_cfg.client_key_pem = client_private_key_pem;
+    mqtt_cfg.keepalive = 60;
+    mqtt_cfg.lwt_topic = s_state_topic[0] ? s_state_topic : NULL;
+    mqtt_cfg.lwt_msg = kUnexpectedDisconnectState;
+    mqtt_cfg.lwt_msg_len = sizeof(kUnexpectedDisconnectState) - 1;
+    mqtt_cfg.lwt_qos = 0;
+    mqtt_cfg.lwt_retain = true;
+    mqtt_cfg.disable_clean_session = false;
+    mqtt_cfg.disable_auto_reconnect = false;
+#endif
 
     if (use_tls) {
+#if ESP_IDF_VERSION_MAJOR >= 5
         mqtt_cfg.broker.verification.certificate = kOmsCaPem;
-        ESP_LOGI(TAG, "MQTT TLS enabled with CA pinning");
+#else
+        mqtt_cfg.cert_pem = kOmsCaPem;
+#endif
+        ESP_LOGI(TAG, "MQTT TLS enabled with CA pinning and client certificates");
+    } else if (client_certificate_pem && client_certificate_pem[0]) {
+        ESP_LOGW(TAG, "MQTT client certificate configured without TLS; broker will ignore it");
+    }
+
+    if (use_tls && (!client_certificate_pem || !client_certificate_pem[0] ||
+                    !client_private_key_pem || !client_private_key_pem[0])) {
+        ESP_LOGW(TAG, "MQTT mutual TLS requested but client cert/key missing");
     }
 
     s_mqtt_client = esp_mqtt_client_init(&mqtt_cfg);

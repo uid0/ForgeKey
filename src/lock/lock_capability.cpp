@@ -49,7 +49,7 @@ bool publishTelemetry() {
 
     const char* triggerStr = "unknown";
     switch (trigger) {
-        case LockDevice::Trigger::JWT: triggerStr = "jwt"; break;
+        case LockDevice::Trigger::SIGNED_COMMAND: triggerStr = "signed_command"; break;
         case LockDevice::Trigger::MORTISE: triggerStr = "mortise"; break;
         case LockDevice::Trigger::AUTO_UNLOCK: triggerStr = "auto_unlock"; break;
         case LockDevice::Trigger::DOOR_CLOSE: triggerStr = "door_close"; break;

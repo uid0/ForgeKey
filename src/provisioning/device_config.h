@@ -15,13 +15,13 @@
 #endif
 
 // Bearer used in the X-ForgeKey-Provisioning-Token header for
-// /api/forgekey/devices/register/. Devices are physically controlled
+// /api/forgekey/devices/enroll/. Devices are physically controlled
 // in v1, so a shared token is acceptable; rotation arrives over OTA.
 #ifndef FORGEKEY_PROVISIONING_TOKEN
 #define FORGEKEY_PROVISIONING_TOKEN "019de078-eb77-706a-a52a-5901e10bcf8b"
 #endif
 
-// Static identity broadcast at registration. The OMS register endpoint
+// Static identity broadcast at enrollment. The OMS enroll endpoint
 // uses this to slot the device into the right capability bucket.
 #ifndef FORGEKEY_SENSOR_KIND
 #define FORGEKEY_SENSOR_KIND "people-counter"
@@ -34,8 +34,8 @@
 #endif
 
 // First-boot fallback MQTT broker. The authoritative broker host/port/tls
-// come back from the OMS registration response and are persisted to NVS;
-// these values are only used before a successful registration (or if the
+// come back from the OMS enrollment response and are persisted to NVS;
+// these values are only used before a successful enrollment (or if the
 // stored values are wiped). Override per-build via -D flags.
 #ifndef MQTT_BROKER_FALLBACK_HOST
 #define MQTT_BROKER_FALLBACK_HOST "dms.openmakersuite.net"

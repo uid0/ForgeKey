@@ -47,8 +47,8 @@ PhotoUploader::Result PhotoUploader::uploadPhoto(const uint8_t* jpegBuf, size_t 
         Serial.println("[photo] uploadPhoto FAILED: null/empty jpeg buffer");
         return Result::TransportError;
     }
-    if (jwtToken.length() == 0) {
-        Serial.println("[photo] uploadPhoto FAILED: no JWT token");
+    if (clientCertificatePem.length() == 0 || clientPrivateKeyPem.length() == 0) {
+        Serial.println("[photo] uploadPhoto FAILED: no client certificate/private key");
         return Result::AuthExpired;
     }
 
@@ -68,9 +68,10 @@ PhotoUploader::Result PhotoUploader::uploadPhoto(const uint8_t* jpegBuf, size_t 
 
     WiFiClientSecure tls;
     tls.setCACert(kOmsCaPem);
+    tls.setCertificate(clientCertificatePem.c_str());
+    tls.setPrivateKey(clientPrivateKeyPem.c_str());
     tls.setTimeout(15);
     
-    IPAddress serverIp;
     bool haveIp = hostIpResolved;
     if (!haveIp) {
         for (int retry = 0; retry < 3; retry++) {
@@ -102,11 +103,10 @@ PhotoUploader::Result PhotoUploader::uploadPhoto(const uint8_t* jpegBuf, size_t 
 
     tls.printf("POST /api/forgekey/devices/%s/photo/ HTTP/1.1\r\n"
                "Host: %s\r\n"
-               "Authorization: Bearer %s\r\n"
                "Content-Type: multipart/form-data; boundary=%s\r\n"
                "Content-Length: %u\r\n"
                "Connection: close\r\n\r\n",
-               mac.c_str(), host.c_str(), jwtToken.c_str(),
+               mac.c_str(), host.c_str(),
                kBoundary, (unsigned)total);
 
     tls.print(head);
@@ -147,7 +147,11 @@ PhotoUploader::Result PhotoUploader::uploadPhoto(const uint8_t* jpegBuf, size_t 
         return Result::Ok;
     }
     if (code == 401) {
-        Serial.println("[photo] FAILED: 401 Unauthorized — JWT rejected, re-register required");
+        Serial.println("[photo] FAILED: 401 Unauthorized — client cert rejected, re-enroll required");
+        return Result::AuthExpired;
+    }
+    if (code == 403) {
+        Serial.println("[photo] FAILED: 403 Forbidden — client cert not authorized");
         return Result::AuthExpired;
     }
     if (code >= 500) {

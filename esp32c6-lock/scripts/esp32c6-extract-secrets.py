@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Extract secrets from Arduino project and populate ESP32-C6 lock headers.
 
-Reads provisioning tokens, CA certificates, firmware public keys, JWT secrets,
-and predefined WiFi networks from the Arduino codebase, then writes populated
+Reads provisioning tokens, CA certificates, firmware public keys, OMS command
+public keys, and predefined WiFi networks from the Arduino codebase, then writes populated
 C headers into esp32c6-lock/main/.
 
 Run from repo root:
@@ -20,7 +20,6 @@ _REPO_ROOT = _SCRIPT_DIR.parent  # repo root = /Users/ian/Work/ForgeKey
 
 SRC_SECURITY = _REPO_ROOT / "src" / "security"
 SRC_PROVISIONING = _REPO_ROOT / "src" / "provisioning"
-SRC_LOCK = _REPO_ROOT / "src" / "lock"
 SRC_WIFI = _REPO_ROOT / "src" / "wifi_setup"
 DEST = _REPO_ROOT / "esp32c6-lock" / "main"
 
@@ -119,7 +118,7 @@ def write_firmware_pubkey(dest: Path, pem: str):
     print(f"  Written: {dest / 'firmware_pubkey.h'} ({len(pem)} bytes PEM)")
 
 
-def write_device_config(dest: Path, provisioning_token: str, jwt_secret: str):
+def write_device_config(dest: Path, provisioning_token: str):
     """Write device_config.h with extracted secrets."""
     content = f'''/*
  * Device configuration for ESP32-C6 lock build.
@@ -179,6 +178,32 @@ def write_device_config(dest: Path, provisioning_token: str, jwt_secret: str):
     token_preview = provisioning_token[:8] if len(provisioning_token) > 8 else provisioning_token
     token_display = f"{token_preview}...({len(provisioning_token)} chars)" if len(provisioning_token) > 8 else provisioning_token
     print(f"  Written: {dest / 'device_config.h'} (token: {token_display})")
+
+
+def write_oms_command_pubkey(dest: Path, pem: str):
+    """Write OMS command-verification public key as a const char[] array."""
+    lines = pem.strip().split('\n')
+    c_parts = []
+    for line in lines:
+        escaped = line.replace('\\', '\\\\').replace('"', '\\"')
+        c_parts.append(f'    "{escaped}\\n"')
+
+    content = '/*\n'
+    content += ' * OMS command verification public key for ESP32-C6 lock build.\n'
+    content += ' * Auto-generated from src/security/oms_command_pubkey.h — do not edit manually.\n'
+    content += ' * Run scripts/esp32c6-extract-secrets.py to update.\n'
+    content += ' */\n\n'
+    content += '#ifndef FORGEKEY_OMS_COMMAND_PUBKEY_H\n'
+    content += '#define FORGEKEY_OMS_COMMAND_PUBKEY_H\n\n'
+    content += 'static const char kOmsCommandPubKeyPem[] = {\n'
+    content += ',\n'.join(c_parts) + '\n'
+    content += '    NULL\n'
+    content += '};\n\n'
+    content += '#endif /* FORGEKEY_OMS_COMMAND_PUBKEY_H */\n'
+
+    dest.mkdir(parents=True, exist_ok=True)
+    (dest / "oms_command_pubkey.h").write_text(content)
+    print(f"  Written: {dest / 'oms_command_pubkey.h'} ({len(pem)} bytes PEM)")
 
 
 def write_wifi_secrets(dest: Path, networks: list):
@@ -336,16 +361,18 @@ def main():
     prov_token = extract_string_macro(SRC_PROVISIONING / "device_config.h", "FORGEKEY_PROVISIONING_TOKEN")
     print(f"  Provisioning token: {prov_token[:12]}..." if len(prov_token) > 12 else f"  Provisioning token: {prov_token}")
 
-    # Extract JWT secret from lock config
-    jwt_secret = extract_string_macro(SRC_LOCK / "lock_config.h", "FORGEKEY_LOCK_JWT_SECRET")
-    print(f"  JWT secret: {jwt_secret[:12]}..." if len(jwt_secret) > 12 else f"  JWT secret: {jwt_secret}")
-
     # Extract PEM certificates
     oms_ca_pem = extract_pem_macro(SRC_SECURITY / "oms_ca.h", "OMS_CA_PEM")
     print(f"  OMS CA cert: {len(oms_ca_pem)} bytes")
 
     fw_pubkey_pem = extract_pem_macro(SRC_SECURITY / "firmware_pubkey.h", "FORGEKEY_FW_PUBKEY_PEM")
     print(f"  Firmware pubkey: {len(fw_pubkey_pem)} bytes (placeholder)")
+
+    oms_cmd_pubkey_pem = extract_pem_macro(
+        SRC_SECURITY / "oms_command_pubkey.h",
+        "FORGEKEY_OMS_COMMAND_PUBKEY_PEM",
+    )
+    print(f"  OMS command pubkey: {len(oms_cmd_pubkey_pem)} bytes")
 
     # Extract WiFi networks
     networks = extract_wifi_networks()
@@ -358,7 +385,8 @@ def main():
     print("\nWriting files...")
     write_oms_ca(DEST, oms_ca_pem)
     write_firmware_pubkey(DEST, fw_pubkey_pem)
-    write_device_config(DEST, prov_token, jwt_secret)
+    write_oms_command_pubkey(DEST, oms_cmd_pubkey_pem)
+    write_device_config(DEST, prov_token)
     write_wifi_secrets(DEST, networks)
     write_firmware_verify(DEST)
     write_firmware_verify_header(DEST)

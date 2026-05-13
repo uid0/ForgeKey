@@ -1,25 +1,32 @@
 /*
  * Lock state machine implementation for ESP32-C6 lock device.
  * Non-blocking state machine with GPIO debouncing, solenoid pulse,
- * and full HMAC-SHA256 JWT verification via mbedtls.
+ * and ES256 signed-command verification via mbedtls.
  */
 
 #include "lock_state.h"
 #include "lock_config.h"
 #include "device_config.h"
+#include "provisioning.h"
+#include "oms_command_pubkey.h"
 
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <ctype.h>
+#include <time.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_timer.h"
 #include "esp_log.h"
 #include "driver/gpio.h"
+#include "cJSON.h"
+#include "mbedtls/base64.h"
+#include "mbedtls/bignum.h"
+#include "mbedtls/ecdsa.h"
+#include "mbedtls/pk.h"
 #include "mbedtls/sha256.h"
-#include "mbedtls/hmac_sha256.h"
 
 static const char* TAG = "LOCK";
 
@@ -184,177 +191,221 @@ static void lock_gpio_read(void) {
     }
 }
 
-/* ===== JWT validation with HMAC-SHA256 ===== */
+/* ===== Signed-command validation ===== */
 
-/* Base64url decode helper */
-static int base64url_decode(const char* in, size_t in_len, uint8_t* out, size_t* out_len) {
-    static const unsigned char table[256] = {
-        [65] = 0, [66] = 1, [67] = 2, [68] = 3, [69] = 4, [70] = 5,
-        [71] = 6, [72] = 7, [73] = 8, [74] = 9, [75] = 10, [76] = 11,
-        [77] = 12, [78] = 13, [79] = 14, [80] = 15, [81] = 16, [82] = 17,
-        [83] = 18, [84] = 19, [85] = 20, [86] = 21, [87] = 22, [88] = 23,
-        [89] = 24, [90] = 25,
-        [97] = 26, [98] = 27, [99] = 28, [100] = 29, [101] = 30, [102] = 31,
-        [103] = 32, [104] = 33, [105] = 34, [106] = 35, [107] = 36, [108] = 37,
-        [109] = 38, [110] = 39, [111] = 40, [112] = 41, [113] = 42, [114] = 43,
-        [115] = 44, [116] = 45, [117] = 46, [118] = 47,
-        [48] = 48, [49] = 49, [50] = 50, [51] = 51, [52] = 52, [53] = 53,
-        [54] = 54, [55] = 55, [56] = 56, [57] = 57,
-        [43] = 62, [47] = 63,
-    };
+static bool base64url_decode(const char* in, size_t in_len,
+                             uint8_t* out, size_t out_cap, size_t* out_len) {
+    if (!in || !out || !out_len) return false;
 
-    if (!in || !out || !out_len) return -1;
+    size_t normalized_len = in_len;
+    while (normalized_len % 4 != 0) normalized_len++;
 
-    size_t decoded_len = (in_len + 3) / 4 * 3;
-    uint8_t tmp[4];
-    int tmp_pos = 0;
-    *out_len = 0;
+    char normalized[512];
+    if (normalized_len + 1 > sizeof(normalized)) {
+        return false;
+    }
 
     for (size_t i = 0; i < in_len; i++) {
-        unsigned char c = (unsigned char)in[i];
-        if (c == '-') tmp[4] = 62; /* base64url uses - and _ instead of + and / */
-        else if (c == '_') tmp[4] = 63;
-        else if (c == '=') tmp[4] = 0;
-        else if (c >= 'A' && c <= 'Z') tmp[4] = table[c];
-        else if (c >= 'a' && c <= 'z') tmp[4] = table[c];
-        else if (c >= '0' && c <= '9') tmp[4] = table[c] - 26;
-        else continue; /* skip padding and invalid chars */
+        char c = in[i];
+        normalized[i] = (c == '-') ? '+' : (c == '_' ? '/' : c);
+    }
+    for (size_t i = in_len; i < normalized_len; i++) {
+        normalized[i] = '=';
+    }
+    normalized[normalized_len] = '\0';
 
-        tmp[tmp_pos++] = tmp[4];
+    size_t produced = 0;
+    int rc = mbedtls_base64_decode(out, out_cap, &produced,
+                                   (const unsigned char*)normalized,
+                                   normalized_len);
+    if (rc != 0) {
+        return false;
+    }
+    *out_len = produced;
+    return true;
+}
 
-        if (tmp_pos == 4) {
-            out[(*out_len)++] = (tmp[0] << 2) | (tmp[1] >> 4);
-            if ((*out_len) < decoded_len) {
-                out[(*out_len)++] = (tmp[1] << 4) | (tmp[2] >> 2);
-            }
-            if ((*out_len) < decoded_len) {
-                out[(*out_len)++] = (tmp[2] << 6) | tmp[3];
-            }
-            tmp_pos = 0;
+static void normalize_mac_claim(const char* src, char* dest, size_t dest_len) {
+    size_t j = 0;
+    if (dest_len == 0) return;
+    for (size_t i = 0; src && src[i] != '\0' && j + 1 < dest_len; i++) {
+        char c = src[i];
+        if (c == ':' || c == '-') {
+            continue;
         }
+        dest[j++] = (char)tolower((unsigned char)c);
     }
-
-    return 0;
+    dest[j] = '\0';
 }
 
-/* Find a character in a string, stopping at a specific character */
-static const char* strnstr_limit(const char* haystack, char needle, const char* limit) {
-    while (haystack < limit && *haystack != needle) {
-        haystack++;
+static const char* active_command_pubkey_pem(void) {
+    static prov_credentials_t creds;
+    creds = provisioning_credentials();
+    if (creds.command_public_key_pem[0] != '\0') {
+        return creds.command_public_key_pem;
     }
-    return (haystack < limit) ? haystack : NULL;
+    return kOmsCommandPubKeyPem;
 }
 
-bool lock_state_validate_jwt(const char* token, long timestamp) {
+static bool verify_es256_signature(const char* signing_input,
+                                   size_t signing_input_len,
+                                   const uint8_t* signature,
+                                   size_t signature_len) {
+    if (!signing_input || !signature || signature_len != 64) {
+        return false;
+    }
+
+    const char* pubkey_pem = active_command_pubkey_pem();
+    if (!pubkey_pem || pubkey_pem[0] == '\0') {
+        return false;
+    }
+
+    uint8_t digest[32];
+    mbedtls_sha256_context sha;
+    mbedtls_sha256_init(&sha);
+    mbedtls_sha256_starts(&sha, 0);
+    mbedtls_sha256_update(&sha, (const unsigned char*)signing_input, signing_input_len);
+    mbedtls_sha256_finish(&sha, digest);
+    mbedtls_sha256_free(&sha);
+
+    mbedtls_pk_context pk;
+    mbedtls_pk_init(&pk);
+    int rc = mbedtls_pk_parse_public_key(&pk,
+                                         (const unsigned char*)pubkey_pem,
+                                         strlen(pubkey_pem) + 1);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "Command pubkey parse failed: -0x%04x", -rc);
+        mbedtls_pk_free(&pk);
+        return false;
+    }
+    if (!mbedtls_pk_can_do(&pk, MBEDTLS_PK_ECKEY)) {
+        ESP_LOGW(TAG, "Command pubkey is not an EC key");
+        mbedtls_pk_free(&pk);
+        return false;
+    }
+
+    mbedtls_mpi r;
+    mbedtls_mpi s;
+    mbedtls_mpi_init(&r);
+    mbedtls_mpi_init(&s);
+    rc = mbedtls_mpi_read_binary(&r, signature, 32);
+    if (rc == 0) rc = mbedtls_mpi_read_binary(&s, signature + 32, 32);
+    if (rc == 0) {
+        mbedtls_ecp_keypair* keypair = mbedtls_pk_ec(pk);
+        rc = mbedtls_ecdsa_verify(&keypair->grp, digest, sizeof(digest),
+                                  &keypair->Q, &r, &s);
+    }
+    mbedtls_mpi_free(&r);
+    mbedtls_mpi_free(&s);
+    mbedtls_pk_free(&pk);
+    return rc == 0;
+}
+
+bool lock_state_validate_signed_command(const char* token, long timestamp) {
     if (!token || token[0] == '\0') {
-        ESP_LOGW(TAG, "JWT validation: null or empty token");
+        ESP_LOGW(TAG, "Signed command validation: null or empty token");
         return false;
     }
 
-    /* Parse JWT: header.payload.signature */
-    int first_dot = -1, second_dot = -1;
-    size_t token_len = strlen(token);
-
-    for (size_t i = 0; i < token_len; i++) {
-        if (token[i] == '.' && first_dot < 0) {
-            first_dot = (int)i;
-        } else if (token[i] == '.' && first_dot >= 0 && second_dot < 0) {
-            second_dot = (int)i;
-            break;
-        }
-    }
-
-    if (first_dot <= 0 || second_dot <= first_dot + 1) {
-        ESP_LOGW(TAG, "JWT validation: malformed JWT (bad dot positions)");
+    const char* first_dot = strchr(token, '.');
+    const char* second_dot = first_dot ? strchr(first_dot + 1, '.') : NULL;
+    if (!first_dot || !second_dot || second_dot <= first_dot + 1) {
+        ESP_LOGW(TAG, "Signed command validation: malformed JWT");
         return false;
     }
 
-    /* Extract payload */
-    size_t payload_len = second_dot - first_dot - 1;
-    uint8_t payload_decoded[256];
+    size_t payload_b64_len = (size_t)(second_dot - first_dot - 1);
+    uint8_t payload_decoded[512];
     size_t payload_decoded_len = 0;
+    if (!base64url_decode(first_dot + 1, payload_b64_len,
+                          payload_decoded, sizeof(payload_decoded) - 1,
+                          &payload_decoded_len)) {
+        ESP_LOGW(TAG, "Signed command validation: payload decode failed");
+        return false;
+    }
+    payload_decoded[payload_decoded_len] = '\0';
 
-    if (base64url_decode(token + first_dot + 1, payload_len,
-                         payload_decoded, &payload_decoded_len) != 0) {
-        ESP_LOGW(TAG, "JWT validation: base64url decode failed");
+    cJSON* payload = cJSON_Parse((const char*)payload_decoded);
+    if (!payload) {
+        ESP_LOGW(TAG, "Signed command validation: payload parse failed");
         return false;
     }
 
-    /* Parse JSON to find "exp" and "timestamp" fields */
-    long jwt_timestamp = 0;
-    long jwt_expiry = 0;
-
-    /* Find "timestamp" */
-    char* ts_key = (char*)memmem(payload_decoded, payload_decoded_len, "\"timestamp\"", 11);
-    if (ts_key) {
-        char* colon = strchr(ts_key + 11, ':');
-        if (colon) {
-            char* num_start = colon + 1;
-            while (*num_start == ' ' || *num_start == '"') num_start++;
-            jwt_timestamp = atol(num_start);
-        }
+    long claim_timestamp = timestamp;
+    long expiry = 0;
+    cJSON* field = cJSON_GetObjectItemCaseSensitive(payload, "timestamp");
+    if (cJSON_IsNumber(field)) {
+        claim_timestamp = (long)field->valuedouble;
+    }
+    field = cJSON_GetObjectItemCaseSensitive(payload, "exp");
+    if (cJSON_IsNumber(field)) {
+        expiry = (long)field->valuedouble;
     }
 
-    /* Find "exp" */
-    char* exp_key = (char*)memmem(payload_decoded, payload_decoded_len, "\"exp\"", 5);
-    if (exp_key) {
-        char* colon = strchr(exp_key + 5, ':');
-        if (colon) {
-            char* num_start = colon + 1;
-            while (*num_start == ' ' || *num_start == '"') num_start++;
-            jwt_expiry = atol(num_start);
-        }
+    const char* claim_mac = "";
+    field = cJSON_GetObjectItemCaseSensitive(payload, "mac");
+    if (cJSON_IsString(field) && field->valuestring) {
+        claim_mac = field->valuestring;
     }
 
-    /* Check timestamp tolerance */
+    const char* claim_cmd = "";
+    field = cJSON_GetObjectItemCaseSensitive(payload, "cmd");
+    if (cJSON_IsString(field) && field->valuestring) {
+        claim_cmd = field->valuestring;
+    }
+
     time_t now = time(NULL);
-    if (now > 0) {
-        long diff = labs(now - jwt_timestamp);
+    if (claim_timestamp > 0 && now > 0) {
+        long diff = labs((long)now - claim_timestamp);
         if (diff > FORGEKEY_LOCK_CMD_TIMESTAMP_TOLERANCE_S) {
-            ESP_LOGW(TAG, "JWT validation: timestamp tolerance failed (diff=%ld > %d)",
+            ESP_LOGW(TAG, "Signed command timestamp drift=%ld exceeds tolerance=%d",
                      diff, FORGEKEY_LOCK_CMD_TIMESTAMP_TOLERANCE_S);
+            cJSON_Delete(payload);
             return false;
         }
     }
+    if (expiry > 0 && now > 0 && (long)now > expiry) {
+        ESP_LOGW(TAG, "Signed command expired");
+        cJSON_Delete(payload);
+        return false;
+    }
 
-    /* Check JWT expiry */
-    if (jwt_expiry > 0 && now > 0) {
-        if ((long)now > jwt_expiry) {
-            ESP_LOGW(TAG, "JWT validation: token expired (exp=%ld, now=%ld)", jwt_expiry, (long)now);
+    if (claim_mac && claim_mac[0] != '\0') {
+        char expected_mac[13];
+        char actual_mac[32];
+        normalize_mac_claim(g_mac_address, expected_mac, sizeof(expected_mac));
+        normalize_mac_claim(claim_mac, actual_mac, sizeof(actual_mac));
+        if (strcmp(expected_mac, actual_mac) != 0) {
+            ESP_LOGW(TAG, "Signed command MAC mismatch expected=%s got=%s",
+                     expected_mac, actual_mac);
+            cJSON_Delete(payload);
             return false;
         }
     }
+    if (claim_cmd && claim_cmd[0] != '\0' && strcmp(claim_cmd, "unlock") != 0) {
+        ESP_LOGW(TAG, "Signed command rejected unexpected cmd=%s", claim_cmd);
+        cJSON_Delete(payload);
+        return false;
+    }
 
-    /* HMAC-SHA256 signature verification */
-    size_t sig_len = token_len - second_dot - 1;
-    uint8_t signature[128];
+    size_t signature_len = strlen(second_dot + 1);
+    uint8_t signature[80];
     size_t signature_decoded_len = 0;
-
-    if (base64url_decode(token + second_dot + 1, sig_len,
-                         signature, &signature_decoded_len) != 0) {
-        ESP_LOGW(TAG, "JWT validation: signature base64url decode failed");
+    if (!base64url_decode(second_dot + 1, signature_len,
+                          signature, sizeof(signature), &signature_decoded_len)) {
+        ESP_LOGW(TAG, "Signed command validation: signature decode failed");
+        cJSON_Delete(payload);
         return false;
     }
 
-    /* Compute expected HMAC-SHA256 of header.payload */
-    uint8_t hmac_result[32];
-    mbedtls_hmac_sha256((const unsigned char*)FORGEKEY_LOCK_JWT_SECRET,
-                        strlen(FORGEKEY_LOCK_JWT_SECRET),
-                        (const unsigned char*)token, second_dot,
-                        hmac_result, 32);
-
-    /* Compare signatures */
-    if (signature_decoded_len != 32) {
-        ESP_LOGW(TAG, "JWT validation: signature length mismatch (%zu != 32)", signature_decoded_len);
+    bool verified = verify_es256_signature(token, (size_t)(second_dot - token),
+                                           signature, signature_decoded_len);
+    cJSON_Delete(payload);
+    if (!verified) {
+        ESP_LOGW(TAG, "Signed command validation: signature verification failed");
         return false;
     }
 
-    if (memcmp(hmac_result, signature, 32) != 0) {
-        ESP_LOGW(TAG, "JWT validation: HMAC-SHA256 signature mismatch");
-        return false;
-    }
-
-    ESP_LOGI(TAG, "JWT validation: OK (timestamp=%ld, exp=%ld)", jwt_timestamp, jwt_expiry);
     return true;
 }
 
@@ -392,7 +443,7 @@ void lock_state_tick(void) {
                     ESP_LOGW(TAG, "Latch disengaged -> UNLOCKED");
                     g_state = LOCK_STATE_UNLOCKED;
                     g_state_start_ms = now;
-                    g_last_trigger = LOCK_TRIGGER_JWT;
+                    g_last_trigger = LOCK_TRIGGER_SIGNED_COMMAND;
                 }
             }
             break;
@@ -487,21 +538,21 @@ bool lock_state_handle_unlock(const char* token, long timestamp) {
         return false;
     }
 
-    if (!lock_state_validate_jwt(token, timestamp)) {
-        ESP_LOGW(TAG, "Unlock: JWT validation failed");
+    if (!lock_state_validate_signed_command(token, timestamp)) {
+        ESP_LOGW(TAG, "Unlock: signed command validation failed");
         return false;
     }
 
-    /* Valid JWT: pulse the solenoid */
+    /* Valid signed command: pulse the solenoid */
     g_solenoid_start_ms = (uint32_t)(esp_timer_get_time() / 1000);
     g_solenoid_active = true;
     gpio_set_level(FORGEKEY_LOCK_SOLENOID_PIN, FORGEKEY_LOCK_SOLENOID_ACTIVE);
 
     /* Transition to UNLOCKED */
     g_state = LOCK_STATE_UNLOCKED;
-    g_last_trigger = LOCK_TRIGGER_JWT;
+    g_last_trigger = LOCK_TRIGGER_SIGNED_COMMAND;
 
-    ESP_LOGI(TAG, "Unlocked via JWT (timestamp=%ld)", timestamp);
+    ESP_LOGI(TAG, "Unlocked via signed command (timestamp=%ld)", timestamp);
     return true;
 }
 

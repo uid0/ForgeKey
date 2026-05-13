@@ -6,8 +6,13 @@
 #include <ArduinoJson.h>
 #include <esp_chip_info.h>
 #include <esp_flash.h>
+#include <mbedtls/ctr_drbg.h>
+#include <mbedtls/entropy.h>
+#include <mbedtls/pk.h>
+#include <mbedtls/x509_csr.h>
 
 #include "security/oms_ca.h"
+#include "security/oms_command_pubkey.h"
 #include "../capabilities/status_led/status_led.h"
 
 Provisioning provisioning;
@@ -17,7 +22,9 @@ constexpr const char* kNvsNamespace = "forgekey";
 constexpr const char* kKeyDeviceId = "dev_id";
 constexpr const char* kKeyFwTopic  = "fw_topic";
 constexpr const char* kKeyPingTopic = "p_topic";
-constexpr const char* kKeyJwt      = "jwt";
+constexpr const char* kKeyClientCert = "c_cert";
+constexpr const char* kKeyClientKey  = "c_key";
+constexpr const char* kKeyCmdPubKey  = "cmd_pub";
 constexpr const char* kKeyBoots    = "boots";
 constexpr const char* kKeyProvTok  = "prov_tok";  // OTA-delivered rotation override
 constexpr const char* kKeyBrokerHost = "b_host";
@@ -25,7 +32,7 @@ constexpr const char* kKeyBrokerPort = "b_port";
 constexpr const char* kKeyBrokerTls  = "b_tls";
 constexpr const char* kPlaceholderToken = "REPLACE_ME_PROVISIONING_TOKEN";
 
-// Multipart boundary used for the multipart/form-data registration POST.
+// Multipart boundary used for the multipart/form-data enrollment POST.
 constexpr const char* kBoundary = "----ForgekeyBoundary7d3f2c1a";
 
 const char* chipModelName(esp_chip_model_t model) {
@@ -53,6 +60,124 @@ void addChipFeatures(JsonObject features, uint32_t chipFeatures) {
     features["ieee802154"] = (chipFeatures & CHIP_FEATURE_IEEE802154) != 0;
     features["embedded_psram"] = (chipFeatures & CHIP_FEATURE_EMB_PSRAM) != 0;
 }
+
+bool generateDeviceKeyAndCsr(const String& mac,
+                             String& privateKeyPem,
+                             String& csrPem) {
+    constexpr const char* kPersonalization = "forgekey-enroll";
+    unsigned char privateKeyBuf[2048];
+    unsigned char csrBuf[2048];
+    char subjectName[64];
+    snprintf(subjectName, sizeof(subjectName), "CN=forgekey-%s", mac.c_str());
+
+    mbedtls_pk_context pk;
+    mbedtls_pk_init(&pk);
+    mbedtls_entropy_context entropy;
+    mbedtls_entropy_init(&entropy);
+    mbedtls_ctr_drbg_context ctrDrbg;
+    mbedtls_ctr_drbg_init(&ctrDrbg);
+    mbedtls_x509write_csr req;
+    mbedtls_x509write_csr_init(&req);
+
+    int rc = mbedtls_ctr_drbg_seed(&ctrDrbg, mbedtls_entropy_func, &entropy,
+                                   reinterpret_cast<const unsigned char*>(kPersonalization),
+                                   strlen(kPersonalization));
+    if (rc != 0) {
+        Serial.printf("enroll: ctr_drbg_seed failed: -0x%04x\n", -rc);
+        goto fail;
+    }
+
+    rc = mbedtls_pk_setup(&pk, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY));
+    if (rc != 0) {
+        Serial.printf("enroll: pk_setup failed: -0x%04x\n", -rc);
+        goto fail;
+    }
+
+    rc = mbedtls_ecp_gen_key(MBEDTLS_ECP_DP_SECP256R1, mbedtls_pk_ec(pk),
+                             mbedtls_ctr_drbg_random, &ctrDrbg);
+    if (rc != 0) {
+        Serial.printf("enroll: ecp_gen_key failed: -0x%04x\n", -rc);
+        goto fail;
+    }
+
+    rc = mbedtls_pk_write_key_pem(&pk, privateKeyBuf, sizeof(privateKeyBuf));
+    if (rc != 0) {
+        Serial.printf("enroll: write_key_pem failed: -0x%04x\n", -rc);
+        goto fail;
+    }
+    privateKeyPem = reinterpret_cast<const char*>(privateKeyBuf);
+
+    mbedtls_x509write_csr_set_md_alg(&req, MBEDTLS_MD_SHA256);
+    mbedtls_x509write_csr_set_key(&req, &pk);
+    rc = mbedtls_x509write_csr_set_subject_name(&req, subjectName);
+    if (rc != 0) {
+        Serial.printf("enroll: set_subject_name failed: -0x%04x\n", -rc);
+        goto fail;
+    }
+
+    rc = mbedtls_x509write_csr_pem(&req, csrBuf, sizeof(csrBuf),
+                                   mbedtls_ctr_drbg_random, &ctrDrbg);
+    if (rc != 0) {
+        Serial.printf("enroll: write_csr_pem failed: -0x%04x\n", -rc);
+        goto fail;
+    }
+    csrPem = reinterpret_cast<const char*>(csrBuf);
+
+    mbedtls_x509write_csr_free(&req);
+    mbedtls_ctr_drbg_free(&ctrDrbg);
+    mbedtls_entropy_free(&entropy);
+    mbedtls_pk_free(&pk);
+    return true;
+
+fail:
+    mbedtls_x509write_csr_free(&req);
+    mbedtls_ctr_drbg_free(&ctrDrbg);
+    mbedtls_entropy_free(&entropy);
+    mbedtls_pk_free(&pk);
+    return false;
+}
+
+JsonVariantConst responsePolicy(const DynamicJsonDocument& resp) {
+    JsonVariantConst policy = resp["policy"];
+    if (policy.isNull()) {
+        return resp.as<JsonVariantConst>();
+    }
+    return policy;
+}
+
+String firstString(JsonVariantConst primary, const char* fallback = "") {
+    if (!primary.isNull()) {
+        const char* value = primary.as<const char*>();
+        if (value && *value) return String(value);
+    }
+    return String(fallback ? fallback : "");
+}
+
+String firstString(JsonVariantConst primary,
+                   JsonVariantConst secondary,
+                   const char* fallback = "") {
+    if (!primary.isNull()) {
+        const char* value = primary.as<const char*>();
+        if (value && *value) return String(value);
+    }
+    if (!secondary.isNull()) {
+        const char* value = secondary.as<const char*>();
+        if (value && *value) return String(value);
+    }
+    return String(fallback ? fallback : "");
+}
+
+uint16_t firstU16(JsonVariantConst primary, JsonVariantConst secondary, uint16_t fallback = 0) {
+    if (!primary.isNull()) return static_cast<uint16_t>(primary.as<unsigned int>());
+    if (!secondary.isNull()) return static_cast<uint16_t>(secondary.as<unsigned int>());
+    return fallback;
+}
+
+bool firstBool(JsonVariantConst primary, JsonVariantConst secondary, bool fallback = false) {
+    if (!primary.isNull()) return primary.as<bool>();
+    if (!secondary.isNull()) return secondary.as<bool>();
+    return fallback;
+}
 }  // namespace
 
 void Provisioning::begin() {
@@ -71,11 +196,17 @@ void Provisioning::load() {
     creds.deviceId          = p.getString(kKeyDeviceId, "");
     creds.mqttFirmwareTopic = p.getString(kKeyFwTopic, "");
     creds.mqttPingsTopic    = p.getString(kKeyPingTopic, "");
-    creds.jwtToken          = p.getString(kKeyJwt, "");
+    creds.clientCertificatePem = p.getString(kKeyClientCert, "");
+    creds.clientPrivateKeyPem  = p.getString(kKeyClientKey, "");
+    creds.commandPublicKeyPem  = p.getString(kKeyCmdPubKey, "");
     creds.mqttBrokerHost    = p.getString(kKeyBrokerHost, "");
     creds.mqttBrokerPort    = (uint16_t)p.getUShort(kKeyBrokerPort, 0);
     creds.mqttBrokerUseTls  = p.getBool(kKeyBrokerTls, false);
     p.end();
+
+    if (creds.commandPublicKeyPem.length() == 0) {
+        creds.commandPublicKeyPem = String(kOmsCommandPubKeyPem);
+    }
 
     // Verbose: dump exactly what we loaded so a wrong/empty topic in NVS
     // is visible at boot rather than silently falling back to defaults.
@@ -85,16 +216,19 @@ void Provisioning::load() {
                   creds.mqttPingsTopic.c_str(), (unsigned)creds.mqttPingsTopic.length());
     Serial.printf("provisioning: loaded from NVS mqtt_topic_for_firmware='%s' (len=%u)\n",
                   creds.mqttFirmwareTopic.c_str(), (unsigned)creds.mqttFirmwareTopic.length());
-    Serial.printf("provisioning: loaded from NVS jwt_token len=%u prefix=%s\n",
-                  (unsigned)creds.jwtToken.length(),
-                  creds.jwtToken.length() >= 8 ? creds.jwtToken.substring(0, 8).c_str() : "(short)");
+    Serial.printf("provisioning: loaded from NVS client_cert len=%u client_key len=%u cmd_pub len=%u\n",
+                  (unsigned)creds.clientCertificatePem.length(),
+                  (unsigned)creds.clientPrivateKeyPem.length(),
+                  (unsigned)creds.commandPublicKeyPem.length());
     Serial.printf("provisioning: loaded from NVS mqtt_broker host='%s' port=%u use_tls=%d\n",
                   creds.mqttBrokerHost.c_str(), (unsigned)creds.mqttBrokerPort,
                   (int)creds.mqttBrokerUseTls);
 }
 
 bool Provisioning::isProvisioned() const {
-    return creds.deviceId.length() > 0 && creds.jwtToken.length() > 0;
+    return creds.deviceId.length() > 0 &&
+           creds.clientCertificatePem.length() > 0 &&
+           creds.clientPrivateKeyPem.length() > 0;
 }
 
 void Provisioning::clear() {
@@ -103,7 +237,9 @@ void Provisioning::clear() {
     p.remove(kKeyDeviceId);
     p.remove(kKeyFwTopic);
     p.remove(kKeyPingTopic);
-    p.remove(kKeyJwt);
+    p.remove(kKeyClientCert);
+    p.remove(kKeyClientKey);
+    p.remove(kKeyCmdPubKey);
     p.remove(kKeyBrokerHost);
     p.remove(kKeyBrokerPort);
     p.remove(kKeyBrokerTls);
@@ -138,7 +274,9 @@ bool Provisioning::persist(const DeviceCredentials& c) {
     p.putString(kKeyDeviceId, c.deviceId);
     p.putString(kKeyFwTopic, c.mqttFirmwareTopic);
     p.putString(kKeyPingTopic, c.mqttPingsTopic);
-    p.putString(kKeyJwt, c.jwtToken);
+    p.putString(kKeyClientCert, c.clientCertificatePem);
+    p.putString(kKeyClientKey, c.clientPrivateKeyPem);
+    p.putString(kKeyCmdPubKey, c.commandPublicKeyPem);
     p.putString(kKeyBrokerHost, c.mqttBrokerHost);
     p.putUShort(kKeyBrokerPort, c.mqttBrokerPort);
     p.putBool(kKeyBrokerTls, c.mqttBrokerUseTls);
@@ -147,17 +285,23 @@ bool Provisioning::persist(const DeviceCredentials& c) {
     return true;
 }
 
-bool Provisioning::registerDevice(const char* host, uint16_t port,
-                                  const String& mac,
-                                  const String& ipAddr,
-                                  const uint8_t* jpegBuf, size_t jpegLen) {
+bool Provisioning::enrollDevice(const char* host, uint16_t port,
+                                const String& mac,
+                                const String& ipAddr,
+                                const uint8_t* jpegBuf, size_t jpegLen) {
     // jpegBuf == nullptr / jpegLen == 0 is allowed for non-imaging sensor
     // kinds (e.g. temperature_sensor). The multipart body in that case
     // contains only the metadata part.
     const bool hasPhoto = (jpegBuf != nullptr && jpegLen > 0);
+    String privateKeyPem;
+    String csrPem;
+    if (!generateDeviceKeyAndCsr(mac, privateKeyPem, csrPem)) {
+        Serial.println("enroll: failed to generate device keypair/CSR");
+        return false;
+    }
 
     // Build the JSON metadata part once so we can compute Content-Length.
-    StaticJsonDocument<1024> meta;
+    DynamicJsonDocument meta(4096);
     esp_chip_info_t chipInfo{};
     esp_chip_info(&chipInfo);
 
@@ -174,6 +318,7 @@ bool Provisioning::registerDevice(const char* host, uint16_t port,
     meta["boot_count"]       = cachedBootCount;
     meta["free_heap"]        = ESP.getFreeHeap();
     meta["ip"]               = ipAddr;
+    meta["csr_pem"]          = csrPem;
     meta["unique_chip_id"]   = uniqueChipId;
     if (flashIdErr == ESP_OK) {
         char flashMemoryIdHex[11];
@@ -182,7 +327,7 @@ bool Provisioning::registerDevice(const char* host, uint16_t port,
         meta["flash_memory_id"] = flashMemoryIdHex;
     } else {
         meta["flash_memory_id"] = nullptr;
-        Serial.printf("register: failed to read flash memory id: %s\n",
+        Serial.printf("enroll: failed to read flash memory id: %s\n",
                       esp_err_to_name(flashIdErr));
     }
 
@@ -193,14 +338,15 @@ bool Provisioning::registerDevice(const char* host, uint16_t port,
     chipInfoJson["full_revision"] = chipInfo.full_revision;
     addChipFeatures(chipInfoJson.createNestedObject("features"), chipInfo.features);
 
-    Serial.printf("register: chip_info model=%s cores=%u revision=%u full_revision=%u "
-                  "unique_chip_id=%s flash_memory_id=%s\n",
+    Serial.printf("enroll: chip_info model=%s cores=%u revision=%u full_revision=%u "
+                  "unique_chip_id=%s flash_memory_id=%s csr_len=%u\n",
                   chipInfoJson["model"].as<const char*>(),
                   (unsigned)chipInfo.cores,
                   (unsigned)chipInfo.revision,
                   (unsigned)chipInfo.full_revision,
                   uniqueChipId,
-                  flashIdErr == ESP_OK ? meta["flash_memory_id"].as<const char*>() : "(unavailable)");
+                  flashIdErr == ESP_OK ? meta["flash_memory_id"].as<const char*>() : "(unavailable)",
+                  (unsigned)csrPem.length());
     String metaJson;
     serializeJson(meta, metaJson);
 
@@ -224,13 +370,13 @@ bool Provisioning::registerDevice(const char* host, uint16_t port,
     String activeToken = activeProvisioningToken();
 
     String tokenPreview = activeToken.substring(0, 8);
-    Serial.printf("register: POST host=%s port=%u path=/api/forgekey/devices/register/ "
-                  "url=https://%s:%u/api/forgekey/devices/register/ "
+    Serial.printf("enroll: POST host=%s port=%u path=/api/forgekey/devices/enroll/ "
+                  "url=https://%s:%u/api/forgekey/devices/enroll/ "
                   "body_bytes=%u token_prefix=%s... token_len=%u\n",
                   host, port, host, port, (unsigned)totalLen,
                   tokenPreview.c_str(), (unsigned)activeToken.length());
     if (activeToken == kPlaceholderToken) {
-        Serial.println("register: WARNING using placeholder provisioning token; OMS will reject this with 401");
+        Serial.println("enroll: WARNING using placeholder provisioning token; OMS will reject this with 401");
     }
 
     WiFiClientSecure tls;
@@ -247,16 +393,16 @@ bool Provisioning::registerDevice(const char* host, uint16_t port,
         delay(1000);
     }
     if (!WiFi.hostByName(host, resolvedIp)) {
-        Serial.printf("register: DNS failed for %s after retries\n", host);
+        Serial.printf("enroll: DNS failed for %s after retries\n", host);
         return false;
     }
 
     if (!tls.connect(host, port)) {
-        Serial.printf("register: TLS connect to %s:%u failed\n", host, port);
+        Serial.printf("enroll: TLS connect to %s:%u failed\n", host, port);
         return false;
     }
 
-    tls.printf("POST /api/forgekey/devices/register/ HTTP/1.1\r\n"
+    tls.printf("POST /api/forgekey/devices/enroll/ HTTP/1.1\r\n"
                "Host: %s\r\n"
                "X-ForgeKey-Provisioning-Token: %s\r\n"
                "Content-Type: multipart/form-data; boundary=%s\r\n"
@@ -271,7 +417,7 @@ bool Provisioning::registerDevice(const char* host, uint16_t port,
         for (size_t off = 0; off < jpegLen; off += kChunk) {
             size_t n = (jpegLen - off < kChunk) ? (jpegLen - off) : kChunk;
             if (tls.write(jpegBuf + off, n) != n) {
-                Serial.println("register: TLS write failed mid-photo");
+                Serial.println("enroll: TLS write failed mid-photo");
                 tls.stop();
                 return false;
             }
@@ -294,7 +440,7 @@ bool Provisioning::registerDevice(const char* host, uint16_t port,
         if (line.length() <= 1) break;  // "\r" only
     }
 
-    // Read the body (server is expected to keep it small — < 1KB).
+    // Read the body (server is expected to keep it small).
     String body;
     body.reserve(512);
     while (tls.available() || tls.connected()) {
@@ -304,101 +450,89 @@ bool Provisioning::registerDevice(const char* host, uint16_t port,
     }
     tls.stop();
 
-    Serial.printf("register: HTTP %d (%s) body_len=%u\n",
+    Serial.printf("enroll: HTTP %d (%s) body_len=%u\n",
                   code, statusLine.c_str(), (unsigned)body.length());
 
     if (code < 200 || code >= 300) {
         return false;
     }
 
-    // Log the full raw response body (with JWT redacted) so we can see
-    // exactly what OMS returned and diagnose missing fields.
-    {
-        String debugBody = body;
-        int jwtKey = debugBody.indexOf("\"jwt_token\"");
-        if (jwtKey >= 0) {
-            int colon = debugBody.indexOf(':', jwtKey);
-            int q1 = (colon >= 0) ? debugBody.indexOf('"', colon + 1) : -1;
-            int q2 = (q1 >= 0) ? debugBody.indexOf('"', q1 + 1) : -1;
-            if (q1 >= 0 && q2 > q1) {
-                String prefix = debugBody.substring(q1 + 1, q1 + 1 +
-                    ((q2 - q1 - 1) < 8 ? (q2 - q1 - 1) : 8));
-                debugBody = debugBody.substring(0, q1 + 1) + prefix +
-                            "...REDACTED(len=" + String(q2 - q1 - 1) + ")" +
-                            debugBody.substring(q2);
-            }
-        }
-        Serial.printf("register: response body (raw): %s\n", debugBody.c_str());
-    }
-
-    StaticJsonDocument<1024> resp;
+    DynamicJsonDocument resp(12288);
     DeserializationError err = deserializeJson(resp, body);
     if (err) {
-        Serial.printf("register: JSON parse error: %s\n", err.c_str());
+        Serial.printf("enroll: JSON parse error: %s\n", err.c_str());
         return false;
     }
 
     DeviceCredentials c;
-    c.deviceId          = (const char*)(resp["device_id"]          | "");
-    c.mqttFirmwareTopic = (const char*)(resp["mqtt_topic_for_firmware"] | "");
-    c.mqttPingsTopic    = (const char*)(resp["mqtt_topic_for_pings"]    | "");
-    c.jwtToken          = (const char*)(resp["jwt_token"]               | "");
-    c.mqttBrokerHost    = (const char*)(resp["mqtt_broker_host"]        | "");
-    c.mqttBrokerPort    = (uint16_t)(resp["mqtt_broker_port"]           | 0);
-    c.mqttBrokerUseTls  = (bool)(resp["mqtt_broker_use_tls"]            | false);
+    JsonVariantConst policy = responsePolicy(resp);
+    c.deviceId             = firstString(resp["device_id"]);
+    c.clientCertificatePem = firstString(resp["client_certificate_pem"],
+                                         resp["certificate_pem"]);
+    c.clientPrivateKeyPem  = privateKeyPem;
+    c.commandPublicKeyPem  = firstString(resp["command_public_key_pem"],
+                                         resp["oms_command_public_key_pem"],
+                                         kOmsCommandPubKeyPem);
+    c.mqttFirmwareTopic    = firstString(policy["mqtt_topic_for_firmware"],
+                                         resp["mqtt_topic_for_firmware"]);
+    c.mqttPingsTopic       = firstString(policy["mqtt_topic_for_pings"],
+                                         resp["mqtt_topic_for_pings"]);
+    c.mqttBrokerHost       = firstString(policy["mqtt_broker_host"],
+                                         resp["mqtt_broker_host"]);
+    c.mqttBrokerPort       = firstU16(policy["mqtt_broker_port"],
+                                      resp["mqtt_broker_port"], 0);
+    c.mqttBrokerUseTls     = firstBool(policy["mqtt_broker_use_tls"],
+                                       resp["mqtt_broker_use_tls"], false);
 
-    // Log every topic field actually parsed from the response so we can
-    // distinguish "server sent empty string" from "field absent" from
-    // "field present with the wrong prefix".
-    Serial.printf("register: parsed device_id='%s'\n", c.deviceId.c_str());
-    Serial.printf("register: parsed mqtt_topic_for_pings='%s' (present=%d)\n",
-                  c.mqttPingsTopic.c_str(), (int)resp.containsKey("mqtt_topic_for_pings"));
-    Serial.printf("register: parsed mqtt_topic_for_firmware='%s' (present=%d)\n",
-                  c.mqttFirmwareTopic.c_str(), (int)resp.containsKey("mqtt_topic_for_firmware"));
-    Serial.printf("register: parsed jwt_token len=%u (present=%d)\n",
-                  (unsigned)c.jwtToken.length(), (int)resp.containsKey("jwt_token"));
-    Serial.printf("register: parsed mqtt_broker_host='%s' (present=%d)\n",
-                   c.mqttBrokerHost.c_str(), (int)resp.containsKey("mqtt_broker_host"));
-    Serial.printf("register: parsed mqtt_broker_port=%u (present=%d)\n",
-                   (unsigned)c.mqttBrokerPort, (int)resp.containsKey("mqtt_broker_port"));
-    Serial.printf("register: parsed mqtt_broker_use_tls=%d (present=%d)\n",
-                   (int)c.mqttBrokerUseTls, (int)resp.containsKey("mqtt_broker_use_tls"));
+    Serial.printf("enroll: parsed device_id='%s'\n", c.deviceId.c_str());
+    Serial.printf("enroll: parsed mqtt_topic_for_pings='%s'\n",
+                  c.mqttPingsTopic.c_str());
+    Serial.printf("enroll: parsed mqtt_topic_for_firmware='%s'\n",
+                  c.mqttFirmwareTopic.c_str());
+    Serial.printf("enroll: parsed client_cert len=%u client_key len=%u cmd_pub len=%u\n",
+                  (unsigned)c.clientCertificatePem.length(),
+                  (unsigned)c.clientPrivateKeyPem.length(),
+                  (unsigned)c.commandPublicKeyPem.length());
+    Serial.printf("enroll: parsed mqtt_broker_host='%s' mqtt_broker_port=%u mqtt_broker_use_tls=%d\n",
+                  c.mqttBrokerHost.c_str(), (unsigned)c.mqttBrokerPort,
+                  (int)c.mqttBrokerUseTls);
 
-    // Warn if broker config is missing from the registration response.
+    // Warn if broker config is missing from the enrollment response.
     // Without these fields the device falls back to compile-time defaults,
     // which may point to the wrong broker or use the wrong port/TLS setting.
-    if (!resp.containsKey("mqtt_broker_host") ||
-        !resp.containsKey("mqtt_broker_port") ||
-        !resp.containsKey("mqtt_broker_use_tls")) {
-        Serial.println("register: WARNING — registration response missing "
+    if (c.mqttBrokerHost.length() == 0 || c.mqttBrokerPort == 0) {
+        Serial.println("enroll: WARNING — enrollment response missing "
                        "mqtt_broker_host/port/use_tls fields. "
                        "Device will use compile-time fallback defaults.");
     }
 
-    if (c.deviceId.length() == 0 || c.jwtToken.length() == 0) {
-        Serial.println("register: response missing device_id or jwt_token");
+    if (c.deviceId.length() == 0 ||
+        c.clientCertificatePem.length() == 0 ||
+        c.clientPrivateKeyPem.length() == 0) {
+        Serial.println("enroll: response missing device_id or client certificate bundle");
         return false;
     }
 
     if (!persist(c)) {
-        Serial.println("register: NVS persist failed");
+        Serial.println("enroll: NVS persist failed");
         return false;
     }
     // Dump every key written to NVS so we can confirm the bytes that future
     // boots will read back (matches the "loaded from NVS" lines in load()).
-    Serial.printf("register: NVS persisted device_id='%s' (len=%u)\n",
+    Serial.printf("enroll: NVS persisted device_id='%s' (len=%u)\n",
                   c.deviceId.c_str(), (unsigned)c.deviceId.length());
-    Serial.printf("register: NVS persisted mqtt_topic_for_pings='%s' (len=%u)\n",
+    Serial.printf("enroll: NVS persisted mqtt_topic_for_pings='%s' (len=%u)\n",
                   c.mqttPingsTopic.c_str(), (unsigned)c.mqttPingsTopic.length());
-    Serial.printf("register: NVS persisted mqtt_topic_for_firmware='%s' (len=%u)\n",
+    Serial.printf("enroll: NVS persisted mqtt_topic_for_firmware='%s' (len=%u)\n",
                   c.mqttFirmwareTopic.c_str(), (unsigned)c.mqttFirmwareTopic.length());
-    Serial.printf("register: NVS persisted jwt_token len=%u prefix=%s\n",
-                  (unsigned)c.jwtToken.length(),
-                  c.jwtToken.length() >= 8 ? c.jwtToken.substring(0, 8).c_str() : "(short)");
-    Serial.printf("register: NVS persisted mqtt_broker host='%s' port=%u use_tls=%d\n",
+    Serial.printf("enroll: NVS persisted client_cert len=%u client_key len=%u cmd_pub len=%u\n",
+                  (unsigned)c.clientCertificatePem.length(),
+                  (unsigned)c.clientPrivateKeyPem.length(),
+                  (unsigned)c.commandPublicKeyPem.length());
+    Serial.printf("enroll: NVS persisted mqtt_broker host='%s' port=%u use_tls=%d\n",
                    c.mqttBrokerHost.c_str(), (unsigned)c.mqttBrokerPort,
                    (int)c.mqttBrokerUseTls);
-    Serial.printf("register: provisioned as %s\n", c.deviceId.c_str());
+    Serial.printf("enroll: provisioned as %s\n", c.deviceId.c_str());
 
     // Flash LED to indicate HTTP POST completed
     extern void triggerMessageFlash();

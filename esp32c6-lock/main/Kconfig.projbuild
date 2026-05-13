@@ -49,16 +49,10 @@ config FORGEKEY_LOCK_CMD_TIMESTAMP_TOLERANCE_S
         Maximum allowed time difference for command timestamps.
 
 config FORGEKEY_LOCK_JWT_EXPIRY_S
-    int "JWT expiry window (seconds)"
+    int "Signed-command expiry window (seconds)"
     default 30
     help
-        Maximum JWT expiry time in seconds.
-
-config FORGEKEY_LOCK_JWT_SECRET
-    string "JWT shared secret"
-    default "forgekey-lock-secret-change-in-production"
-    help
-        HMAC-SHA256 shared secret for JWT validation.
+        Maximum signed-command expiry time in seconds.
 
 config FORGEKEY_LOCK_WEB_PORT
     int "Embedded web server port"
@@ -67,10 +61,10 @@ config FORGEKEY_LOCK_WEB_PORT
         HTTP port for embedded status page.
 
 config FORGEKEY_SENSOR_KIND
-    string "Sensor kind for OMS registration"
+    string "Sensor kind for OMS enrollment"
     default "cabinet-lock"
     help
-        Sensor kind sent to OMS during device registration.
+        Sensor kind sent to OMS during device enrollment.
 
 config FORGEKEY_MQTT_TOPIC_KIND
     string "MQTT topic kind segment"

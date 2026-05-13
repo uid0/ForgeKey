@@ -15,7 +15,7 @@ enum class State {
     SECURE,        // Red light. Latch engaged. Reed = Closed AND Latch = Locked.
     UNLOCKED,      // Green light. Latch disengaged. Waiting for door opening.
     ACCESSING,     // Green light. Door Reed = Open. IR beam monitoring item removal.
-    ALARM,         // Rapid Red/Green flash. Door open without valid JWT or mortise key.
+    ALARM,         // Rapid Red/Green flash. Door open without valid signed command or mortise key.
 };
 
 // Initialize GPIO pins and internal state. Call once in setup().
@@ -35,22 +35,22 @@ State getState();
 // Get the human-readable state name for logging/web display.
 const char* stateName(State s);
 
-// Validate an incoming JWT token. Returns true if the token is valid:
-//   - HMAC-SHA256 signature matches using FORGEKEY_LOCK_JWT_SECRET
-//   - Token payload contains a "timestamp" field within tolerance
+// Validate an incoming signed command token. Returns true if the token is valid:
+//   - ES256 signature verifies against the OMS command public key
+//   - Token payload contains the expected MAC / command claims when present
 //   - Token has not expired (per FORGEKEY_LOCK_JWT_EXPIRY_S)
 // token: the full JWT string (header.payload.signature)
 // timestamp: the timestamp from the MQTT command payload (for logging)
 bool validateJwt(const char* token, long timestamp);
 
-// Handle an incoming unlock command with JWT token.
+// Handle an incoming unlock command with a signed token.
 // Returns true if the token was valid and the solenoid was pulsed.
 bool handleUnlockCommand(const char* token, long timestamp);
 
 // Get the last trigger type that caused a state change.
 enum class Trigger {
     NONE,
-    JWT,
+    SIGNED_COMMAND,
     MORTISE,
     AUTO_UNLOCK,
     DOOR_CLOSE,

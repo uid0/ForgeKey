@@ -31,8 +31,8 @@ const char* mqttStateName(int state) {
         case  1: return "CONNECT_BAD_PROTOCOL (server doesn't support our MQTT version)";
         case  2: return "CONNECT_BAD_CLIENT_ID (server rejected client id)";
         case  3: return "CONNECT_UNAVAILABLE (broker unable to accept connection)";
-        case  4: return "CONNECT_BAD_CREDENTIALS (bad username or JWT)";
-        case  5: return "CONNECT_UNAUTHORIZED (JWT rejected by ACL/auth)";
+        case  4: return "CONNECT_BAD_CREDENTIALS (broker rejected credentials)";
+        case  5: return "CONNECT_UNAUTHORIZED (broker rejected authz/policy)";
         default: return "UNKNOWN";
     }
 }
@@ -122,7 +122,9 @@ void MqttClient::staticCallback(char* topic, uint8_t* payload, unsigned int leng
     }
 }
 
-bool MqttClient::begin(const char* brokerHost, int portNum, const char* jwt,
+bool MqttClient::begin(const char* brokerHost, int portNum,
+                       const char* clientCertPem,
+                       const char* clientKeyPem,
                        bool useTlsArg) {
     if (client) { delete client; client = nullptr; }
     if (netClient) { delete netClient; netClient = nullptr; }
@@ -134,6 +136,13 @@ bool MqttClient::begin(const char* brokerHost, int portNum, const char* jwt,
         // becomes a real deployment.
         WiFiClientSecure* secure = new WiFiClientSecure();
         secure->setCACert(kOmsCaPem);
+        if (clientCertPem && clientKeyPem &&
+            strlen(clientCertPem) > 0 && strlen(clientKeyPem) > 0) {
+            secure->setCertificate(clientCertPem);
+            secure->setPrivateKey(clientKeyPem);
+        } else {
+            Serial.println("[MQTT] begin: WARNING mTLS requested but client cert/key missing");
+        }
         netClient = secure;
     } else {
         netClient = new WiFiClient();
@@ -144,7 +153,8 @@ bool MqttClient::begin(const char* brokerHost, int portNum, const char* jwt,
     port = portNum;
     client->setCallback(MqttClient::staticCallback);
     client->setBufferSize(1024);  // larger payloads for OTA dispatch JSON
-    jwtToken = jwt;
+    clientCertificatePem = clientCertPem ? clientCertPem : "";
+    clientPrivateKeyPem = clientKeyPem ? clientKeyPem : "";
 
     if (broker.length()) {
         // Always configure PubSubClient with the hostname. WiFiClientSecure
@@ -164,19 +174,16 @@ bool MqttClient::begin(const char* brokerHost, int portNum, const char* jwt,
         }
     }
 
-    // auth_method=jwt-as-password: the JWT travels in the MQTT CONNECT
-    // password field, with a fixed username (forgemqtt). TLS is now toggled
-    // per-broker via the registration response (mqtt_broker_use_tls).
-    Serial.printf("[MQTT] begin: broker=%s:%d auth_method=jwt-as-password "
-                  "username=forgemqtt jwt_len=%u jwt_prefix=%s tls=%s\n",
+    // auth_method=mtls: device identity is presented during the TLS
+    // handshake using the provisioned client certificate and private key.
+    Serial.printf("[MQTT] begin: broker=%s:%d auth_method=mtls "
+                  "client_cert_len=%u client_key_len=%u tls=%s\n",
                   broker.c_str(), port,
-                  (unsigned)jwtToken.length(),
-                  jwtToken.length() >= 8 ? jwtToken.substring(0, 8).c_str() : "(short)",
+                  (unsigned)clientCertificatePem.length(),
+                  (unsigned)clientPrivateKeyPem.length(),
                   useTls ? "on" : "plain");
-    if (jwtToken.length() == 0) {
-        Serial.println("[MQTT] begin: WARNING jwt is empty — broker will reject "
-                       "with rc=4 (CONNECT_BAD_CREDENTIALS) unless anonymous "
-                       "auth is enabled. Did registration succeed?");
+    if (useTls && (clientCertificatePem.length() == 0 || clientPrivateKeyPem.length() == 0)) {
+        Serial.println("[MQTT] begin: WARNING mTLS identity is empty — broker will reject the session");
     }
 
     return connect();
@@ -384,9 +391,9 @@ bool MqttClient::connect() {
         Serial.printf("[MQTT] stateTopic defaulted during connect: %s\n",
                       stateTopic.c_str());
     }
-    Serial.printf("[MQTT] connect: broker=%s:%d client_id=%s username=forgemqtt jwt_len=%u\n",
+    Serial.printf("[MQTT] connect: broker=%s:%d client_id=%s client_cert_len=%u\n",
                   broker.c_str(), port, clientId.c_str(),
-                  (unsigned)jwtToken.length());
+                  (unsigned)clientCertificatePem.length());
 
     if (!brokerIpResolved && broker.length()) {
         IPAddress resolvedIp;
@@ -404,7 +411,7 @@ bool MqttClient::connect() {
 
     static const char* kUnexpectedDisconnectPayload =
         "{\"online\":false,\"reason\":\"unexpected_disconnect\"}";
-    if (client->connect(clientId.c_str(), "forgemqtt", jwtToken.c_str(),
+    if (client->connect(clientId.c_str(), nullptr, nullptr,
                         stateTopic.c_str(), 0, true,
                         kUnexpectedDisconnectPayload)) {
         lastConnectState = client->state();
@@ -421,11 +428,8 @@ bool MqttClient::connect() {
     Serial.printf("[MQTT] connect FAILED: rc=%d (%s)\n",
                   lastConnectState, mqttStateName(lastConnectState));
     if (lastConnectState == 4 || lastConnectState == 5) {
-        Serial.println("[MQTT] connect FAILED: broker rejected credentials. "
-                       "Compare jwt_len in [MQTT] begin against register: "
-                       "parsed jwt_token len=. If they match, the JWT is "
-                       "either expired or the EMQX JWT authenticator (JWKS) "
-                       "is misconfigured.");
+        Serial.println("[MQTT] connect FAILED: broker rejected the client certificate "
+                       "or the broker-side mTLS policy does not match this device.");
     }
     return false;
 }

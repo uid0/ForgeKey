@@ -13,11 +13,13 @@ public:
                                               const uint8_t* payload,
                                               unsigned int length)>;
 
-    bool begin(const char* broker, int port, const char* jwtToken,
+    bool begin(const char* broker, int port,
+               const char* clientCertificatePem,
+               const char* clientPrivateKeyPem,
                bool useTls = false);
     void setTopicPrefix(const char* macAddress);
 
-    // Override the per-device topics returned by OMS at registration.
+    // Override the per-device topics returned by OMS at enrollment.
     // If empty, defaults derived from the MAC are used.
     void setOccupancyTopic(const char* topic);
     void setReadingTopic(const char* topic);
@@ -28,7 +30,7 @@ public:
     // (forgekey/<mac>/command), and operator-visible state changes
     // (e.g. blink on/off) are published on statusTopic
     // (forgekey/<mac>/status). Topics are MAC-derived in setup() rather
-    // than handed back at registration so operators can address a device
+    // than handed back at enrollment so operators can address a device
     // by MAC alone before OMS knows its id.
     void setCommandTopic(const char* topic);
     void setStatusTopic(const char* topic);
@@ -124,7 +126,8 @@ private:
     String bleBeaconsTopic;     // beacon announcement (publish)
     String blePeersTopic;       // nearby ForgeKey peers (publish)
     String bleEquipmentTopic;   // equipment detect/lost events (publish)
-    String jwtToken;
+    String clientCertificatePem;
+    String clientPrivateKeyPem;
     String broker;
     IPAddress brokerIp;
     bool brokerIpResolved = false;

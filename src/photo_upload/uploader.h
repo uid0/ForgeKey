@@ -9,14 +9,17 @@ public:
         Ok,
         Skipped,            // gated by motion window
         TransportError,     // TLS / socket failure
-        AuthExpired,        // 401 — caller must re-register and retry
+        AuthExpired,        // client identity rejected — caller must re-enroll
         ServerError,        // 5xx
         BadResponse         // non-2xx, non-401, non-5xx
     };
 
     void begin(const char* host, uint16_t port,
                const String& mac);
-    void setJwt(const String& jwt) { jwtToken = jwt; }
+    void setClientIdentity(const String& certPem, const String& keyPem) {
+        clientCertificatePem = certPem;
+        clientPrivateKeyPem = keyPem;
+    }
 
     // Mark that motion was observed at `nowMs`. The uploader will skip
     // the next periodic capture if no motion has happened recently.
@@ -41,7 +44,8 @@ private:
     bool hostIpResolved = false;
     uint16_t port = 443;
     String mac;
-    String jwtToken;
+    String clientCertificatePem;
+    String clientPrivateKeyPem;
     unsigned long lastUpload = 0;
     unsigned long lastMotionMs = 0;
     unsigned long nextUploadAllowedMs = 0;

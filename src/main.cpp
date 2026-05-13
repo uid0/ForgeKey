@@ -29,14 +29,14 @@
 
 #ifndef FORGEKEY_TEMPERATURE_SENSOR
 // People-counter build pulls in the camera-based occupancy capability and
-// uses a per-device photo for first-boot OMS registration.
+// uses a per-device photo for first-boot OMS enrollment.
 #include "capabilities/people_counter/people_counter.h"
 #include "photo_upload/uploader.h"
 #endif
 
 #ifdef FORGEKEY_LOCK
 // Cabinet-lock build: non-blocking state machine for lock/unlock operations
-// with MQTT signaling, JWT validation, and embedded status web page.
+// with MQTT signaling, signed-command validation, and embedded status web page.
 #include "lock/lock_capability.h"
 #include "lock/embedded_web.h"
 #endif
@@ -45,8 +45,8 @@
 // WiFi credentials are no longer baked in: a first-boot captive portal
 // (see src/wifi_setup/captive.cpp) collects them and persists them to NVS.
 // MQTT broker connection info is no longer baked in either: the OMS
-// registration response supplies it (mqtt_broker_host / _port / _use_tls)
-// and we cache it in NVS. Pre-registration boots use the compile-time
+// enrollment response supplies it (mqtt_broker_host / _port / _use_tls)
+// and we cache it in NVS. Pre-enrollment boots use the compile-time
 // MQTT_BROKER_FALLBACK_* values from provisioning/device_config.h.
 // =========================================
 
@@ -200,7 +200,7 @@ static void publishUnknownCommandAck(const char* cmd) {
 
 #ifdef FORGEKEY_LOCK
 // Lock-specific command handler for cabinets/{mac}/cmd topic.
-// Receives {"token": "<jwt>", "timestamp": <epoch>} payloads.
+// Receives {"token": "<signed-jwt>", "timestamp": <epoch>} payloads.
 static void onLockCommandMessage(const char* topic, const uint8_t* payload, unsigned int length) {
     StaticJsonDocument<256> doc;
     DeserializationError err = deserializeJson(doc, payload, length);
@@ -526,7 +526,8 @@ static void onFirmwareDispatch(const char* topic, const uint8_t* payload, unsign
 }
 
 // First-boot: capture an artifact (people-counter photo if camera detected,
-// otherwise empty body) and POST to OMS, getting back our credentials.
+// otherwise empty body) and POST to OMS, submitting a CSR and getting back
+// our signed device identity plus broker policy.
 // Returns true on success (credentials persisted).
 static bool runProvisioning() {
     uint8_t* jpeg = nullptr;
@@ -534,28 +535,28 @@ static bool runProvisioning() {
     bool havePhoto = false;
 
 #ifdef FORGEKEY_LOCK
-    // Lock builds have no camera — register with empty photo body.
-    debugPrint("INFO", "PROV", "Registering with OMS (no photo: lock build)");
+    // Lock builds have no camera — enroll with empty photo body.
+    debugPrint("INFO", "PROV", "Enrolling with OMS (no photo: lock build)");
 #elif !defined(FORGEKEY_TEMPERATURE_SENSOR)
     if (PeopleCounter::isActive() &&
         PeopleCounter::captureProvisioningPhoto(&jpeg, &jpegLen)) {
         havePhoto = true;
-        debugPrintf("INFO", "PROV", "Registering with OMS (photo: %u bytes)",
+        debugPrintf("INFO", "PROV", "Enrolling with OMS (photo: %u bytes)",
                     (unsigned)jpegLen);
     } else {
         debugPrint("INFO", "PROV",
-                   "Registering with OMS (no photo: people-counter capability not active)");
+                   "Enrolling with OMS (no photo: people-counter capability not active)");
     }
 #else
-    // Temperature builds have no camera. The OMS register endpoint accepts a
+    // Temperature builds have no camera. The OMS enroll endpoint accepts a
     // zero-length photo part for non-imaging device kinds.
-    debugPrint("INFO", "PROV", "Registering with OMS (no photo: temperature build)");
+    debugPrint("INFO", "PROV", "Enrolling with OMS (no photo: temperature build)");
 #endif
 
-    bool ok = provisioning.registerDevice(OMS_HOST, OMS_PORT, macAddress,
-                                          WiFi.localIP().toString(),
-                                          havePhoto ? jpeg : nullptr,
-                                          havePhoto ? jpegLen : 0);
+    bool ok = provisioning.enrollDevice(OMS_HOST, OMS_PORT, macAddress,
+                                        WiFi.localIP().toString(),
+                                        havePhoto ? jpeg : nullptr,
+                                        havePhoto ? jpegLen : 0);
     if (havePhoto) free(jpeg);
     return ok;
 }
@@ -645,11 +646,11 @@ void setup() {
     });
 
     if (!provisioning.isProvisioned()) {
-        debugPrint("INFO", "PROV", "First boot — registering with OMS");
+        debugPrint("INFO", "PROV", "First boot — enrolling with OMS");
         if (!runProvisioning()) {
-            debugPrint("WARN", "PROV", "Registration failed; will retry on next boot");
+            debugPrint("WARN", "PROV", "Enrollment failed; will retry on next boot");
         } else {
-            debugPrint("INFO", "PROV", "Registration successful");
+            debugPrint("INFO", "PROV", "Enrollment successful");
             StatusLed::triggerMessageFlash();
         }
     } else {
@@ -659,9 +660,7 @@ void setup() {
     StatusLed::requestState(StatusLed::State::Normal);
 
     DeviceCredentials creds = provisioning.credentials();
-    const char* mqttJwt = creds.jwtToken.length() ? creds.jwtToken.c_str() : "";
-
-    // Resolve broker connection info: NVS (set by registration response) wins
+    // Resolve broker connection info: NVS (set by enrollment response) wins
     // over the compile-time fallback. Source is logged so a wrong host on a
     // device in the field is diagnosable from a single boot log.
     String   brokerHost;
@@ -689,11 +688,14 @@ void setup() {
                 (int)creds.mqttBrokerUseTls);
 
     mqttClient.setTopicPrefix(macAddress.c_str());
-    mqttClient.begin(brokerHost.c_str(), brokerPort, mqttJwt, brokerUseTls);
+    mqttClient.begin(brokerHost.c_str(), brokerPort,
+                     creds.clientCertificatePem.c_str(),
+                     creds.clientPrivateKeyPem.c_str(),
+                     brokerUseTls);
 
     // Validate the stored pings topic against the OMS contract before
     // applying it. A topic from an older firmware (leading '/') or from a
-    // bad registration response would otherwise silently override the
+    // bad enrollment response would otherwise silently override the
     // correct default. Required shape:
     //   forgekey/<bare-mac-12-hex>/(people_counter|door_counter)/occupancy
     //   forgekey/<bare-mac-12-hex>/temperature_sensor/reading
@@ -731,7 +733,7 @@ void setup() {
         } else {
             debugPrintf("WARN", "MAIN",
                         "Stored mqtt_topic_for_pings='%s' does not match OMS contract; "
-                        "ignoring and clearing creds to force re-register on next boot",
+                        "ignoring and clearing creds to force re-enrollment on next boot",
                         creds.mqttPingsTopic.c_str());
             provisioning.clear();
         }
@@ -760,7 +762,7 @@ void setup() {
 #ifdef FORGEKEY_LOCK
     // Lock-specific: subscribe to the Django unlock command topic.
     // Topic: cabinets/{mac}/cmd
-    // Payload: {"token": "<jwt>", "timestamp": <epoch>}
+    // Payload: {"token": "<signed-jwt>", "timestamp": <epoch>}
     String lockCmdTopic = String("cabinets/") + macAddress + "/cmd";
     mqttClient.setLockTopic(lockCmdTopic.c_str());
     mqttClient.subscribeLock(onLockCommandMessage);
@@ -774,7 +776,8 @@ void setup() {
 #ifndef FORGEKEY_LOCK
 #ifndef FORGEKEY_TEMPERATURE_SENSOR
     photoUploader.begin(OMS_HOST, OMS_PORT, macAddress);
-    photoUploader.setJwt(creds.jwtToken);
+    photoUploader.setClientIdentity(creds.clientCertificatePem,
+                                    creds.clientPrivateKeyPem);
 #endif
 #endif
 

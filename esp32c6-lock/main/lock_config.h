@@ -63,14 +63,9 @@
 #define FORGEKEY_LOCK_CMD_TIMESTAMP_TOLERANCE_S 60
 #endif
 
-/* JWT expiry window (seconds) */
+/* Signed-command expiry window (seconds) */
 #ifndef FORGEKEY_LOCK_JWT_EXPIRY_S
 #define FORGEKEY_LOCK_JWT_EXPIRY_S 30
-#endif
-
-/* JWT shared secret */
-#ifndef FORGEKEY_LOCK_JWT_SECRET
-#define FORGEKEY_LOCK_JWT_SECRET "forgekey-lock-secret-change-in-production"
 #endif
 
 /* Web server port */
