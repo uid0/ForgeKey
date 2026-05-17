@@ -199,31 +199,18 @@ static void publishUnknownCommandAck(const char* cmd) {
 }
 
 #ifdef FORGEKEY_LOCK
-// Lock-specific command handler for cabinets/{mac}/cmd topic.
-// Receives {"token": "<signed-jwt>", "timestamp": <epoch>} payloads.
-static void onLockCommandMessage(const char* topic, const uint8_t* payload, unsigned int length) {
-    StaticJsonDocument<256> doc;
-    DeserializationError err = deserializeJson(doc, payload, length);
-    if (err) {
-        debugPrintf("WARN", "LOCK_CMD", "parse error: %s", err.c_str());
-        return;
-    }
-    const char* token = doc["token"] | "";
-    long timestamp = doc["timestamp"] | 0L;
-    if (!token || strlen(token) == 0) {
-        debugPrint("WARN", "LOCK_CMD", "missing token in payload");
-        return;
-    }
-    debugPrintf("INFO", "LOCK_CMD", "received unlock command (token_len=%u, ts=%ld)",
-                (unsigned)strlen(token), timestamp);
-    if (LockCapability::handleUnlockCommand(token, timestamp)) {
-        mqttClient.publishStatus("{\"cmd_ack\":\"unlock\",\"state\":\"unlocked\"}");
-        StatusLed::triggerMessageFlash();
-        debugPrint("INFO", "LOCK_CMD", "unlock accepted");
-    } else {
-        mqttClient.publishStatus("{\"cmd_ack\":\"unlock\",\"error\":\"invalid_token\"}");
-        debugPrint("WARN", "LOCK_CMD", "unlock rejected: invalid token");
-    }
+// Publish a cmd_ack for a lock verb. Includes command_id when the caller
+// (OMS) provided one so the backend's structured ack path can match the row.
+static void publishLockCmdAck(const char* cmd, const char* commandId,
+                              const char* state, const char* error) {
+    StaticJsonDocument<192> ack;
+    ack["cmd_ack"] = cmd ? cmd : "";
+    if (commandId && *commandId) ack["command_id"] = commandId;
+    if (state && *state) ack["state"] = state;
+    if (error && *error) ack["error"] = error;
+    String payload;
+    serializeJson(ack, payload);
+    mqttClient.publishStatus(payload.c_str());
 }
 #endif
 
@@ -324,6 +311,32 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
         ESP.restart();
         return;  // unreachable
     }
+#ifdef FORGEKEY_LOCK
+    if (strcmp(cmd, "unlock") == 0) {
+        const char* jwtField = doc["jwt"] | "";
+        const char* commandId = doc["command_id"] | "";
+        if (!jwtField || strlen(jwtField) == 0) {
+            publishLockCmdAck("unlock", commandId, nullptr, "missing_jwt");
+            debugPrint("WARN", "CMD", "unlock rejected: missing jwt field");
+        } else if (LockCapability::handleUnlockCommand(jwtField, 0)) {
+            publishLockCmdAck("unlock", commandId, "unlocked", nullptr);
+            StatusLed::triggerMessageFlash();
+            debugPrint("INFO", "CMD", "unlock accepted");
+        } else {
+            publishLockCmdAck("unlock", commandId, nullptr, "invalid_token");
+            debugPrint("WARN", "CMD", "unlock rejected: invalid jwt");
+        }
+        return;
+    }
+    if (strcmp(cmd, "lockout") == 0 ||
+        strcmp(cmd, "clear_lockout") == 0 ||
+        strcmp(cmd, "init_ack") == 0) {
+        const char* commandId = doc["command_id"] | "";
+        publishLockCmdAck(cmd, commandId, nullptr, "not_implemented");
+        debugPrintf("WARN", "CMD", "%s not implemented on this firmware build", cmd);
+        return;
+    }
+#endif
 #ifndef FORGEKEY_LOCK
 #ifndef FORGEKEY_DISABLE_BLE_SCANNER
     if (strcmp(cmd, "ble_scan") == 0) {
@@ -760,15 +773,9 @@ void setup() {
     mqttClient.subscribeCommand(onCommandMessage);
 
 #ifdef FORGEKEY_LOCK
-    // Lock-specific: subscribe to the Django unlock command topic.
-    // Topic: cabinets/{mac}/cmd
-    // Payload: {"token": "<signed-jwt>", "timestamp": <epoch>}
-    String lockCmdTopic = String("cabinets/") + macAddress + "/cmd";
-    mqttClient.setLockTopic(lockCmdTopic.c_str());
-    mqttClient.subscribeLock(onLockCommandMessage);
-    debugPrintf("INFO", "LOCK", "subscribed to lock cmd topic: %s", lockCmdTopic.c_str());
-
-    // Start the embedded web server for status page
+    // Lock verbs (unlock / lockout / clear_lockout / init_ack) flow in on
+    // the same forgekey/<mac>/command topic as operator commands. JWT
+    // verification + state-machine dispatch happens in onCommandMessage.
     LockWeb::begin();
     debugPrint("INFO", "LOCK", "embedded web server started");
 #endif

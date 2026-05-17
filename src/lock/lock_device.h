@@ -41,7 +41,9 @@ const char* stateName(State s);
 //   - Token has not expired (per FORGEKEY_LOCK_JWT_EXPIRY_S)
 // token: the full JWT string (header.payload.signature)
 // timestamp: the timestamp from the MQTT command payload (for logging)
-bool validateJwt(const char* token, long timestamp);
+// expectedCmd: bind the JWT's `cmd` claim to this verb (e.g. "unlock"). Pass
+//   nullptr / "" to accept any verb.
+bool validateJwt(const char* token, long timestamp, const char* expectedCmd);
 
 // Handle an incoming unlock command with a signed token.
 // Returns true if the token was valid and the solenoid was pulsed.

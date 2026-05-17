@@ -132,7 +132,7 @@ static bool verifyEs256Signature(const String& signingInput,
     return rc == 0;
 }
 
-bool validateJwt(const char* token, long timestamp) {
+bool validateJwt(const char* token, long timestamp, const char* expectedCmd) {
     if (!token || strlen(token) == 0) return false;
     String jwt(token);
     int firstDot = jwt.indexOf('.');
@@ -188,8 +188,10 @@ bool validateJwt(const char* token, long timestamp) {
             return false;
         }
     }
-    if (claimCmd && *claimCmd && String(claimCmd) != "unlock") {
-        Serial.printf("[LOCK] signed command rejected unexpected cmd=%s\n", claimCmd);
+    if (expectedCmd && *expectedCmd && claimCmd && *claimCmd &&
+        String(claimCmd) != expectedCmd) {
+        Serial.printf("[LOCK] signed command cmd mismatch: expected=%s got=%s\n",
+                      expectedCmd, claimCmd);
         return false;
     }
 
@@ -426,7 +428,7 @@ String getMacAddress() {
 bool handleUnlockCommand(const char* token, long timestamp) {
     if (!token || strlen(token) == 0) return false;
 
-    if (!validateJwt(token, timestamp)) {
+    if (!validateJwt(token, timestamp, "unlock")) {
         Serial.println("[LOCK] signed command validation failed");
         return false;
     }

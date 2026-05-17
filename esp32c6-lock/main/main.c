@@ -58,13 +58,14 @@ static const char* TAG = "LOCK";
 
 /* Forward declarations for MQTT handlers */
 static void on_command_message(const char* topic, const uint8_t* payload, uint32_t length);
-static void on_lock_command(const char* topic, const uint8_t* payload, uint32_t length);
 static void on_config_message(const char* topic, const uint8_t* payload, uint32_t length);
 static void on_firmware_dispatch(const char* topic, const uint8_t* payload, uint32_t length);
 
 static void publish_status_snapshot(const char* mac_str, const char* requested_cmd);
 static void publish_unknown_command_ack(const char* cmd);
 static void publish_unsupported_command_ack(const char* cmd);
+static void publish_lock_cmd_ack(const char* cmd, const char* command_id,
+                                  const char* state, const char* error);
 static int current_wifi_rssi(void);
 
 /* Application entry point */
@@ -177,17 +178,13 @@ void app_main(void) {
 
     /* Set up topics */
     char command_topic[128];
-    char lock_cmd_topic[128];
     char config_topic[128];
     snprintf(command_topic, sizeof(command_topic), "forgekey/%s/command", mac_str);
-    snprintf(lock_cmd_topic, sizeof(lock_cmd_topic), "cabinets/%s/cmd", mac_str);
     credential_rotation_get_topic(config_topic, sizeof(config_topic), mac_str);
 
     mqtt_handler_set_command_handler(on_command_message);
-    mqtt_handler_set_lock_handler(on_lock_command);
     mqtt_handler_set_config_handler(on_config_message);
     mqtt_handler_set_command_topic(command_topic);
-    mqtt_handler_set_lock_topic(lock_cmd_topic);
     mqtt_handler_set_config_topic(config_topic);
 
     /* Subscribe to firmware topic if available */
@@ -308,49 +305,29 @@ void app_main(void) {
 
 /* ===== MQTT message handlers ===== */
 
-static void on_lock_command(const char* topic, const uint8_t* payload, uint32_t length) {
-    LOCK_LOGI("Lock command on %s", topic);
-
-    char payload_copy[length + 1];
-    memcpy(payload_copy, payload, length);
-    payload_copy[length] = '\0';
-
-    cJSON* doc = cJSON_Parse(payload_copy);
-    if (!doc) {
-        LOCK_LOGW("Lock command: JSON parse error");
+static void publish_lock_cmd_ack(const char* cmd, const char* command_id,
+                                  const char* state, const char* error) {
+    const char* status_topic = mqtt_handler_get_status_topic();
+    if (!status_topic[0]) {
         return;
     }
-
-    cJSON* token = cJSON_GetObjectItem(doc, "token");
-    cJSON* timestamp = cJSON_GetObjectItem(doc, "timestamp");
-
-    if (!token || !cJSON_IsString(token) || strlen(token->valuestring) == 0) {
-        LOCK_LOGW("Lock command: missing token");
-        cJSON_Delete(doc);
-        return;
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "cmd_ack", cmd ? cmd : "");
+    if (command_id && command_id[0]) {
+        cJSON_AddStringToObject(root, "command_id", command_id);
     }
-
-    long ts = timestamp ? timestamp->valueint : 0;
-    LOCK_LOGI("Lock command: token_len=%u ts=%ld",
-              (unsigned)strlen(token->valuestring), ts);
-
-    if (lock_state_handle_unlock(token->valuestring, ts)) {
-        const char* status_topic = mqtt_handler_get_status_topic();
-        if (status_topic[0]) {
-            mqtt_handler_publish(status_topic,
-                "{\"cmd_ack\":\"unlock\",\"state\":\"unlocked\"}", -1, 0, 0);
-        }
-        LOCK_LOGI("Lock command: unlock accepted");
-    } else {
-        const char* status_topic = mqtt_handler_get_status_topic();
-        if (status_topic[0]) {
-            mqtt_handler_publish(status_topic,
-                "{\"cmd_ack\":\"unlock\",\"error\":\"invalid_token\"}", -1, 0, 0);
-        }
-        LOCK_LOGW("Lock command: unlock rejected");
+    if (state && state[0]) {
+        cJSON_AddStringToObject(root, "state", state);
     }
-
-    cJSON_Delete(doc);
+    if (error && error[0]) {
+        cJSON_AddStringToObject(root, "error", error);
+    }
+    char* json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (json_str) {
+        mqtt_handler_publish(status_topic, json_str, strlen(json_str), 0, 0);
+        cJSON_free(json_str);
+    }
 }
 
 static void on_command_message(const char* topic, const uint8_t* payload, uint32_t length) {
@@ -374,6 +351,10 @@ static void on_command_message(const char* topic, const uint8_t* payload, uint32
     }
 
     const char* cmd_str = cmd->valuestring;
+    cJSON* command_id_field = cJSON_GetObjectItem(doc, "command_id");
+    const char* command_id = (command_id_field && cJSON_IsString(command_id_field))
+        ? command_id_field->valuestring : NULL;
+
     if (strcmp(cmd_str, "status") == 0 || strcmp(cmd_str, "ping") == 0) {
         publish_status_snapshot(lock_state_get_mac_address(), cmd_str);
     } else if (strcmp(cmd_str, "restart") == 0) {
@@ -383,6 +364,24 @@ static void on_command_message(const char* topic, const uint8_t* payload, uint32
         vTaskDelay(1000 / portTICK_PERIOD_MS);
         esp_restart();
         return;
+    } else if (strcmp(cmd_str, "unlock") == 0) {
+        cJSON* jwt_field = cJSON_GetObjectItem(doc, "jwt");
+        if (!jwt_field || !cJSON_IsString(jwt_field) ||
+            !jwt_field->valuestring || jwt_field->valuestring[0] == '\0') {
+            LOCK_LOGW("Unlock command: missing jwt field");
+            publish_lock_cmd_ack("unlock", command_id, NULL, "missing_jwt");
+        } else if (lock_state_handle_unlock(jwt_field->valuestring, 0)) {
+            publish_lock_cmd_ack("unlock", command_id, "unlocked", NULL);
+            LOCK_LOGI("Unlock accepted");
+        } else {
+            publish_lock_cmd_ack("unlock", command_id, NULL, "invalid_token");
+            LOCK_LOGW("Unlock rejected");
+        }
+    } else if (strcmp(cmd_str, "lockout") == 0 ||
+               strcmp(cmd_str, "clear_lockout") == 0 ||
+               strcmp(cmd_str, "init_ack") == 0) {
+        publish_lock_cmd_ack(cmd_str, command_id, NULL, "not_implemented");
+        LOCK_LOGW("Command %s not implemented on this firmware build", cmd_str);
     } else if (strcmp(cmd_str, "blink") == 0 || strcmp(cmd_str, "identify") == 0) {
         publish_unsupported_command_ack(cmd_str);
         LOCK_LOGW("Command %s unsupported on ESP32-C6 lock build", cmd_str);
