@@ -114,12 +114,6 @@ void MqttClient::staticCallback(char* topic, uint8_t* payload, unsigned int leng
         mqttClient.commandHandler(topic, payload, length);
         return;
     }
-    if (mqttClient.lockTopic.length() &&
-        mqttClient.lockHandler &&
-        mqttClient.lockTopic == topic) {
-        mqttClient.lockHandler(topic, payload, length);
-        return;
-    }
 }
 
 bool MqttClient::begin(const char* brokerHost, int portNum,
@@ -771,33 +765,6 @@ bool MqttClient::subscribeConfig(MessageHandler handler) {
     Serial.printf("[MQTT] subscribeConfig: topic=%s ok=%d\n",
                   configTopic.c_str(), (int)ok);
     return ok;
-}
-
-void MqttClient::setLockTopic(const char* topic) {
-    if (topic && *topic) {
-        Serial.printf("[MQTT] setLockTopic: '%s'\n", topic);
-        lockTopic = topic;
-    } else {
-        Serial.println("[MQTT] setLockTopic: empty value ignored");
-    }
-}
-
-void MqttClient::subscribeLock(MessageHandler handler) {
-    lockHandler = handler;
-    if (lockTopic.length() == 0 || !client) {
-        Serial.printf("[MQTT] subscribeLock DEFERRED: topic_len=%u client=%s\n",
-                      (unsigned)lockTopic.length(), client ? "ok" : "(null)");
-        return;
-    }
-    if (!client->connected()) {
-        Serial.printf("[MQTT] subscribeLock DEFERRED: not connected (state=%d %s); "
-                      "will resubscribe on next connect\n",
-                      client->state(), mqttStateName(client->state()));
-        return;
-    }
-    bool ok = client->subscribe(lockTopic.c_str());
-    Serial.printf("[MQTT] subscribeLock: topic=%s ok=%d\n",
-                  lockTopic.c_str(), (int)ok);
 }
 
 void MqttClient::end() {
