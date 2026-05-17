@@ -58,12 +58,6 @@ public:
     bool subscribeFirmware(MessageHandler handler);
     bool subscribeConfig(MessageHandler handler);
     bool subscribeCommand(MessageHandler handler);
-    // Lock-specific command topic subscription (e.g. cabinets/{mac}/cmd).
-    // Separate from the standard command topic so lock builds can have
-    // their own unlock command handler without interfering with operator
-    // commands (blink, identify, restart, etc.).
-    void setLockTopic(const char* topic);
-    void subscribeLock(MessageHandler handler);
     // Publish blink on/off transition on statusTopic. Payload: {"blink":"on"}
     // or {"blink":"off"}. Best-effort; returns false if topic unset or socket
     // closed. Caller should still update local state regardless.
@@ -138,8 +132,6 @@ private:
     MessageHandler firmwareHandler;
     MessageHandler configHandler;
     MessageHandler commandHandler;
-    MessageHandler lockHandler;
-    String lockTopic;
 
     bool connect();
     void resubscribeAll();

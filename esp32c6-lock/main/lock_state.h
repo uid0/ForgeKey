@@ -65,9 +65,12 @@ lock_telemetry_t lock_state_get_telemetry(void);
 bool lock_state_handle_unlock(const char* token, long timestamp);
 
 /* Validate a signed command token (header.payload.signature).
- * Performs ES256 signature verification against the OMS command public key.
- * Returns true if valid. */
-bool lock_state_validate_signed_command(const char* token, long timestamp);
+ * Performs ES256 signature verification against the OMS command public key
+ * and binds the JWT's `cmd` claim to `expected_cmd`. Pass NULL/empty for
+ * `expected_cmd` to accept any verb (validation still requires the JWT to
+ * carry a `cmd` claim or omit it). Returns true if valid. */
+bool lock_state_validate_signed_command(const char* token, long timestamp,
+                                        const char* expected_cmd);
 
 /* Get MAC address string (caller must free). */
 char* lock_state_get_mac_address(void);

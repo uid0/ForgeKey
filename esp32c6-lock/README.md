@@ -49,10 +49,11 @@ Configurable values include:
 ## MQTT Protocol
 
 **Subscribe:**
-- `cabinets/{mac}/cmd` - Unlock commands (JWT token + timestamp)
+- `forgekey/{mac}/command` - Operator + lock commands. JSON envelope `{"cmd": "<verb>", "jwt": "<ES256>", "command_id": "...", ...}`. Supported verbs: `unlock`, `status`, `ping`, `restart`. Reserved (acked as `not_implemented`): `lockout`, `clear_lockout`, `init_ack`.
 - `forgekey/{mac}/config` - Configuration updates
 
 **Publish:**
+- `forgekey/{mac}/status` - Command acks (`{"cmd_ack": "<verb>", "command_id": "...", "state"/"error": "..."}`) and operator-visible state changes
 - `forgekey/{mac}/cabinet_lock/status` - Telemetry
 
 ## Security Notes

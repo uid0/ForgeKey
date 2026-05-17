@@ -301,7 +301,8 @@ static bool verify_es256_signature(const char* signing_input,
     return rc == 0;
 }
 
-bool lock_state_validate_signed_command(const char* token, long timestamp) {
+bool lock_state_validate_signed_command(const char* token, long timestamp,
+                                        const char* expected_cmd) {
     if (!token || token[0] == '\0') {
         ESP_LOGW(TAG, "Signed command validation: null or empty token");
         return false;
@@ -382,8 +383,11 @@ bool lock_state_validate_signed_command(const char* token, long timestamp) {
             return false;
         }
     }
-    if (claim_cmd && claim_cmd[0] != '\0' && strcmp(claim_cmd, "unlock") != 0) {
-        ESP_LOGW(TAG, "Signed command rejected unexpected cmd=%s", claim_cmd);
+    if (expected_cmd && expected_cmd[0] != '\0' &&
+        claim_cmd && claim_cmd[0] != '\0' &&
+        strcmp(claim_cmd, expected_cmd) != 0) {
+        ESP_LOGW(TAG, "Signed command cmd mismatch: expected=%s got=%s",
+                 expected_cmd, claim_cmd);
         cJSON_Delete(payload);
         return false;
     }
@@ -538,7 +542,7 @@ bool lock_state_handle_unlock(const char* token, long timestamp) {
         return false;
     }
 
-    if (!lock_state_validate_signed_command(token, timestamp)) {
+    if (!lock_state_validate_signed_command(token, timestamp, "unlock")) {
         ESP_LOGW(TAG, "Unlock: signed command validation failed");
         return false;
     }

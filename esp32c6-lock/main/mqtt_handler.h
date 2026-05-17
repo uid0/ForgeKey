@@ -33,13 +33,11 @@ esp_err_t mqtt_handler_publish(const char* topic, const char* data,
 
 /* Set handlers for specific topic types. */
 void mqtt_handler_set_command_handler(mqtt_message_handler_t handler);
-void mqtt_handler_set_lock_handler(mqtt_message_handler_t handler);
 void mqtt_handler_set_config_handler(mqtt_message_handler_t handler);
 void mqtt_handler_set_firmware_handler(mqtt_message_handler_t handler);
 
 /* Set topic overrides. */
 void mqtt_handler_set_command_topic(const char* topic);
-void mqtt_handler_set_lock_topic(const char* topic);
 void mqtt_handler_set_config_topic(const char* topic);
 void mqtt_handler_set_firmware_topic(const char* topic);
 void mqtt_handler_set_status_topic(const char* topic);
@@ -49,9 +47,6 @@ bool mqtt_handler_is_connected(void);
 
 /* Get the status topic for publishing. */
 const char* mqtt_handler_get_status_topic(void);
-
-/* Get the lock topic for publishing. */
-const char* mqtt_handler_get_lock_topic(void);
 
 /* Get the standard command topic for subscriptions. */
 const char* mqtt_handler_get_command_topic(void);
