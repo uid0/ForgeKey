@@ -42,6 +42,8 @@ The solenoid is 12V. GPIO D0 drives a MOSFET that pulls the solenoid to
 ground. The solenoid receives a short pulse (`FORGEKEY_LOCK_SOLENOID_PULSE_MS`,
 default 1500ms) rather than being held energized continuously.
 
+If you're using an actual strike that needs to be left open continuously, reach out to me and I'll add a feature flag for that build.
+
 ### Reed switch wiring
 
 The reed switch is wired between D1 and GND with `INPUT_PULLUP`. When the
