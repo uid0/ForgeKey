@@ -1,0 +1,1 @@
+The Receipt printer integration is a golang program that will poll OMS and then send a command to either an Epson Receipt Printer (attached via USB or Network Cable) or a Brother Label Maker (attached via USB or Network Cable).  
