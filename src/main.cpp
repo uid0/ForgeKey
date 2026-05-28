@@ -27,7 +27,7 @@
 #include "capabilities/ble_equipment/ble_equipment.h"
 #endif
 
-#ifndef FORGEKEY_TEMPERATURE_SENSOR
+#if !defined(FORGEKEY_TEMPERATURE_SENSOR) && !defined(FORGEKEY_EPAPER)
 // People-counter build pulls in the camera-based occupancy capability and
 // uses a per-device photo for first-boot OMS enrollment.
 #include "capabilities/people_counter/people_counter.h"
@@ -290,7 +290,7 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
             "{\"cmd_ack\":\"capture\",\"queued\":false,\"error\":\"capability_unsupported\"}");
         debugPrint("WARN", "CMD", "capture rejected: capability unsupported on this build");
         return;
-#elif !defined(FORGEKEY_TEMPERATURE_SENSOR)
+#elif !defined(FORGEKEY_TEMPERATURE_SENSOR) && !defined(FORGEKEY_EPAPER)
         if (PeopleCounter::isActive() && PeopleCounter::requestOneShotCapture()) {
             mqttClient.publishStatus("{\"cmd_ack\":\"capture\",\"queued\":true}");
             StatusLed::triggerMessageFlash();
@@ -511,7 +511,7 @@ static void onFirmwareDispatch(const char* topic, const uint8_t* payload, unsign
                 spec.version.c_str(), (int)spec.mandatory);
     mqttClient.publishFirmwareStatus("received", spec.version.c_str(), -1, nullptr);
 #ifndef FORGEKEY_LOCK
-#ifndef FORGEKEY_TEMPERATURE_SENSOR
+#if !defined(FORGEKEY_TEMPERATURE_SENSOR) && !defined(FORGEKEY_EPAPER)
     if (!spec.mandatory) {
         // Best-effort: defer if a photo upload was very recent.
         if (millis() - photoUploader.lastUploadMs() < 5000) {
@@ -537,7 +537,7 @@ static bool runProvisioning() {
 #ifdef FORGEKEY_LOCK
     // Lock builds have no camera — enroll with empty photo body.
     debugPrint("INFO", "PROV", "Enrolling with OMS (no photo: lock build)");
-#elif !defined(FORGEKEY_TEMPERATURE_SENSOR)
+#elif !defined(FORGEKEY_TEMPERATURE_SENSOR) && !defined(FORGEKEY_EPAPER)
     if (PeopleCounter::isActive() &&
         PeopleCounter::captureProvisioningPhoto(&jpeg, &jpegLen)) {
         havePhoto = true;
@@ -774,7 +774,7 @@ void setup() {
 #endif
 
 #ifndef FORGEKEY_LOCK
-#ifndef FORGEKEY_TEMPERATURE_SENSOR
+#if !defined(FORGEKEY_TEMPERATURE_SENSOR) && !defined(FORGEKEY_EPAPER)
     photoUploader.begin(OMS_HOST, OMS_PORT, macAddress);
     photoUploader.setClientIdentity(creds.clientCertificatePem,
                                     creds.clientPrivateKeyPem);
