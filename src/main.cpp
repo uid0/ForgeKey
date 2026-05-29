@@ -656,6 +656,25 @@ void setup() {
     debugPrint("INFO", "MAIN", "DNS diagnostic (pre-provisioning):");
     WifiSetup::debug_dns_state("pre-provisioning");
 
+#if defined(FORGEKEY_EPAPER)
+    // The ePaper device class uses a different identity model from the
+    // MAC-bound MQTT devices: a UUID `display_id` in NVS (set by an
+    // OMS-side EPaperDisplay row) and an HTTPS-only contract. Running
+    // the MQTT-flavored provisioning + mTLS enrollment here would
+    // (a) try to register a duplicate device row in OMS keyed on the
+    // panel's MAC, and (b) blow the loopTask stack mid-enrollment as
+    // observed in the bench logs ("stack overflow in task loopTask"
+    // right after "First boot — enrolling with OMS"). Skip the whole
+    // block — the capability registry already drove
+    // EPaperPmCapability::setupFn() earlier in setup() which is all
+    // this device class needs.
+    debugPrint("INFO", "MAIN",
+               "ePaper build: skipping provisioning/MQTT/OTA setup "
+               "(HTTPS-only device class)");
+    debugPrint("INFO", "MAIN", "Setup complete. Starting main loop...");
+    return;
+#endif
+
     provisioning.begin();
     otaUpdater.begin();
     otaUpdater.setStatusCallback([](const char* state,
@@ -799,6 +818,16 @@ void setup() {
 }
 
 void loop() {
+#if defined(FORGEKEY_EPAPER)
+    // ePaper devices don't use MQTT or the announce/heartbeat path —
+    // the capability registry's tickAll() drives the wake-cycle (HTTP
+    // fetch + battery POST + deep sleep) on its own. Skip the rest of
+    // the loop body so we don't dereference mqttClient/photoUploader
+    // members that the ePaper setup() never initialised.
+    CapabilityRegistry::tickAll();
+    return;
+#endif
+
     static bool mqttWasConnected = false;
     static bool capabilitiesAnnounced = false;
 
