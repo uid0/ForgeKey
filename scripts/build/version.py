@@ -48,8 +48,12 @@ Import("env")  # noqa: F821  (provided by PlatformIO at script time)
 
 
 PROJECT_DIR = Path(env["PROJECT_DIR"])  # noqa: F821
-SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parent.parent
+# SCons exec's extra_scripts via `exec(compile(...))` which does not
+# populate `__file__` in the script's namespace, so we derive the
+# script's own directory from PROJECT_DIR (the PlatformIO project
+# root, which for this repo is the same as the script's grandparent).
+SCRIPT_DIR = PROJECT_DIR / "scripts" / "build"
+REPO_ROOT = PROJECT_DIR
 ARTIFACT_DIR = REPO_ROOT / "artifacts"
 
 DEVICE_CONFIG_CANDIDATES = [
