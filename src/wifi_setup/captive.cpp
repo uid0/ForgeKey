@@ -147,10 +147,22 @@ String apSsid() {
 }
 
 bool connectOrPortal(unsigned long portalTimeoutSeconds) {
+    // Diagnostic: log whether secrets_local.h was present at compile
+    // time. Without this line, a build that silently dropped the
+    // predefined-networks path (because `src/wifi_setup/secrets_local.h`
+    // was missing on the build host) is indistinguishable from one
+    // where every dev SSID is out of range — the device just goes
+    // straight to portal mode either way.
 #if FORGEKEY_HAS_PREDEFINED_NETWORKS
+    Serial.println("wifi: predefined networks compiled in; will try them first");
     if (tryPredefinedNetworks()) {
         return true;
     }
+#else
+    Serial.println(
+        "wifi: NO predefined networks compiled in — secrets_local.h was "
+        "missing from src/wifi_setup/ at build time. Falling straight to "
+        "the captive portal.");
 #endif
 
     WiFiManager wm;
