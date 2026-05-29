@@ -584,7 +584,14 @@ void setup() {
     debugPrintf("INFO", "MAIN", "Git commit: %s", FIRMWARE_GIT_COMMIT);
 #endif
 #ifdef FIRMWARE_BUILD_TIMESTAMP
-    debugPrintf("INFO", "MAIN", "Build timestamp (epoch): %s", FIRMWARE_BUILD_TIMESTAMP);
+    // FIRMWARE_BUILD_TIMESTAMP is injected by scripts/build/version.py
+    // as a bare numeric macro (unsigned long epoch seconds), NOT a
+    // string literal — using `%s` here makes printf dereference the
+    // integer as a pointer, which on ESP32-C3 lands on an unmapped
+    // address and load-faults at boot. ESP32-S3 tolerated it by
+    // accident due to looser bus-error handling.
+    debugPrintf("INFO", "MAIN", "Build timestamp (epoch): %lu",
+                (unsigned long)FIRMWARE_BUILD_TIMESTAMP);
 #endif
     debugPrintf("INFO", "MAIN", "Compiled: %s %s", __DATE__, __TIME__);
     debugPrintf("INFO", "MAIN", "ESP32 SDK: %s", esp_get_idf_version());
