@@ -464,21 +464,26 @@ bool Provisioning::enrollDevice(const char* host, uint16_t port,
         return false;
     }
 
+    // ArduinoJson 7.4.3 added an implicit `MemberProxy → const char*`
+    // conversion path that collides with `MemberProxy → JsonVariantConst`,
+    // making every 2-arg `firstString(MemberProxy, MemberProxy)` call
+    // ambiguous. Explicit `.as<JsonVariantConst>()` on each non-first
+    // argument disambiguates without changing the runtime semantics.
     DeviceCredentials c;
     JsonVariantConst policy = responsePolicy(resp);
     c.deviceId             = firstString(resp["device_id"]);
     c.clientCertificatePem = firstString(resp["client_certificate_pem"],
-                                         resp["certificate_pem"]);
+                                         resp["certificate_pem"].as<JsonVariantConst>());
     c.clientPrivateKeyPem  = privateKeyPem;
     c.commandPublicKeyPem  = firstString(resp["command_public_key_pem"],
-                                         resp["oms_command_public_key_pem"],
+                                         resp["oms_command_public_key_pem"].as<JsonVariantConst>(),
                                          kOmsCommandPubKeyPem);
     c.mqttFirmwareTopic    = firstString(policy["mqtt_topic_for_firmware"],
-                                         resp["mqtt_topic_for_firmware"]);
+                                         resp["mqtt_topic_for_firmware"].as<JsonVariantConst>());
     c.mqttPingsTopic       = firstString(policy["mqtt_topic_for_pings"],
-                                         resp["mqtt_topic_for_pings"]);
+                                         resp["mqtt_topic_for_pings"].as<JsonVariantConst>());
     c.mqttBrokerHost       = firstString(policy["mqtt_broker_host"],
-                                         resp["mqtt_broker_host"]);
+                                         resp["mqtt_broker_host"].as<JsonVariantConst>());
     c.mqttBrokerPort       = firstU16(policy["mqtt_broker_port"],
                                       resp["mqtt_broker_port"], 0);
     c.mqttBrokerUseTls     = firstBool(policy["mqtt_broker_use_tls"],

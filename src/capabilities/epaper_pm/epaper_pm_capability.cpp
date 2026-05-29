@@ -48,7 +48,9 @@
 
 // Seeed_GFX picks up the panel driver (UC8179) and the XIAO socket
 // pin map from BOARD_SCREEN_COMBO=502 + USE_XIAO_EPAPER_DRIVER_BOARD
-// defined in platformio.ini.
+// defined in platformio.ini. Setup502 turns on `EPAPER_ENABLE` which
+// brings in the `EPaper` class — different from TFT_eSPI even though
+// they share the same header.
 #include <TFT_eSPI.h>
 
 #include "../capability.h"
@@ -65,10 +67,12 @@ constexpr const char *kNvsNamespace = "epaper";
 constexpr const char *kNvsKeyDisplayId = "did";
 constexpr const char *kNvsKeyEtag = "etag";
 
-// Single global display instance — Seeed_GFX expects this pattern and
-// caches SPI setup in the constructor. Keep at namespace scope so the
+// Single global display instance — Seeed_GFX's `EPaper` class drives
+// the UC8179 panel via the same overall API as `TFT_eSPI` (fillScreen,
+// setTextColor, drawString) plus an `update()` flush that flips the
+// buffered render to the panel. Keep at namespace scope so the
 // destructor runs cleanly if we ever add a teardown step.
-TFT_eSPI g_panel;
+EPaper g_panel;
 
 // Per-cycle state. The capability runs once per wake on this device
 // class, so locals would also work — but keeping these at namespace
@@ -268,7 +272,7 @@ bool detectFn() {
 }
 
 void setupFn() {
-    g_panel.init();
+    g_panel.begin();
     loadFromNvs();
     Serial.printf("[epaper] booted; mac=%s\n", WiFi.macAddress().c_str());
     if (g_displayId.length() == 0) {
