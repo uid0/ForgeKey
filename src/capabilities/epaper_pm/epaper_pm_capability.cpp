@@ -1,24 +1,39 @@
-// XIAO 7.5" ePaper PM-display capability.
+// Seeed XIAO 7.5" ePaper PM-display capability.
 //
-// Built into the `seeed_xiao_esp32s3_epaper` PlatformIO env only — the
-// other build envs exclude `src/capabilities/epaper_pm/` via
-// `build_src_filter`. Compiles to a stub on those builds via the
-// FORGEKEY_EPAPER guard below.
+// Built into the `seeed_xiao_epaper` PlatformIO env only — the other
+// build envs exclude `src/capabilities/epaper_pm/` via
+// `build_src_filter`, and the FORGEKEY_EPAPER guard below stubs the
+// translation unit if it's pulled into another build by mistake.
 //
-// Contract with OMS (see backend/forgekey/views.py for the server side):
+// Hardware: Seeed XIAO 7.5" ePaper Panel, SKU 6416. 800x480 mono,
+// UC8179 driver. Ships with a XIAO ESP32-C3. Pin map is fixed by the
+// driver board and consumed by the Seeed_GFX library through the
+// `USE_XIAO_EPAPER_DRIVER_BOARD` build flag in platformio.ini. We
+// only touch `tft.*` here — the underlying SPI / D0..D10 wiring is
+// the library's problem.
+//
+// Contract with OMS (see backend/forgekey/views.py for the server):
 //
 //   GET  /api/forgekey/epaper/<display_id>/image.png
 //        - 200 → PNG body, ETag header. Decode and draw.
-//        - 304 → no body. Panel keeps its current paint, save sleep.
-//        - 404 → display row not provisioned. Treat as fatal-for-cycle.
-//        - 409 → display unbound to an asset. Treat as fatal-for-cycle.
+//        - 304 → no body. Panel keeps its current paint, sleep.
+//        - 404 → display row not provisioned. Render "unprovisioned" card.
+//        - 409 → display unbound to an asset. Render "unbound" card.
 //   POST /api/forgekey/epaper/<display_id>/battery/
 //        - Body: {"percent": 0..100}
-//        - 200 on persist; 400 on malformed payload; 404 on unknown id.
+//        - 200 on persist; 400 malformed; 404 unknown id.
 //
 // The display_id is stored in NVS at provisioning time. If it is not
-// set, the capability logs once and exits so a freshly-flashed board
-// without an OMS row doesn't burn cycles in a redraw loop.
+// set, the capability paints a help card with the device's MAC so the
+// staff member at the bench can paste it into the OMS admin and bind
+// the panel to an asset before the next wake.
+//
+// Battery telemetry note: the panel does NOT route a battery ADC line
+// to the XIAO socket (verified against the Seeed driver-board schematic
+// PDF). The firmware reports 100% as a placeholder until either Seeed
+// publishes a battery-sense path or operators wire a divider onto the
+// `BAT_4V2` net by hand. Operators rely on the on-board charger LEDs
+// for visual "swap me" signalling.
 
 #if defined(FORGEKEY_EPAPER) && !defined(FORGEKEY_DISABLE_EPAPER)
 
@@ -31,6 +46,11 @@
 #include <WiFi.h>
 #include <esp_sleep.h>
 
+// Seeed_GFX picks up the panel driver (UC8179) and the XIAO socket
+// pin map from BOARD_SCREEN_COMBO=502 + USE_XIAO_EPAPER_DRIVER_BOARD
+// defined in platformio.ini.
+#include <TFT_eSPI.h>
+
 #include "../capability.h"
 #include "../../provisioning/device_config.h"
 
@@ -38,44 +58,34 @@ namespace EPaperPmCapability {
 
 namespace {
 
-// NVS namespace + keys. Kept short — the ESP-IDF NVS key length cap is
-// 15 chars, and "epaper" + a 3-char suffix fits comfortably.
+// NVS namespace + keys. ESP-IDF NVS keys cap at 15 chars; the short
+// "epaper" + 3-char suffixes leave room and stay readable in the
+// `nvs_get_str` debug surfaces.
 constexpr const char *kNvsNamespace = "epaper";
 constexpr const char *kNvsKeyDisplayId = "did";
 constexpr const char *kNvsKeyEtag = "etag";
 
+// Single global display instance — Seeed_GFX expects this pattern and
+// caches SPI setup in the constructor. Keep at namespace scope so the
+// destructor runs cleanly if we ever add a teardown step.
+TFT_eSPI g_panel;
+
 // Per-cycle state. The capability runs once per wake on this device
-// class, so locals would also work — but keeping them at namespace
+// class, so locals would also work — but keeping these at namespace
 // scope lets the OTA capability (which can fire mid-cycle) inspect
-// what stage we were in for log/telemetry purposes.
+// what stage we were in for log / telemetry purposes.
 String g_displayId;
 String g_lastEtag;
 bool g_ranThisBoot = false;
 
-// Read the LiPo cell on ADC1_CH0 (GPIO 1 on the Seeed XIAO ESP32-S3
-// header). The XIAO board exposes a voltage divider that halves Vbat
-// — the 2x multiplier inverts that. The 0..100 range is clamped at
-// the ends so a slightly-over-3.0V reading (occasionally seen on
-// freshly charged cells) doesn't surface as 102%.
-uint8_t readBatteryPercent() {
-    // ESP32 ADC raw range is 0..4095 at 12-bit, full-scale at 3.3V.
-    const int raw = analogRead(1);
-    const float vAdc = (raw * 3.3f) / 4095.0f;
-    const float vBat = vAdc * 2.0f;
-    // Linear approximation: 3.3V empty → 4.2V full. Not battery-curve
-    // accurate, but good enough for "swap me" signalling on a panel
-    // that only reports every wake cycle.
-    const float pct = (vBat - 3.3f) / (4.2f - 3.3f) * 100.0f;
-    if (pct < 0.0f) return 0;
-    if (pct > 100.0f) return 100;
-    return static_cast<uint8_t>(pct);
-}
+// XIAO 7.5" ePaper Panel SKU 6416 has no battery voltage-divider line
+// broken out to the XIAO socket — see the schematic. Until somebody
+// solders a divider onto `BAT_4V2`, the POST is a placeholder so the
+// OMS row carries *some* telemetry rather than nothing.
+constexpr uint8_t kPlaceholderBatteryPercent = 100;
 
-// Build the absolute URL for a given path against the configured OMS
-// host (compile-time defines from device_config.h). HTTPS is implied
-// — OMS_PORT defaults to 443 and the upstream HTTPClient picks the
-// transport from the scheme. Override OMS_HOST/OMS_PORT via build
-// flags in platformio.ini for per-environment builds.
+// ---- URL helpers ---------------------------------------------------
+
 String absUrl(const char *path) {
     String scheme = (OMS_PORT == 443) ? "https://" : "http://";
     String base = scheme + String(OMS_HOST);
@@ -85,55 +95,104 @@ String absUrl(const char *path) {
     return base + String(path);
 }
 
-// Returns true if the cycle should also push the freshly-rendered
-// image to the panel. Stage 2 of the wake-cycle.
-bool fetchAndRenderImage() {
+// ---- Panel paint helpers -------------------------------------------
+
+// Card painted when the panel has no display_id in NVS yet — gives
+// the bench operator the MAC to paste into the OMS admin.
+void paintUnprovisionedCard() {
+    g_panel.setRotation(0);
+    g_panel.fillScreen(TFT_WHITE);
+    g_panel.setTextColor(TFT_BLACK, TFT_WHITE);
+    g_panel.setTextSize(2);
+    g_panel.drawString("ForgeKey ePaper", 40, 40);
+    g_panel.setTextSize(3);
+    g_panel.drawString("Awaiting provisioning", 40, 100);
+    g_panel.setTextSize(2);
+    g_panel.drawString("MAC:", 40, 200);
+    g_panel.drawString(WiFi.macAddress(), 130, 200);
+    g_panel.drawString("Add an EPaperDisplay row in OMS admin", 40, 260);
+    g_panel.drawString("with this MAC, then re-flash the device_id", 40, 290);
+    g_panel.drawString("to NVS at \"epaper/did\".", 40, 320);
+    g_panel.update();
+}
+
+void paintMessageCard(const char *title, const char *line1, const char *line2 = nullptr) {
+    g_panel.setRotation(0);
+    g_panel.fillScreen(TFT_WHITE);
+    g_panel.setTextColor(TFT_BLACK, TFT_WHITE);
+    g_panel.setTextSize(3);
+    g_panel.drawString(title, 40, 60);
+    g_panel.setTextSize(2);
+    g_panel.drawString(line1, 40, 160);
+    if (line2 != nullptr) {
+        g_panel.drawString(line2, 40, 200);
+    }
+    g_panel.drawString(WiFi.macAddress(), 40, 420);
+    g_panel.update();
+}
+
+// ---- HTTP wake-cycle stages ----------------------------------------
+
+// Stage 1: fetch the latest rendered PNG. The actual PNG → e-paper
+// scanline path is the hardware-pass-2 follow-up; for hardware-pass-1
+// we verify the HTTP round-trip and panel paint independently, then
+// glue them together once we know both halves work.
+//
+// Returns one of:
+//   "ok"          200 with body, body buffered into RAM (decode TODO).
+//   "unchanged"   304, panel keeps its current paint.
+//   "unprovisioned" 404 or 409 from OMS.
+//   "error"       anything else; panel keeps its current paint.
+const char *fetchImage() {
     if (WiFi.status() != WL_CONNECTED) {
         Serial.println("[epaper] skipping image fetch — WiFi not connected");
-        return false;
+        return "error";
     }
     HTTPClient http;
     String url = absUrl(String("/api/forgekey/epaper/" + g_displayId + "/image.png").c_str());
     http.begin(url);
     if (g_lastEtag.length() > 0) {
-        // OMS-side EPaperDisplayImageView strips the surrounding quotes
-        // so we wrap with the W3C-canonical form on the way out.
         http.addHeader("If-None-Match", String('"') + g_lastEtag + String('"'));
     }
     const int code = http.GET();
     if (code == 304) {
         Serial.println("[epaper] image unchanged (304) — skipping redraw");
         http.end();
-        return false;
+        return "unchanged";
+    }
+    if (code == 404 || code == 409) {
+        Serial.printf("[epaper] OMS reports display not bound (code=%d)\n", code);
+        http.end();
+        return "unprovisioned";
     }
     if (code != 200) {
         Serial.printf("[epaper] image fetch failed (code=%d) — keeping current paint\n", code);
         http.end();
-        return false;
+        return "error";
     }
 
-    // Capture the new ETag for next-cycle short-circuiting before we
-    // drain the body — once we read the stream the header API is
-    // implementation-dependent in some HTTPClient versions.
     String etag = http.header("ETag");
     if (etag.length() >= 2 && etag.startsWith("\"") && etag.endsWith("\"")) {
         etag = etag.substring(1, etag.length() - 1);
     }
     g_lastEtag = etag;
 
-    // TODO(epaper-pm-display, hardware-pass-1): wire the PNG decoder +
-    // GxEPD2 driver here. Pseudocode for the hardware bring-up:
+    // TODO(epaper-pm-display, hardware-pass-2): decode http.getStream()
+    // through PNGdec into the e-paper frame buffer. Pseudocode:
     //
     //   PNG png;
-    //   png.openRAM(payload, len, drawScanlineCb);
-    //   display.firstPage();
-    //   do {
-    //       png.decode(nullptr, 0);
-    //   } while (display.nextPage());
-    //   display.hibernate();
+    //   png.openStream(http.getStreamPtr(), [](PNGDRAW *d) {
+    //       for (int x = 0; x < d->iWidth; ++x) {
+    //           uint8_t v = d->pPixels[x];
+    //           g_panel.drawPixel(x, d->y, v > 127 ? TFT_WHITE : TFT_BLACK);
+    //       }
+    //   });
+    //   png.decode(nullptr, 0);
+    //   g_panel.update();
     //
-    // Until the panel + lib are bench-tested we read the body to drain
-    // the socket cleanly and trust the server told us a fresh ETag.
+    // For pass-1 we drain the body to free the socket and paint a
+    // sentinel "received" card so the bench operator sees the panel
+    // change between cycles even before the PNG path lands.
     WiFiClient *stream = http.getStreamPtr();
     if (stream) {
         while (stream->available()) {
@@ -141,7 +200,11 @@ bool fetchAndRenderImage() {
         }
     }
     http.end();
-    return true;
+    paintMessageCard(
+        "Image fetched",
+        "Server returned a fresh PNG.",
+        "Decode path lands in pass-2.");
+    return "ok";
 }
 
 bool postBattery(uint8_t percent) {
@@ -165,6 +228,8 @@ bool postBattery(uint8_t percent) {
     return true;
 }
 
+// ---- NVS + sleep ---------------------------------------------------
+
 void persistEtag() {
     Preferences prefs;
     prefs.begin(kNvsNamespace, /*readonly=*/false);
@@ -182,8 +247,8 @@ void loadFromNvs() {
 
 void requestDeepSleep() {
     uint32_t minutes = DEFAULT_WAKE_INTERVAL_MIN;
-    // TODO: read FORGEKEY_EPAPER_WAKE_INTERVAL_MINUTES from NVS to let
-    // the operator dashboard tune cadence per panel without a reflash.
+    // TODO: read FORGEKEY_EPAPER_WAKE_INTERVAL_MINUTES from NVS so the
+    // operator dashboard can tune cadence per panel without a reflash.
     const uint64_t microseconds = static_cast<uint64_t>(minutes) * 60ULL * 1000000ULL;
     Serial.printf("[epaper] deep-sleeping for %u minute(s)\n", minutes);
     esp_sleep_enable_timer_wakeup(microseconds);
@@ -192,28 +257,26 @@ void requestDeepSleep() {
 
 }  // namespace
 
+// ---- Capability lifecycle ------------------------------------------
+
 bool detectFn() {
     // The e-paper env builds for one specific hardware combo; treat
-    // the env flag itself as the presence probe. Real driver
-    // initialisation happens in setupFn() so a missing panel still
-    // logs cleanly instead of hard-faulting in detect().
+    // the env flag itself as the presence probe. Real driver init
+    // happens in setupFn() so a missing panel still logs cleanly
+    // instead of hard-faulting in detect().
     return true;
 }
 
 void setupFn() {
+    g_panel.init();
     loadFromNvs();
+    Serial.printf("[epaper] booted; mac=%s\n", WiFi.macAddress().c_str());
     if (g_displayId.length() == 0) {
-        Serial.println(
-            "[epaper] no display_id in NVS — provision the panel against OMS "
-            "before flashing. Capability staying idle.");
+        Serial.println("[epaper] no display_id in NVS; painting provisioning card");
+        paintUnprovisionedCard();
         return;
     }
     Serial.printf("[epaper] bound to display_id=%s\n", g_displayId.c_str());
-
-    // TODO(epaper-pm-display, hardware-pass-1): initialise the GxEPD2
-    // driver here.
-    //   display.init(115200, true, 2, false);
-    //   display.setRotation(0);
 }
 
 void tickFn() {
@@ -223,17 +286,17 @@ void tickFn() {
     g_ranThisBoot = true;
 
     Serial.println("[epaper] starting wake cycle");
-    const bool drew = fetchAndRenderImage();
-    (void)drew;  // currently informational — used once the PNG path lands
-    const uint8_t battery = readBatteryPercent();
-    Serial.printf("[epaper] battery=%u%%\n", battery);
-    if (battery < LOW_BATTERY_PERCENT) {
-        Serial.printf(
-            "[epaper] battery is below local low-battery floor (%u%%) — OMS will "
-            "also alert via Sentry once the POST lands\n",
-            LOW_BATTERY_PERCENT);
+    const char *result = fetchImage();
+    if (strcmp(result, "unprovisioned") == 0) {
+        paintMessageCard(
+            "Display not bound",
+            "OMS could not find or bind this display.",
+            "Visit OMS admin and link it to an asset.");
     }
-    postBattery(battery);
+
+    // See header — no ADC line on this board variant; placeholder until
+    // either Seeed publishes a path or somebody wires a divider.
+    postBattery(kPlaceholderBatteryPercent);
     persistEtag();
     requestDeepSleep();
 }
