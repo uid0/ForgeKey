@@ -3,28 +3,32 @@
 
 #include <Arduino.h>
 
-// XIAO 7.5" ePaper PM-display capability.
+// Seeed XIAO 7.5" ePaper PM-display capability.
 //
-// One panel = one ESP32 + Seeed Wio E-Paper 7.5" combo bound to a single
-// asset in OMS. Firmware lifecycle is asymmetric to the other ForgeKey
-// devices: instead of staying online and ticking, the e-paper panel runs
-// a single wake-cycle then deep-sleeps for FORGEKEY_EPAPER_WAKE_INTERVAL_MINUTES.
-// During each wake-cycle:
+// One panel = one Seeed XIAO + 7.5" ePaper combo (SKU 6416) bound to a
+// single asset in OMS. Firmware lifecycle is asymmetric to the other
+// ForgeKey devices: instead of staying online and ticking, the e-paper
+// panel runs a single wake-cycle then deep-sleeps for
+// FORGEKEY_EPAPER_WAKE_INTERVAL_MINUTES. During each wake-cycle:
 //
 //   1. WiFi connect (uses the shared wifi_setup / captive portal path).
 //   2. HTTP GET /api/forgekey/epaper/<display_id>/image.png with
-//      `If-None-Match: <last-etag-from-NVS>`. On 304, skip the redraw;
-//      on 200, decode the PNG and push it to the panel.
-//   3. Sample the LiPo voltage on ADC1_CH0 (GPIO 1), convert to percent,
-//      HTTP POST /api/forgekey/epaper/<display_id>/battery/ with the
-//      result. OMS captures a Sentry warning when the value crosses
-//      FORGEKEY_EPAPER_LOW_BATTERY_PERCENT (default 20).
-//   4. Persist the new ETag + sleep timestamp to NVS, request deep sleep.
+//      `If-None-Match: <last-etag-from-NVS>`. On 304 skip the redraw;
+//      on 200 decode the PNG and push it to the panel; on 404/409
+//      paint a "display not bound" card.
+//   3. HTTP POST /api/forgekey/epaper/<display_id>/battery/ with a
+//      placeholder 100% — the SKU 6416 driver board does NOT route a
+//      battery voltage-divider line to the XIAO socket, so a real
+//      reading is impossible without a hardware mod. The endpoint
+//      stays declared on the OMS side for future device classes.
+//   4. Persist the new ETag to NVS, request deep sleep.
 //
 // The display_id is the same UUID the OMS admin sees on the
-// EPaperDisplay row; it's provisioned during device enrollment and stored
-// in NVS under the "epaper_did" key. If unset, the capability logs once
-// and returns without driving the panel.
+// EPaperDisplay row; it's provisioned during device enrollment and
+// stored in NVS at namespace "epaper" key "did". If unset, the
+// capability paints an "Awaiting provisioning" card with the device
+// MAC so the bench operator can paste it into OMS and bind the panel
+// before the next wake.
 
 namespace EPaperPmCapability {
 
@@ -34,18 +38,11 @@ namespace EPaperPmCapability {
 // (e.g. machines on a 7-day filter cadence), raise it for monthly stuff.
 static constexpr uint32_t DEFAULT_WAKE_INTERVAL_MIN = 60;
 
-// Low-battery floor matching the OMS-side default
-// (FORGEKEY_EPAPER_LOW_BATTERY_PERCENT in settings.py). Used as a
-// secondary local guard: the firmware can flash a "BATTERY LOW" badge
-// on the panel itself when the server alert is also firing, so a
-// passing operator sees the panel asking to be swapped without
-// needing to read Sentry first.
-static constexpr uint8_t LOW_BATTERY_PERCENT = 20;
-
-// Probes for the Seeed Wio E-Paper 7.5" panel on the configured SPI
-// pins. Returns false on a missing/unresponsive panel so the registry
-// can skip setup() on a board that was flashed with the e-paper env
-// by mistake.
+// Probes for the Seeed XIAO 7.5" ePaper panel. The driver board is
+// fixed-pin and the env builds for one specific hardware combo, so
+// we treat the build flag as the presence probe — real init happens
+// in setupFn() and a missing panel logs cleanly there rather than
+// hard-faulting in detect().
 bool detectFn();
 
 // Configure the panel + decoder library, load the persisted ETag /
