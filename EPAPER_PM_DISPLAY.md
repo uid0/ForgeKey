@@ -49,93 +49,83 @@ pio device monitor -e seeed_xiao_epaper -b 115200  # serial logs
 ```
 
 The Seeed_GFX library is pulled directly from upstream GitHub by
-`platformio.ini` (`https://github.com/Seeed-Studio/Seeed_Arduino_LCD.git`).
-First build pulls it; subsequent builds use the cached copy.
+`platformio.ini`. First build pulls it; subsequent builds use the
+cached copy. `ricmoo/QRCode` and `bitbank2/PNGdec` are pulled from
+the PlatformIO registry.
 
-## What you'll see on first flash
+## First-boot flow (flash once, walk away)
 
-1. **No display_id in NVS** (fresh board) → panel paints an
-   "Awaiting provisioning" card showing the device MAC. The
-   firmware does not enter the wake-cycle / sleep loop; staff at
-   the bench can read the MAC, add an `EPaperDisplay` row in OMS
-   admin, then set `epaper/did` in NVS (see "Provisioning" below).
-2. **display_id present + WiFi up** → panel runs a wake-cycle:
-   - GET `/api/forgekey/epaper/<id>/image.png` → drains body and
-     paints a placeholder "Image fetched" card (PNG decode lands
-     in hardware-pass-2; for pass-1 we verify the HTTP round-trip
-     and panel paint independently).
-   - 404 or 409 from OMS → "Display not bound" card.
-   - 304 → keep current paint.
-   - POST `/api/forgekey/epaper/<id>/battery/` with placeholder 100%.
-   - Persist new ETag to NVS, request deep sleep for
-     `DEFAULT_WAKE_INTERVAL_MIN` (default 60 min).
+No manual NVS provisioning. The intended bring-up is "flash the
+firmware, mount the panel, do the rest from OMS."
 
-## Provisioning a display_id at the bench
+1. **No display_id in NVS** (fresh board) → firmware generates a
+   v4 UUID from `esp_random()`, persists it to NVS at namespace
+   `epaper`, key `did`. Same UUID survives subsequent boots.
+2. **WiFi connects** via either the captive portal or a
+   `secrets_local.h` predefined network.
+3. **Wake-cycle**: GET `/api/forgekey/epaper/<did>/image.png`. The
+   server auto-creates an unbound `EPaperDisplay` row on first
+   contact and responds 409.
+4. On **409**, panel paints a bind QR encoding
+   `<oms-base-url>/forgekey/epaper/bind?did=<uuid>`. A staff
+   member scans with a phone, picks an asset from the mobile bind
+   page, POSTs to the OMS `/bind/` endpoint. The page is
+   staff-JWT gated.
+5. Next wake-cycle: GET `image.png` returns 200 with a fresh PNG.
+   Firmware decodes via PNGdec (per-scanline thresholding of the
+   RGB565 conversion's green channel) and full-paints the panel.
+6. Subsequent wakes that hit a matching ETag return 304; panel
+   keeps its current paint and goes back to deep sleep.
 
-The device_id lives in NVS at namespace `epaper`, key `did`. Two
-ways to set it during testing:
+Other responses:
+- **304** → keep current paint.
+- **404** → panel was marked retired in OMS; paint a "Panel
+  retired" card.
+- Other (transport / decode failure) → keep current paint, retry
+  next wake.
 
-**1. From a Python serial shell** (preferred, no reflash):
-```python
-import esptool, serial
-# Send: `nvs_set epaper did string <uuid>` via the firmware's
-# serial REPL (TODO — add this REPL command in pass-2).
-```
+After each cycle the firmware also POSTs
+`/api/forgekey/epaper/<did>/battery/` with the placeholder 100%
+(SKU 6416 has no battery sense exposed to the XIAO socket — see
+above) and deep-sleeps for `DEFAULT_WAKE_INTERVAL_MIN` minutes
+(default 60).
 
-**2. Reflash with a sentinel default** for one boot:
-- Set `-DEPAPER_DEBUG_DISPLAY_ID="\"00000000-0000-0000-0000-000000000000\""`
-  in `platformio.ini` and have `loadFromNvs()` fall back to it
-  (also TODO for pass-2).
+## OMS contract
 
-For tonight's bench session, easiest path is to flash once, paint
-the unprovisioned card, copy the MAC, create an `EPaperDisplay`
-row in OMS admin, and then manually `idf.py monitor` + use the
-ESP-IDF `nvs_get` tool to confirm wiring.
+| Method | Path                                          | Response                                                        |
+|--------|-----------------------------------------------|-----------------------------------------------------------------|
+| GET    | `/api/forgekey/epaper/<did>/image.png`        | 200 PNG + `ETag`; 304 on matching `If-None-Match`; 409 unbound; 404 retired |
+| POST   | `/api/forgekey/epaper/<did>/bind/`            | Staff JWT. Body `{"asset_id": "..."}`. Called by the mobile bind page, NOT by firmware. |
+| POST   | `/api/forgekey/epaper/<did>/battery/`         | Body `{"percent": 0..100}`. 200 on persist; 400/404 on error.   |
 
-## OMS contract (recap)
+`image.png` and `battery/` are `AllowAny` — the firmware carries no
+JWT. The PNG content is information already visible on the panel
+mounted to the asset, so the exposure surface is narrow.
 
-| Method | Path                                              | Response                                              |
-|--------|---------------------------------------------------|-------------------------------------------------------|
-| GET    | `/api/forgekey/epaper/<display_id>/image.png`     | 200 PNG + `ETag`, or 304, or 404, or 409 (unbound)    |
-| POST   | `/api/forgekey/epaper/<display_id>/battery/`      | 200 on persist; 400 on payload error; 404 on unknown |
+## Open TODOs
 
-Both endpoints are `AllowAny` because the firmware has no
-persistent JWT credential at this device class. The image content
-is information already visible on the panel mounted to the asset,
-so the exposure surface is narrow.
-
-## Status
-
-This is **hardware-pass-1**. The build + panel paint + HTTP
-round-trip are wired, but the actual PNG → e-paper scanline path
-is intentionally a placeholder so the bench session can verify
-wiring + driver + HTTP independently before chasing decoder bugs.
-
-### Open TODOs (hardware-pass-2)
-
-- **PNG → e-paper draw** in `fetchImage()`. Pseudocode is inline
-  in the cpp; uses PNGdec to stream scanlines into the Seeed_GFX
-  frame buffer, then `g_panel.update()` flips the panel.
 - **NVS-driven cadence** — read `FORGEKEY_EPAPER_WAKE_INTERVAL_MINUTES`
-  from NVS so the OMS dashboard can tune per panel without a
-  reflash.
-- **Serial REPL `nvs_set`** so bench operators don't need
-  `nvs_get`/external tools to bind a panel.
-- **Battery sense path** if a future board rev adds an ADC line, or
-  if operators hand-solder a divider onto `BAT_4V2`.
+  from NVS so the OMS dashboard can tune per-panel without a reflash.
+- **Battery sense path** if a future board revision adds an ADC
+  line, or if operators hand-solder a divider onto `BAT_4V2`.
+- **MQTT command pathway** (force-refresh, etc.) — the ePaper
+  device class deliberately skips the MAC-based MQTT enrollment
+  used by other ForgeKey devices, so any command pathway needs a
+  display_id-keyed alternative.
 
-## Swap workflow (post-foundation)
+## Swap workflow
 
-When a panel reports low battery (or the on-board charger LED says
-so today), ops should be able to:
+When a panel runs low or fails:
 
 1. Pick a charged twin panel from the spare-shelf pool.
-2. In OMS, rebind the asset from the dying panel to the charged
-   one. The next wake-cycle on the charged panel pulls the asset's
-   latest PNG.
-3. Take the dying panel off the asset, plug it into a charger;
-   once fully charged it goes back on the spare-shelf and can be
-   bound to another asset.
+2. Mount it on the asset.
+3. Scan the new panel's bind QR with a phone and pick the same
+   asset on the bind page. The dying panel's binding is left
+   alone; the new panel takes over.
+4. (Optional) Mark the old panel inactive in OMS admin so it
+   stops 409-ing if it boots from the shelf later. Once it does,
+   it will paint the "Panel retired" card.
 
-OMS-side swap helpers are a separate PR (`forgekey/epaper/swap/`
-endpoint set + admin action).
+A dedicated `forgekey/epaper/swap/` admin action that rebinds the
+asset in one click — rather than scanning the new panel — is a
+follow-up.
