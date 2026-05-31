@@ -7,6 +7,7 @@
 #include "ota/ota_updater.h"
 #include "wifi_setup/captive.h"
 #include "boards/board_manifest.h"
+#include "power/power_manager.h"
 #include "capabilities/registry.h"
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
@@ -642,6 +643,7 @@ bool MqttClient::publishFirmwareStatus(const char* state,
     OtaUpdater::appendHealthJson(payload);
     WifiSetup::appendHealthJson(payload);
     BoardManifest::appendHealthJson(payload, CapabilityRegistry::head());
+    PowerManager::appendHealthJson(payload, BoardManifest::batteryConfig());
     ForgeKeyTime::appendJson(payload);
     payload += ",\"ts\":";
     payload += String(ForgeKeyTime::epochNow());

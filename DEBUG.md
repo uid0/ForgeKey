@@ -227,3 +227,19 @@ Every log line in this build is shoulder-surfable. The contract is:
 If you need to log a new credential-bearing field, follow the same pattern:
 length + 8-char prefix only. Do not extend logging to print full secrets even
 in error paths.
+
+## Power diagnostics
+
+Health/status payloads now include a shared `power` object on all ForgeKey
+firmware families. Use it when diagnosing boot loops or intermittent lockups:
+
+- `power.reset_reason` and `power.wake_reason` identify the previous reset path
+  and deep-sleep wake source.
+- `power.brownout_count` persists across boots and increments after brownout
+  resets.
+- `power.alarms.brownout=true` means the current boot followed a brownout reset.
+- `power.alarms.low_battery=true` means a configured ADC battery divider is at
+  or below the board manifest's low-voltage threshold.
+- `power.battery.available=false` with `source=unsupported` means the reference
+  hardware does not route a battery sense divider; do not interpret it as a dead
+  battery.

@@ -40,6 +40,28 @@ const int C3_ADC[] = {0, 1, 2, 3, 4};
 #define FORGEKEY_MMWAVE_BAUD 256000UL
 #endif
 
+#ifndef FORGEKEY_BATTERY_ADC_PIN
+#define FORGEKEY_BATTERY_ADC_PIN (-1)
+#endif
+#ifndef FORGEKEY_BATTERY_DIVIDER_NUM
+#define FORGEKEY_BATTERY_DIVIDER_NUM 2
+#endif
+#ifndef FORGEKEY_BATTERY_DIVIDER_DEN
+#define FORGEKEY_BATTERY_DIVIDER_DEN 1
+#endif
+#ifndef FORGEKEY_BATTERY_EMPTY_MV
+#define FORGEKEY_BATTERY_EMPTY_MV 3300
+#endif
+#ifndef FORGEKEY_BATTERY_FULL_MV
+#define FORGEKEY_BATTERY_FULL_MV 4200
+#endif
+#ifndef FORGEKEY_BATTERY_LOW_MV
+#define FORGEKEY_BATTERY_LOW_MV 3450
+#endif
+#ifndef FORGEKEY_BATTERY_UNAVAILABLE_REASON
+#define FORGEKEY_BATTERY_UNAVAILABLE_REASON "battery_adc_not_configured"
+#endif
+
 #if defined(FORGEKEY_EPAPER)
 const PinClaim CURRENT_PINS[] = {
     {2, "epaper_pm", "epaper_rst", PullExpectation::Driven, true, true},
@@ -64,6 +86,9 @@ const Board CURRENT_BOARD = {
     sizeof(C3_ADC) / sizeof(C3_ADC[0]),
     CURRENT_BUSES,
     sizeof(CURRENT_BUSES) / sizeof(CURRENT_BUSES[0]),
+    {FORGEKEY_BATTERY_ADC_PIN, FORGEKEY_BATTERY_DIVIDER_NUM, FORGEKEY_BATTERY_DIVIDER_DEN,
+     FORGEKEY_BATTERY_EMPTY_MV, FORGEKEY_BATTERY_FULL_MV, FORGEKEY_BATTERY_LOW_MV,
+     FORGEKEY_BATTERY_UNAVAILABLE_REASON},
 };
 #else
 const PinClaim CURRENT_PINS[] = {
@@ -112,6 +137,9 @@ const Board CURRENT_BOARD = {
     sizeof(S3_ADC) / sizeof(S3_ADC[0]),
     CURRENT_BUSES,
     sizeof(CURRENT_BUSES) / sizeof(CURRENT_BUSES[0]),
+    {FORGEKEY_BATTERY_ADC_PIN, FORGEKEY_BATTERY_DIVIDER_NUM, FORGEKEY_BATTERY_DIVIDER_DEN,
+     FORGEKEY_BATTERY_EMPTY_MV, FORGEKEY_BATTERY_FULL_MV, FORGEKEY_BATTERY_LOW_MV,
+     FORGEKEY_BATTERY_UNAVAILABLE_REASON},
 };
 #endif
 
@@ -201,6 +229,7 @@ bool mmwaveConfigured() { return FORGEKEY_MMWAVE_RX_PIN >= 0 && FORGEKEY_MMWAVE_
 int mmwaveRxPin() { return FORGEKEY_MMWAVE_RX_PIN; }
 int mmwaveTxPin() { return FORGEKEY_MMWAVE_TX_PIN; }
 uint32_t mmwaveBaud() { return (uint32_t)FORGEKEY_MMWAVE_BAUD; }
+const PowerManager::BatteryConfig& batteryConfig() { return current().battery; }
 
 bool checkActiveCapabilityPins(Capability* head) {
     bool ok = true;
@@ -279,7 +308,13 @@ void appendHealthJson(String& payload, Capability* head) {
         payload += "}";
         first = false;
     }
-    payload += "],\"active_capabilities\":";
+    payload += "],\"battery_sense\":{";
+    payload += "\"adc_pin\":" + String(b.battery.adcPin);
+    payload += ",\"divider_ratio\":\"" + String(b.battery.dividerNumerator) + "/" + String(b.battery.dividerDenominator) + "\"";
+    payload += ",\"low_mv\":" + String(b.battery.lowMv);
+    payload += ",\"configured\":";
+    payload += b.battery.adcPin >= 0 ? "true" : "false";
+    payload += "},\"active_capabilities\":";
     appendCapabilityArray(payload, head, true);
     payload += ",\"skipped_capabilities\":";
     appendCapabilityArray(payload, head, false);

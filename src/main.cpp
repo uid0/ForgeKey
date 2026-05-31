@@ -19,6 +19,7 @@
 #include "capabilities/registry.h"
 #include "capabilities/status_led/status_led.h"
 #include "boards/board_manifest.h"
+#include "power/power_manager.h"
 
 #ifndef FORGEKEY_DISABLE_BLE_SCANNER
 #include "capabilities/ble_scanner/ble_scanner.h"
@@ -231,6 +232,7 @@ static void publishStatusSnapshot(const char* requestedCmd, const char* commandI
     payload += String(WiFi.RSSI());
     WifiSetup::appendHealthJson(payload);
     BoardManifest::appendHealthJson(payload, CapabilityRegistry::head());
+    PowerManager::appendHealthJson(payload, BoardManifest::batteryConfig());
     payload += ",\"ble_config\":";
     ble_desired_state::appendConfigJson(payload);
     payload += ",\"capability_health\":{\"ble\":{";
@@ -788,6 +790,7 @@ static bool runProvisioning() {
 }
 
 void setup() {
+    PowerManager::begin();
     Serial.begin(115200);
     delay(1000);
 

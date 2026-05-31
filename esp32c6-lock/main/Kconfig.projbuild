@@ -55,6 +55,31 @@ config FORGEKEY_LOCK_COMMISSION_FLASH_MS
     help
         Slow blink interval used while commissioning mode is active.
 
+config FORGEKEY_LOCK_BATTERY_ADC_PIN
+    int "Optional battery ADC pin"
+    default -1
+    help
+        ADC-capable GPIO connected to a battery divider. Set to -1 when absent.
+
+config FORGEKEY_LOCK_BATTERY_DIVIDER_NUM
+    int "Battery divider numerator"
+    default 2
+
+config FORGEKEY_LOCK_BATTERY_DIVIDER_DEN
+    int "Battery divider denominator"
+    default 1
+
+config FORGEKEY_LOCK_BATTERY_EMPTY_MV
+    int "Battery empty millivolts"
+    default 3300
+
+config FORGEKEY_LOCK_BATTERY_FULL_MV
+    int "Battery full millivolts"
+    default 4200
+
+config FORGEKEY_LOCK_BATTERY_LOW_MV
+    int "Low battery alarm millivolts"
+    default 3450
 
 config FORGEKEY_LOCK_TELEMETRY_INTERVAL_MS
     int "Telemetry publish interval (ms)"

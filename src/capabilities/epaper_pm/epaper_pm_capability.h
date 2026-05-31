@@ -25,9 +25,9 @@
 //   5. HTTP POST /api/forgekey/epaper/<display_id>/health/ with ETag,
 //      unchanged/failure counts, wake interval, render status, last HTTP
 //      status, OTA slot health, board manifest, and battery telemetry.
-//      The stock SKU 6416 reports battery.available=false because no
+//      The stock SKU 6416 reports power.battery.available=false because no
 //      battery ADC line reaches the XIAO socket; a hardware divider can be
-//      enabled with FORGEKEY_EPAPER_BATTERY_ADC_PIN build flags.
+//      enabled with FORGEKEY_BATTERY_ADC_PIN build flags.
 //   6. Persist the new ETag/backoff counters to NVS, request deep sleep.
 //
 // The display_id is the same UUID the OMS admin sees on the
