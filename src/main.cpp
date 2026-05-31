@@ -52,6 +52,9 @@
 
 String macAddress;
 
+void debugPrint(const char* level, const char* tag, const char* msg);
+void debugPrintf(const char* level, const char* tag, const char* fmt, ...);
+
 // ============= DEBUG HELPERS =============
 namespace {
 constexpr size_t kDebugLevelMax = 8;
