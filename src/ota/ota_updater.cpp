@@ -164,7 +164,7 @@ const char* otaStateName(esp_ota_img_states_t state) {
 }  // namespace
 
 bool OtaUpdater::parse(const uint8_t* payload, unsigned int length, Spec& out) {
-    StaticJsonDocument<1536> doc;
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, payload, length);
     if (err) {
         Serial.printf("ota: parse error: %s\n", err.c_str());

@@ -296,7 +296,7 @@ static void publishUnknownCommandAck(const char* cmd, const char* commandId) {
 
 static void publishCommandRejectAck(const char* cmd, const char* commandId,
                                     const char* error, const char* detail = nullptr) {
-    StaticJsonDocument<256> ack;
+    JsonDocument ack;
     ack["cmd_ack"] = cmd ? cmd : "";
     ack["command_id"] = commandId ? commandId : "";
     ack["ok"] = false;
@@ -313,7 +313,7 @@ static void publishCommandRejectAck(const char* cmd, const char* commandId,
 // (OMS) provided one so the backend's structured ack path can match the row.
 static void publishLockCmdAck(const char* cmd, const char* commandId,
                               const char* state, const char* error) {
-    StaticJsonDocument<192> ack;
+    JsonDocument ack;
     ack["cmd_ack"] = cmd ? cmd : "";
     ack["command_id"] = commandId ? commandId : "";
     if (state && *state) ack["state"] = state;
@@ -325,7 +325,7 @@ static void publishLockCmdAck(const char* cmd, const char* commandId,
 #endif
 
 static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned int length) {
-    StaticJsonDocument<1536> doc;
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, payload, length);
     if (err) {
         debugPrintf("WARN", "CMD", "parse error: %s", err.c_str());
@@ -352,9 +352,9 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
         //   {"cmd":"blink"}                     -> toggle (back-compat)
         //   {"cmd":"blink","action":"start|stop|toggle"}
         //   {"cmd":"blink","on":true|false}
-        if (doc.containsKey("on")) {
+        if (!doc["on"].isNull()) {
             setBlinkActive(doc["on"].as<bool>());
-        } else if (doc.containsKey("action")) {
+        } else if (!doc["action"].isNull()) {
             const char* action = doc["action"] | "";
             if (strcmp(action, "start") == 0) {
                 setBlinkActive(true);
@@ -368,7 +368,7 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
         } else {
             setBlinkActive(!StatusLed::blinkOverrideActive());
         }
-        { StaticJsonDocument<96> ack; ack["cmd_ack"]="blink"; ack["command_id"]=commandId; ack["ok"]=true; String j; serializeJson(ack,j); mqttClient.publishStatus(j.c_str()); }
+        { JsonDocument ack; ack["cmd_ack"]="blink"; ack["command_id"]=commandId; ack["ok"]=true; String j; serializeJson(ack,j); mqttClient.publishStatus(j.c_str()); }
         return;
     }
     if (strcmp(cmd, "identify") == 0) {
@@ -379,7 +379,7 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
         unsigned long durationMs = durationS * 1000UL;
         bool wasOff = StatusLed::setBlinkOverrideTimed(durationMs);
         if (wasOff) mqttClient.publishBlinkStatus(true);
-        StaticJsonDocument<128> ack;
+        JsonDocument ack;
         ack["cmd_ack"] = "identify";
         ack["command_id"] = commandId;
         ack["duration_s"] = durationS;
@@ -415,7 +415,7 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
         return;
 #elif !defined(FORGEKEY_TEMPERATURE_SENSOR) && !defined(FORGEKEY_EPAPER)
         if (PeopleCounter::isActive() && PeopleCounter::requestOneShotCapture()) {
-            { StaticJsonDocument<128> ack; ack["cmd_ack"]="capture"; ack["command_id"]=commandId; ack["queued"]=true; String j; serializeJson(ack,j); mqttClient.publishStatus(j.c_str()); }
+            { JsonDocument ack; ack["cmd_ack"]="capture"; ack["command_id"]=commandId; ack["queued"]=true; String j; serializeJson(ack,j); mqttClient.publishStatus(j.c_str()); }
             StatusLed::triggerMessageFlash();
             debugPrint("INFO", "CMD", "capture queued");
         } else {
@@ -432,7 +432,7 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
         // Ack first so the operator UI can register the device acknowledged
         // the command, then briefly delay to flush the publish through the
         // MQTT socket before yanking the chip.
-        { StaticJsonDocument<128> ack; ack["cmd_ack"]="restart"; ack["command_id"]=commandId; ack["in_ms"]=1000; String j; serializeJson(ack,j); mqttClient.publishStatus(j.c_str()); }
+        { JsonDocument ack; ack["cmd_ack"]="restart"; ack["command_id"]=commandId; ack["in_ms"]=1000; String j; serializeJson(ack,j); mqttClient.publishStatus(j.c_str()); }
         StatusLed::triggerMessageFlash();
         debugPrint("INFO", "CMD", "restart in 1000ms");
         // Drive the MQTT loop a few times so PubSubClient actually pushes
@@ -476,13 +476,13 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
     if (strcmp(cmd, "ble_scan") == 0) {
         // Trigger an immediate BLE scan. The scanner capability will pick
         // up the request on its next tick and run a scan for BLE_SCAN_DURATION_S.
-        { StaticJsonDocument<128> ack; ack["cmd_ack"]="ble_scan"; ack["command_id"]=commandId; ack["queued"]=true; String j; serializeJson(ack,j); mqttClient.publishStatus(j.c_str()); }
+        { JsonDocument ack; ack["cmd_ack"]="ble_scan"; ack["command_id"]=commandId; ack["queued"]=true; String j; serializeJson(ack,j); mqttClient.publishStatus(j.c_str()); }
         StatusLed::triggerMessageFlash();
         debugPrint("INFO", "CMD", "ble_scan triggered");
         return;
     }
     if (strcmp(cmd, "ble_scan_stop") == 0) {
-        { StaticJsonDocument<96> ack; ack["cmd_ack"]="ble_scan_stop"; ack["command_id"]=commandId; String j; serializeJson(ack,j); mqttClient.publishStatus(j.c_str()); }
+        { JsonDocument ack; ack["cmd_ack"]="ble_scan_stop"; ack["command_id"]=commandId; String j; serializeJson(ack,j); mqttClient.publishStatus(j.c_str()); }
         StatusLed::triggerMessageFlash();
         debugPrint("INFO", "CMD", "ble_scan_stop requested");
         return;
@@ -493,11 +493,11 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
         const char* action = doc["action"] | "";
         if (strcmp(action, "start") == 0) {
             BleBeacon::setContinuous(true);
-            { StaticJsonDocument<128> ack; ack["cmd_ack"]="beacon"; ack["command_id"]=commandId; ack["action"]="start"; String j; serializeJson(ack,j); mqttClient.publishStatus(j.c_str()); }
+            { JsonDocument ack; ack["cmd_ack"]="beacon"; ack["command_id"]=commandId; ack["action"]="start"; String j; serializeJson(ack,j); mqttClient.publishStatus(j.c_str()); }
             debugPrint("INFO", "CMD", "beacon continuous ON");
         } else if (strcmp(action, "stop") == 0) {
             BleBeacon::setContinuous(false);
-            { StaticJsonDocument<128> ack; ack["cmd_ack"]="beacon"; ack["command_id"]=commandId; ack["action"]="stop"; String j; serializeJson(ack,j); mqttClient.publishStatus(j.c_str()); }
+            { JsonDocument ack; ack["cmd_ack"]="beacon"; ack["command_id"]=commandId; ack["action"]="stop"; String j; serializeJson(ack,j); mqttClient.publishStatus(j.c_str()); }
             debugPrint("INFO", "CMD", "beacon continuous OFF");
         } else {
             publishCommandRejectAck("beacon", commandId, "missing_action");
@@ -509,15 +509,15 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
 #endif
 #ifndef FORGEKEY_DISABLE_BLE_EQUIPMENT
     if (strcmp(cmd, "equipment_list") == 0) {
-        StaticJsonDocument<512> doc2;
+        JsonDocument doc2;
         doc2["cmd_ack"] = "equipment_list";
         doc2["command_id"] = commandId;
         doc2["count"] = BleEquipment::getTagCount();
-        JsonArray tags = doc2.createNestedArray("tags");
+        JsonArray tags = doc2["tags"].to<JsonArray>();
         for (int i = 0; i < BleEquipment::getTagCount(); i++) {
             const auto* t = BleEquipment::getTag(i);
             if (!t || !t->active) continue;
-            JsonObject entry = tags.createNestedObject();
+            JsonObject entry = tags.add<JsonObject>();
             entry["name"] = t->name;
             if (t->mac[0]) entry["mac"] = t->mac;
             if (t->ibeacon_uuid[0]) entry["ibeacon_uuid"] = t->ibeacon_uuid;
@@ -532,7 +532,7 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
     }
     if (strcmp(cmd, "equipment_set") == 0) {
         // Tags are set via the config topic; this is a no-op ack.
-        { StaticJsonDocument<128> ack; ack["cmd_ack"]="equipment_set"; ack["command_id"]=commandId; ack["note"]="use_config_topic"; String j; serializeJson(ack,j); mqttClient.publishStatus(j.c_str()); }
+        { JsonDocument ack; ack["cmd_ack"]="equipment_set"; ack["command_id"]=commandId; ack["note"]="use_config_topic"; String j; serializeJson(ack,j); mqttClient.publishStatus(j.c_str()); }
         StatusLed::triggerMessageFlash();
         debugPrint("INFO", "CMD", "equipment_set: configure via forgekey/<mac>/config");
         return;
@@ -562,7 +562,7 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
         BleEquipment::clearTags();
 #endif
 
-        { StaticJsonDocument<96> ack; ack["cmd_ack"]="forget_ble"; ack["command_id"]=commandId; String j; serializeJson(ack,j); mqttClient.publishStatus(j.c_str()); }
+        { JsonDocument ack; ack["cmd_ack"]="forget_ble"; ack["command_id"]=commandId; String j; serializeJson(ack,j); mqttClient.publishStatus(j.c_str()); }
         StatusLed::triggerMessageFlash();
         debugPrint("INFO", "CMD", "BLE data cleared from NVS");
         return;
@@ -581,7 +581,7 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
 //   {"cmd": "set_wifi", "wifi": {"profiles": [...]}} -> two-phase WiFi desired-state
 //   {"provisioning_token": "...", "valid_after": "..."}  -> token rotation
 static void onConfigMessage(const char* topic, const uint8_t* payload, unsigned int length) {
-    DynamicJsonDocument doc(4096);
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, payload, length);
     if (!err) {
         const char* cmd = doc["cmd"] | "";
@@ -597,7 +597,7 @@ static void onConfigMessage(const char* topic, const uint8_t* payload, unsigned 
                 doc.as<JsonVariantConst>(),
                 [](unsigned long timeoutMs) { return mqttClient.probeReachability(timeoutMs); },
                 detail);
-            StaticJsonDocument<192> ack;
+            JsonDocument ack;
             ack["cmd_ack"] = cmd;
             ack["command_id"] = commandId;
             ack["ok"] = ok;
@@ -641,7 +641,7 @@ static void onConfigMessage(const char* topic, const uint8_t* payload, unsigned 
                 bleDetail = "not_requested";
             }
 
-            StaticJsonDocument<256> ack;
+            JsonDocument ack;
             ack["cmd_ack"] = "desired_state";
             ack["command_id"] = commandId;
             ack["ok"] = wifiOk && bleOk;
@@ -672,12 +672,12 @@ static void onConfigMessage(const char* topic, const uint8_t* payload, unsigned 
             BleEquipment::setEnabled(cfg.equipmentEnabled);
 #endif
 
-            StaticJsonDocument<512> ack;
+            JsonDocument ack;
             ack["cmd_ack"] = "set_ble";
             ack["command_id"] = commandId;
             ack["ok"] = ok;
             ack["detail"] = detail;
-            JsonObject ble = ack.createNestedObject("ble");
+            JsonObject ble = ack["ble"].to<JsonObject>();
             ble["scanner"] = cfg.scannerEnabled;
             ble["beacon"] = cfg.beaconEnabled;
             ble["relay"] = cfg.relayEnabled;
@@ -698,11 +698,11 @@ static void onConfigMessage(const char* topic, const uint8_t* payload, unsigned 
 #ifndef FORGEKEY_DISABLE_BLE_EQUIPMENT
         if (strcmp(cmd, "set_equipment") == 0) {
             if (BleEquipment::setTagsFromJson(payload, length)) {
-                { StaticJsonDocument<96> ack; ack["cmd_ack"]="set_equipment"; ack["command_id"]=commandId; ack["ok"]=true; String j; serializeJson(ack,j); mqttClient.publishStatus(j.c_str()); }
+                { JsonDocument ack; ack["cmd_ack"]="set_equipment"; ack["command_id"]=commandId; ack["ok"]=true; String j; serializeJson(ack,j); mqttClient.publishStatus(j.c_str()); }
                 StatusLed::triggerMessageFlash();
                 debugPrint("INFO", "CFG", "equipment tags updated");
             } else {
-                { StaticJsonDocument<96> ack; ack["cmd_ack"]="set_equipment"; ack["command_id"]=commandId; ack["ok"]=false; String j; serializeJson(ack,j); mqttClient.publishStatus(j.c_str()); }
+                { JsonDocument ack; ack["cmd_ack"]="set_equipment"; ack["command_id"]=commandId; ack["ok"]=false; String j; serializeJson(ack,j); mqttClient.publishStatus(j.c_str()); }
                 debugPrint("WARN", "CFG", "set_equipment: parse error");
             }
             return;

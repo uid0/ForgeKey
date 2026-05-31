@@ -101,7 +101,7 @@ const char* schemaForStatusPayload(JsonObjectConst obj) {
 }
 
 bool enrichJsonPayload(const char* jsonPayload, const char* schemaVersion, String& enriched) {
-    StaticJsonDocument<4096> doc;
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, jsonPayload ? jsonPayload : "{}");
     if (err || !doc.is<JsonObject>()) return false;
 
@@ -777,7 +777,7 @@ bool MqttClient::publishStatus(const char* jsonPayload) {
     if (!jsonPayload) jsonPayload = "{}";
 
     String enriched;
-    StaticJsonDocument<4096> doc;
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, jsonPayload);
     if (!err && doc.is<JsonObject>()) {
         JsonObject obj = doc.as<JsonObject>();

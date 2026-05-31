@@ -55,7 +55,7 @@ static void saveTagsToNvs();
 
 // Set tags from raw JSON payload. Returns true on success.
 static bool parseTagsFromJson(const uint8_t* payload, unsigned int length) {
-    StaticJsonDocument<1024> doc;
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, payload, length);
     if (err) return false;
 
@@ -119,12 +119,12 @@ void loadTagsFromNvs() {
 
 // Save tags to NVS
 void saveTagsToNvs() {
-    StaticJsonDocument<1024> doc;
+    JsonDocument doc;
     doc["cmd"] = "set_equipment";
-    JsonArray tags = doc.createNestedArray("tags");
+    JsonArray tags = doc["tags"].to<JsonArray>();
     for (int i = 0; i < g_tagCount; i++) {
         if (!g_tags[i].active) continue;
-        JsonObject t = tags.createNestedObject();
+        JsonObject t = tags.add<JsonObject>();
         t["name"] = g_tags[i].name;
         if (g_tags[i].mac[0]) t["mac"] = g_tags[i].mac;
         if (g_tags[i].ibeacon_uuid[0]) t["ibeacon_uuid"] = g_tags[i].ibeacon_uuid;
@@ -170,7 +170,7 @@ void reportEvent(int tagIdx, const char* event, int8_t rssi) {
     if (!mqttClient.isConnected()) return;
 
     EquipmentTag* t = &g_tags[tagIdx];
-    StaticJsonDocument<256> doc;
+    JsonDocument doc;
     doc["cmd_ack"] = "equipment";
     doc["event"] = event;
     doc["name"] = t->name;

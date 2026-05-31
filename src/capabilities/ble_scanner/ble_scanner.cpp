@@ -268,12 +268,12 @@ void tickFn() {
 
         if (g_deviceCount > 0 && mqttClient.isConnected()) {
             // Build JSON payload
-            StaticJsonDocument<2048> doc;
-            JsonArray devices = doc.createNestedArray("devices");
+            JsonDocument doc;
+            JsonArray devices = doc["devices"].to<JsonArray>();
 
             for (int i = 0; i < g_deviceCount; i++) {
                 BleDevice* dev = &g_devices[i];
-                JsonObject entry = devices.createNestedObject();
+                JsonObject entry = devices.add<JsonObject>();
                 entry["id"] = dev->publicId;
                 if (cfg.rawMacEnabled) entry["mac"] = dev->mac;
                 entry["rssi"] = dev->rssi;

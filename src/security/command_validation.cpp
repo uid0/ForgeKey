@@ -229,7 +229,7 @@ bool validateJwt(JsonVariantConst doc, const String& deviceMac, const char* toke
     }
     payload[payloadLen] = '\0';
 
-    StaticJsonDocument<768> claims;
+    JsonDocument claims;
     if (deserializeJson(claims, reinterpret_cast<const char*>(payload), payloadLen)) {
         error = "malformed_jwt";
         return false;

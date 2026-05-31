@@ -155,7 +155,7 @@ fail:
     return false;
 }
 
-JsonVariantConst responsePolicy(const DynamicJsonDocument& resp) {
+JsonVariantConst responsePolicy(const JsonDocument& resp) {
     JsonVariantConst policy = resp["policy"];
     if (policy.isNull()) {
         return resp.as<JsonVariantConst>();
@@ -349,7 +349,7 @@ bool Provisioning::enrollDevice(const char* host, uint16_t port,
     }
 
     // Build the JSON metadata part once so we can compute Content-Length.
-    DynamicJsonDocument meta(4096);
+    JsonDocument meta;
     esp_chip_info_t chipInfo{};
     esp_chip_info(&chipInfo);
 
@@ -384,12 +384,12 @@ bool Provisioning::enrollDevice(const char* host, uint16_t port,
                       esp_err_to_name(flashIdErr));
     }
 
-    JsonObject chipInfoJson = meta.createNestedObject("chip_info");
+    JsonObject chipInfoJson = meta["chip_info"].to<JsonObject>();
     chipInfoJson["model"] = chipModelName(chipInfo.model);
     chipInfoJson["cores"] = chipInfo.cores;
     chipInfoJson["revision"] = chipInfo.revision;
     chipInfoJson["full_revision"] = chipInfo.full_revision;
-    addChipFeatures(chipInfoJson.createNestedObject("features"), chipInfo.features);
+    addChipFeatures(chipInfoJson["features"].to<JsonObject>(), chipInfo.features);
 
     Serial.printf("enroll: chip_info model=%s cores=%u revision=%u full_revision=%u "
                   "unique_chip_id=%s flash_memory_id=%s csr_len=%u public_key_len=%u\n",
@@ -512,7 +512,7 @@ bool Provisioning::enrollDevice(const char* host, uint16_t port,
         return false;
     }
 
-    DynamicJsonDocument resp(12288);
+    JsonDocument resp;
     DeserializationError err = deserializeJson(resp, body);
     if (err) {
         Serial.printf("enroll: JSON parse error: %s\n", err.c_str());

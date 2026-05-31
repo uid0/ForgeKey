@@ -90,8 +90,8 @@ void parseList(JsonVariantConst value, char dest[][kBleMacLen + 1], uint8_t& cou
 
 void save() {
     if (g_loading) return;
-    StaticJsonDocument<1024> doc;
-    JsonObject ble = doc.createNestedObject("ble");
+    JsonDocument doc;
+    JsonObject ble = doc["ble"].to<JsonObject>();
     ble["scanner"] = g_config.scannerEnabled;
     ble["beacon"] = g_config.beaconEnabled;
     ble["relay"] = g_config.relayEnabled;
@@ -102,9 +102,9 @@ void save() {
     ble["raw_mac_enabled"] = g_config.rawMacEnabled;
     ble["identity_mode"] = g_config.identityMode;
     ble["site_namespace"] = g_config.siteNamespace;
-    JsonArray allowlist = ble.createNestedArray("allowlist");
+    JsonArray allowlist = ble["allowlist"].to<JsonArray>();
     for (uint8_t i = 0; i < g_config.allowlistCount; ++i) allowlist.add(g_config.allowlist[i]);
-    JsonArray denylist = ble.createNestedArray("denylist");
+    JsonArray denylist = ble["denylist"].to<JsonArray>();
     for (uint8_t i = 0; i < g_config.denylistCount; ++i) denylist.add(g_config.denylist[i]);
 
     String json;
@@ -137,7 +137,7 @@ void begin() {
     bool loaded = nvs_get_str(handle, kNvsKey, buf, &len) == ESP_OK;
     nvs_close(handle);
     if (loaded) {
-        StaticJsonDocument<1024> doc;
+        JsonDocument doc;
         if (!deserializeJson(doc, buf, len)) {
             String ignored;
             g_loading = true;
@@ -211,7 +211,7 @@ bool apply(JsonVariantConst desired, String& detail) {
 }
 
 void appendConfigJson(String& out) {
-    StaticJsonDocument<384> doc;
+    JsonDocument doc;
     doc["scanner"] = g_config.scannerEnabled;
     doc["beacon"] = g_config.beaconEnabled;
     doc["relay"] = g_config.relayEnabled;

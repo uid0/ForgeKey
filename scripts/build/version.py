@@ -185,7 +185,7 @@ if env is not None:
     VERSION = METADATA["version"]
     COMMIT = METADATA["git_short_sha"] + ("-dirty" if METADATA["dirty"] else "")
     BUILD_TS = METADATA["timestamp"]
-    GENERATED_DIR = Path(env["BUILD_DIR"]) / "generated"  # noqa: F821
+    GENERATED_DIR = Path(env.subst("$BUILD_DIR")) / "generated"  # noqa: F821
     GENERATED_HEADER = GENERATED_DIR / "forgekey_build_metadata.h"
 
     def _inject_flags():

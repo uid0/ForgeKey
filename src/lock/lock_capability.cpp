@@ -58,7 +58,7 @@ bool publishTelemetry() {
         default: triggerStr = "unknown"; break;
     }
 
-    StaticJsonDocument<384> doc;
+    JsonDocument doc;
     doc["mac"] = g_macAddress;
     doc["secure"] = tel.secure;
     doc["item_present"] = !tel.ir_broken;

@@ -325,7 +325,7 @@ bool loadProfilesInternal(WifiProfile* profiles, size_t maxProfiles, size_t& cou
         String json = prefs.getString(kProfilesKey, "");
         prefs.end();
         if (json.length()) {
-            DynamicJsonDocument doc(4096);
+            JsonDocument doc;
             if (!deserializeJson(doc, json)) {
                 JsonArrayConst arr = doc["profiles"].as<JsonArrayConst>();
                 for (JsonVariantConst item : arr) {
@@ -396,7 +396,7 @@ bool loadProfiles(WifiProfile* profiles, size_t maxProfiles, size_t& count) {
 }
 
 bool saveProfiles(const WifiProfile* profiles, size_t count) {
-    DynamicJsonDocument doc(4096);
+    JsonDocument doc;
     JsonArray arr = doc["profiles"].to<JsonArray>();
     for (size_t i = 0; i < count && i < kMaxStoredProfiles; ++i) {
         profileToJson(profiles[i], arr.add<JsonObject>(), true);

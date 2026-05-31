@@ -185,7 +185,7 @@ static void handleRoot() {
 }
 
 static void handleApiStatus() {
-    StaticJsonDocument<384> doc;
+    JsonDocument doc;
     doc["state"] = LockCapability::getStateName();
     doc["mac"] = WiFi.macAddress();
 

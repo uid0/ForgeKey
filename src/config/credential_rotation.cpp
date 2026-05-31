@@ -13,7 +13,7 @@ String topicFor(const String& mac) {
 void onConfigMessage(const char* topic, const uint8_t* payload, unsigned int length) {
     Serial.printf("config: message on %s (%u bytes)\n", topic, length);
 
-    StaticJsonDocument<384> doc;
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, payload, length);
     if (err) {
         Serial.printf("config: parse error: %s\n", err.c_str());

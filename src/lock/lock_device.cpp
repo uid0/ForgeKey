@@ -155,7 +155,7 @@ bool validateJwt(const char* token, long timestamp, const char* expectedCmd) {
     }
     payload[payloadLen] = '\0';
 
-    StaticJsonDocument<256> doc;
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, reinterpret_cast<const char*>(payload), payloadLen);
     if (err) {
         Serial.printf("[LOCK] signed command payload parse failed: %s\n", err.c_str());

@@ -195,7 +195,7 @@ void syncQueueToMqtt() {
 
         String topic = String("forgekey/") + g_queue[idx].dst + "/ble/relay";
 
-        StaticJsonDocument<512> doc;
+        JsonDocument doc;
         doc["src"] = g_queue[idx].src;
         doc["topic"] = g_queue[idx].topic;
         doc["payload"] = g_queue[idx].payload;

@@ -59,7 +59,7 @@ SubsystemState* stateFor(Subsystem subsystem) {
 }
 
 void publishWarning(Subsystem subsystem, const SubsystemState& state, const char* action) {
-    StaticJsonDocument<256> doc;
+    JsonDocument doc;
     doc["event"] = "watchdog_warning";
     doc["subsystem"] = state.name;
     doc["action"] = action ? action : "warn";
