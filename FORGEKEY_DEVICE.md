@@ -6,6 +6,21 @@ keeps itself updated, and ships periodic photos for the OMS area-imagery feed.
 This document covers fo-0z9 (provisioning, periodic photo upload, OTA). For
 the people-counting pipeline see [PEOPLE_COUNTER.md](PEOPLE_COUNTER.md).
 
+## Hardware artifact index
+
+Repeatable hardware documentation now lives under [`hardware/`](hardware/).
+Each device class has a machine-readable `pin-manifest.json`, rendered
+`wiring.svg`, BOM, harness notes, and simulation notes. Wokwi projects are
+included where community simulator parts can model the relevant hardware.
+
+| Device class | Hardware directory | Simulation coverage |
+|---|---|---|
+| People counter | [`hardware/people-counter/`](hardware/people-counter/) | SVG/pin review only; XIAO ESP32-S3 Sense camera is not modeled. |
+| Temperature sensor | [`hardware/temperature-sensor/`](hardware/temperature-sensor/) | Wokwi DHT22 stand-in for DHT21/AM2301 on GPIO 2. |
+| Cabinet lock | [`hardware/cabinet-lock/`](hardware/cabinet-lock/) | Wokwi GPIO logic model for solenoid indicator and supervised inputs. |
+| ePaper display | [`hardware/epaper-display/`](hardware/epaper-display/) | SVG/pin review only; Seeed UC8179 7.5 in panel is not modeled. |
+| Future modules | [`hardware/future-modules/`](hardware/future-modules/) | Template for new device-class artifacts. |
+
 ## High-level flow
 
 ```

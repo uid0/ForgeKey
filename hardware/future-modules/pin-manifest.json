@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "device_class": "replace-me",
+  "firmware_env": "replace-me",
+  "board": {
+    "id": "replace-me",
+    "name": "replace-me",
+    "logic_voltage": "3.3V",
+    "input_power": "replace-me"
+  },
+  "connectors": [],
+  "pins": [],
+  "power": [],
+  "simulation": {
+    "wokwi": "unknown",
+    "reason": "Complete this before releasing the module."
+  }
+}

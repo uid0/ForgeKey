@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "device_class": "epaper-display",
+  "firmware_env": "seeed_xiao_epaper",
+  "board": {
+    "id": "seeed_xiao_epaper",
+    "name": "Seeed XIAO 7.5 inch ePaper Panel SKU 6416 with XIAO ESP32-C3",
+    "logic_voltage": "3.3V",
+    "battery": "2000 mAh LiPo on driver board; battery ADC not routed to XIAO socket"
+  },
+  "connectors": [
+    {"id": "J1", "name": "XIAO socket", "type": "Seeed XIAO castellated/socket footprint", "notes": "Use XIAO D-labels for wiring and firmware macros."},
+    {"id": "J2", "name": "ePaper FPC", "type": "factory panel FPC", "notes": "Factory-connected to UC8179 800x480 mono panel."},
+    {"id": "J3", "name": "Battery", "type": "JST battery lead", "pinout": ["BAT+", "BAT-"]}
+  ],
+  "pins": [
+    {"gpio": 2, "xiao_label": "D0", "signal": "epaper_rst", "direction": "output", "connector": "J1"},
+    {"gpio": 3, "xiao_label": "D1", "signal": "epaper_cs", "direction": "output", "bus": "spi", "connector": "J1"},
+    {"gpio": 4, "xiao_label": "D2", "signal": "epaper_busy", "direction": "input", "connector": "J1"},
+    {"gpio": 5, "xiao_label": "D3", "signal": "epaper_dc", "direction": "output", "connector": "J1"},
+    {"gpio": 8, "xiao_label": "D8", "signal": "spi_sck", "direction": "output", "bus": "spi", "connector": "J1"},
+    {"gpio": 9, "xiao_label": "D9", "signal": "spi_miso", "direction": "input", "bus": "spi", "connector": "J1"},
+    {"gpio": 10, "xiao_label": "D10", "signal": "spi_mosi", "direction": "output", "bus": "spi", "connector": "J1"}
+  ],
+  "power": [
+    {"net": "BAT_4V2", "source": "LiPo/charger", "load": "driver board regulator"},
+    {"net": "3V3", "source": "driver board regulator", "load": "XIAO ESP32-C3 and UC8179 logic"},
+    {"net": "GND", "source": "common", "load": "XIAO, panel driver, battery negative"}
+  ],
+  "simulation": {
+    "wokwi": "unsupported",
+    "reason": "Wokwi does not model the Seeed SKU 6416 UC8179 7.5 inch ePaper driver board or its high-voltage panel waveforms."
+  }
+}

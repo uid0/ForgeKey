@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "device_class": "people-counter",
+  "firmware_env": "seeed_xiao_esp32s3",
+  "board": {
+    "id": "seeed_xiao_esp32s3_sense",
+    "name": "Seeed Studio XIAO ESP32-S3 Sense",
+    "logic_voltage": "3.3V",
+    "input_power": "USB-C 5V or regulated 5V on 5V pin"
+  },
+  "connectors": [
+    {
+      "id": "J1",
+      "name": "XIAO ESP32-S3 Sense camera mezzanine",
+      "type": "factory FPC/mezzanine",
+      "notes": "Camera is the integrated OV3660 module supplied with the Sense board. Do not re-pin manually."
+    },
+    {
+      "id": "J2",
+      "name": "Power",
+      "type": "USB-C or solder pads",
+      "pins": ["5V", "GND"],
+      "notes": "Use the same ground reference for any fixture status LED or external power supply."
+    }
+  ],
+  "pins": [
+    {"gpio": 10, "signal": "camera_xclk", "direction": "output", "pull": "none", "connector": "J1"},
+    {"gpio": 13, "signal": "camera_pclk", "direction": "input", "pull": "none", "connector": "J1"},
+    {"gpio": 38, "signal": "camera_vsync", "direction": "input", "pull": "none", "connector": "J1"},
+    {"gpio": 47, "signal": "camera_href", "direction": "input", "pull": "none", "connector": "J1"},
+    {"gpio": 15, "signal": "camera_d0_y2", "direction": "input", "pull": "none", "connector": "J1"},
+    {"gpio": 17, "signal": "camera_d1_y3", "direction": "input", "pull": "none", "connector": "J1"},
+    {"gpio": 18, "signal": "camera_d2_y4", "direction": "input", "pull": "none", "connector": "J1"},
+    {"gpio": 16, "signal": "camera_d3_y5", "direction": "input", "pull": "none", "connector": "J1"},
+    {"gpio": 14, "signal": "camera_d4_y6", "direction": "input", "pull": "none", "connector": "J1"},
+    {"gpio": 12, "signal": "camera_d5_y7", "direction": "input", "pull": "none", "connector": "J1"},
+    {"gpio": 11, "signal": "camera_d6_y8", "direction": "input", "pull": "none", "connector": "J1"},
+    {"gpio": 48, "signal": "camera_d7_y9", "direction": "input", "pull": "none", "connector": "J1"},
+    {"gpio": 40, "signal": "camera_sda", "direction": "bidirectional", "pull": "camera module pull-up", "bus": "camera_sccb", "connector": "J1"},
+    {"gpio": 39, "signal": "camera_scl", "direction": "output", "pull": "camera module pull-up", "bus": "camera_sccb", "connector": "J1"},
+    {"gpio": 21, "signal": "onboard_status_led", "direction": "output", "active": "low", "connector": "on-board"}
+  ],
+  "power": [
+    {"net": "5V", "source": "USB-C or regulated 5V", "load": "XIAO ESP32-S3 Sense"},
+    {"net": "3V3", "source": "XIAO regulator", "load": "OV3660 camera module"},
+    {"net": "GND", "source": "common", "load": "MCU and camera"}
+  ],
+  "simulation": {
+    "wokwi": "unsupported",
+    "reason": "Wokwi does not model the XIAO ESP32-S3 Sense OV3660 camera pipeline or TensorFlow Lite inference path."
+  }
+}
