@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgekey.local/schemas/epaper.v1.schema.json",
+  "title": "ePaper health / command status",
+  "description": "Schema contract for ePaper health / command status payloads produced by ForgeKey firmware and consumed by OMS.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {
+      "const": "forgekey.epaper.v1",
+      "description": "Immutable contract identifier for this payload shape."
+    },
+    "display_id": {
+      "type": "string"
+    },
+    "firmware_version": {
+      "type": "string"
+    },
+    "last_image_etag": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "unchanged_count": {
+      "type": "integer"
+    },
+    "failure_count": {
+      "type": "integer"
+    },
+    "wake_interval_min": {
+      "type": "integer"
+    },
+    "configured_wake_min": {
+      "type": "integer"
+    },
+    "render_status": {
+      "type": "string"
+    },
+    "cycle_result": {
+      "type": "string"
+    },
+    "last_http_status": {
+      "type": "integer"
+    },
+    "retired": {
+      "type": "boolean"
+    },
+    "battery": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "command": {
+      "type": "string"
+    },
+    "state": {
+      "type": "string"
+    },
+    "command_id": {
+      "type": "string"
+    },
+    "error": {
+      "type": "string"
+    },
+    "hardware": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "ota": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "required": [
+    "schema_version"
+  ],
+  "x-compatibility-notes": [
+    "OMS consumers must accept unknown additional properties for additive firmware releases.",
+    "OMS consumers should route by schema_version before applying payload-specific validation.",
+    "A missing schema_version means a pre-contract firmware payload; accept only during the migration window and treat it as v0 legacy.",
+    "HTTP endpoints and MQTT consumers share the same schema_version rule even when transport-specific fields differ."
+  ]
+}

@@ -5,6 +5,7 @@
 
 #include "mqtt_handler.h"
 #include "oms_ca.h"
+#include "schema_contract.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -56,7 +57,7 @@ static char s_client_key_pem[2048] = {0};
 /* Last reconnect attempt time (seconds since epoch) */
 static time_t s_last_reconnect = 0;
 static const char kUnexpectedDisconnectState[] =
-    "{\"online\":false,\"reason\":\"unexpected_disconnect\"}";
+    "{\"schema_version\":\"" FORGEKEY_SCHEMA_STATUS_V1 "\",\"online\":false,\"reason\":\"unexpected_disconnect\"}";
 
 #define MQTT_OUTBOUND_QUEUE_SIZE 8
 #define MQTT_OUTBOUND_TOPIC_MAX FORGEKEY_MQTT_MAX_TOPIC
@@ -155,16 +156,16 @@ static void build_state_payload(char* dest, size_t dest_size, bool online,
     }
 
     if (ip && ip[0]) {
-        snprintf(dest, dest_size, "{\"online\":%s,\"ip\":\"%s\"}",
+        snprintf(dest, dest_size, "{\"schema_version\":\"" FORGEKEY_SCHEMA_STATUS_V1 "\",\"online\":%s,\"ip\":\"%s\"}",
                  online ? "true" : "false", ip);
         return;
     }
     if (reason && reason[0]) {
-        snprintf(dest, dest_size, "{\"online\":%s,\"reason\":\"%s\"}",
+        snprintf(dest, dest_size, "{\"schema_version\":\"" FORGEKEY_SCHEMA_STATUS_V1 "\",\"online\":%s,\"reason\":\"%s\"}",
                  online ? "true" : "false", reason);
         return;
     }
-    snprintf(dest, dest_size, "{\"online\":%s}",
+    snprintf(dest, dest_size, "{\"schema_version\":\"" FORGEKEY_SCHEMA_STATUS_V1 "\",\"online\":%s}",
              online ? "true" : "false");
 }
 

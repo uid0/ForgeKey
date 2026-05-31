@@ -7,6 +7,20 @@
 #include <Client.h>
 #include <functional>
 
+// Schema contract identifiers shared by firmware publishers and OMS validators.
+// Increment the suffix only for breaking schema changes; additive optional
+// fields remain on the same schema version.
+#define FORGEKEY_SCHEMA_STATUS_V1 "forgekey.status.v1"
+#define FORGEKEY_SCHEMA_HEALTH_V1 "forgekey.health.v1"
+#define FORGEKEY_SCHEMA_COMMAND_ACK_V1 "forgekey.command_ack.v1"
+#define FORGEKEY_SCHEMA_OTA_STATUS_V1 "forgekey.ota_status.v1"
+#define FORGEKEY_SCHEMA_OCCUPANCY_V1 "forgekey.occupancy.v1"
+#define FORGEKEY_SCHEMA_TEMPERATURE_V1 "forgekey.temperature.v1"
+#define FORGEKEY_SCHEMA_LOCK_STATUS_V1 "forgekey.lock_status.v1"
+#define FORGEKEY_SCHEMA_EPAPER_V1 "forgekey.epaper.v1"
+#define FORGEKEY_SCHEMA_BLE_V1 "forgekey.ble.v1"
+#define FORGEKEY_SCHEMA_DIAGNOSTICS_V1 "forgekey.diagnostics.v1"
+
 class MqttClient {
 public:
     using MessageHandler = std::function<void(const char* topic,

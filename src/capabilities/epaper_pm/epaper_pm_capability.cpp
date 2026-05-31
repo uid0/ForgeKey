@@ -75,6 +75,7 @@
 #include "../../ota/ota_updater.h"
 #include "../../boards/board_manifest.h"
 #include "../registry.h"
+#include "../../mqtt/mqtt_client.h"
 
 namespace EPaperPmCapability {
 
@@ -351,6 +352,7 @@ void postCommandStatus(const DesiredState &desired, const char *state, const cha
     http.addHeader("Content-Type", "application/json");
 
     JsonDocument body;
+    body["schema_version"] = FORGEKEY_SCHEMA_EPAPER_V1;
     body["command"] = commandName(desired);
     body["state"] = state;
     if (desired.commandId.length() > 0) body["command_id"] = desired.commandId;
@@ -567,7 +569,7 @@ void postOtaStatus(const char *state, const char *version, int progress, const c
     const String url = absUrl(String("/api/forgekey/epaper/" + g_displayId + "/firmware/status/").c_str());
     http.begin(url);
     http.addHeader("Content-Type", "application/json");
-    String payload = "{\"state\":\"";
+    String payload = "{\"schema_version\":\"" FORGEKEY_SCHEMA_OTA_STATUS_V1 "\",\"state\":\"";
     payload += state ? state : "";
     payload += "\"";
     if (version && *version) {
@@ -780,7 +782,8 @@ bool postHealth(const char *cycleResult) {
     http.addHeader("Content-Type", "application/json");
 
     String payload = "{";
-    payload += "\"display_id\":\"" + g_displayId + "\"";
+    payload += "\"schema_version\":\"" FORGEKEY_SCHEMA_EPAPER_V1 "\"";
+    payload += ",\"display_id\":\"" + g_displayId + "\"";
     payload += ",\"firmware_version\":\"";
     payload += FORGEKEY_FIRMWARE_VERSION;
     payload += "\"";
