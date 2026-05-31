@@ -1,6 +1,7 @@
 #include "registry.h"
 #include "build/build_metadata.h"
 #include <Arduino.h>
+#include "../mqtt/mqtt_client.h"
 
 namespace {
 Capability* g_head = nullptr;
@@ -74,8 +75,8 @@ void tickAll() {
 
 String announcementJson(const char* firmwareVersion) {
     String out;
-    out.reserve(512);
-    out += "{\"capabilities\":[";
+    out.reserve(192);
+    out += "{\"schema_version\":\"" FORGEKEY_SCHEMA_STATUS_V1 "\",\"capabilities\":[";
     bool first = true;
     for (Capability* c = g_head; c; c = c->next) {
         if (!c->active) continue;

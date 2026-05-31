@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgekey.local/schemas/command.v1.schema.json",
+  "title": "Command request",
+  "description": "Schema contract for Command request payloads produced by OMS and consumed by ForgeKey firmware.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {
+      "const": "forgekey.command.v1"
+    },
+    "cmd": {
+      "type": "string"
+    },
+    "command_id": {
+      "type": "string"
+    },
+    "jwt": {
+      "type": "string"
+    },
+    "timestamp": {
+      "type": "integer"
+    },
+    "actor": {
+      "type": "string"
+    },
+    "operator_id": {
+      "type": "string"
+    },
+    "operator": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "duration_s": {
+      "type": "integer"
+    },
+    "action": {
+      "type": "string"
+    },
+    "wifi": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "ble": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "cmd"
+  ],
+  "x-compatibility-notes": [
+    "OMS consumers must accept unknown additional properties for additive firmware releases.",
+    "OMS consumers should route by schema_version before applying payload-specific validation.",
+    "A missing schema_version means a pre-contract firmware payload; accept only during the migration window and treat it as v0 legacy.",
+    "Firmware must reject unsupported safety-sensitive commands with a command_ack.v1 error instead of ignoring them.",
+    "Command producers should keep command_id stable across retries so firmware can de-duplicate."
+  ]
+}

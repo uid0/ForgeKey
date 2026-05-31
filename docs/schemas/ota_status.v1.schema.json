@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgekey.local/schemas/ota_status.v1.schema.json",
+  "title": "OTA status",
+  "description": "Schema contract for OTA status payloads produced by ForgeKey firmware and consumed by OMS.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {
+      "const": "forgekey.ota_status.v1",
+      "description": "Immutable contract identifier for this payload shape."
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "received",
+        "downloading",
+        "applying",
+        "applied",
+        "failed",
+        "rejected",
+        "deferred",
+        "stable",
+        ""
+      ]
+    },
+    "version": {
+      "type": "string"
+    },
+    "progress": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "error": {
+      "type": "string"
+    },
+    "ts": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "hardware": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "ota": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "wifi": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "clock_valid": {
+      "type": "boolean"
+    },
+    "ntp_synced": {
+      "type": "boolean"
+    },
+    "epoch_time": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "uptime_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "last_ntp_sync_age_s": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    }
+  },
+  "required": [
+    "schema_version",
+    "state"
+  ],
+  "x-compatibility-notes": [
+    "OMS consumers must accept unknown additional properties for additive firmware releases.",
+    "OMS consumers should route by schema_version before applying payload-specific validation.",
+    "A missing schema_version means a pre-contract firmware payload; accept only during the migration window and treat it as v0 legacy.",
+    "OMS should consider state values additive; unknown states are non-terminal unless paired with error."
+  ]
+}

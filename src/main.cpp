@@ -212,12 +212,18 @@ static void publishStatusSnapshot(const char* requestedCmd, const char* commandI
     if (capsJson.length() >= 2 && capsJson[0] == '{' &&
         capsJson[capsJson.length() - 1] == '}') {
         capsInner = capsJson.substring(1, capsJson.length() - 1);
+        if (capsInner.startsWith("\"schema_version\"")) {
+            int firstComma = capsInner.indexOf(',');
+            if (firstComma >= 0) {
+                capsInner = capsInner.substring(firstComma + 1);
+            }
+        }
     } else {
         capsInner = "";
     }
     String payload;
     payload.reserve(320);
-    payload += "{\"cmd_ack\":\"status\"";
+    payload += "{\"schema_version\":\"" FORGEKEY_SCHEMA_COMMAND_ACK_V1 "\",\"cmd_ack\":\"status\"";
     payload += ",\"command_id\":\"";
     payload += (commandId ? commandId : "");
     payload += "\"";
@@ -279,7 +285,7 @@ static void publishStatusSnapshot(const char* requestedCmd, const char* commandI
 static void publishUnknownCommandAck(const char* cmd, const char* commandId) {
     String payload;
     payload.reserve(64 + strlen(cmd ? cmd : ""));
-    payload += "{\"cmd_ack\":\"";
+    payload += "{\"schema_version\":\"" FORGEKEY_SCHEMA_COMMAND_ACK_V1 "\",\"cmd_ack\":\"";
     payload += (cmd ? cmd : "");
     payload += "\",\"command_id\":\"";
     payload += (commandId ? commandId : "");

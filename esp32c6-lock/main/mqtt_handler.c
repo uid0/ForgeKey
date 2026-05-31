@@ -5,6 +5,7 @@
 
 #include "mqtt_handler.h"
 #include "oms_ca.h"
+#include "schema_contract.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -57,8 +58,8 @@ static char s_client_key_pem[2048] = {0};
 
 /* Last reconnect attempt time (seconds since epoch) */
 static time_t s_last_reconnect = 0;
-static char s_unexpected_disconnect_state[256] =
-    "{\"online\":false,\"reason\":\"unexpected_disconnect\"}";
+static const char kUnexpectedDisconnectState[] =
+    "{\"schema_version\":\"" FORGEKEY_SCHEMA_STATUS_V1 "\",\"online\":false,\"reason\":\"unexpected_disconnect\"}";
 
 #define MQTT_OUTBOUND_QUEUE_SIZE 8
 #define MQTT_OUTBOUND_TOPIC_MAX FORGEKEY_MQTT_MAX_TOPIC
@@ -163,18 +164,19 @@ static void build_state_payload(char* dest, size_t dest_size, bool online,
         snprintf(dest, dest_size, "{\"online\":%s}", online ? "true" : "false");
         return;
     }
-    cJSON_AddBoolToObject(root, "online", online);
-    if (ip && ip[0]) cJSON_AddStringToObject(root, "ip", ip);
-    if (reason && reason[0]) cJSON_AddStringToObject(root, "reason", reason);
-    forgekey_build_metadata_add_json(root);
-    char* json = cJSON_PrintUnformatted(root);
-    if (json) {
-        snprintf(dest, dest_size, "%s", json);
-        cJSON_free(json);
-    } else {
-        snprintf(dest, dest_size, "{\"online\":%s}", online ? "true" : "false");
+
+    if (ip && ip[0]) {
+        snprintf(dest, dest_size, "{\"schema_version\":\"" FORGEKEY_SCHEMA_STATUS_V1 "\",\"online\":%s,\"ip\":\"%s\"}",
+                 online ? "true" : "false", ip);
+        return;
     }
-    cJSON_Delete(root);
+    if (reason && reason[0]) {
+        snprintf(dest, dest_size, "{\"schema_version\":\"" FORGEKEY_SCHEMA_STATUS_V1 "\",\"online\":%s,\"reason\":\"%s\"}",
+                 online ? "true" : "false", reason);
+        return;
+    }
+    snprintf(dest, dest_size, "{\"schema_version\":\"" FORGEKEY_SCHEMA_STATUS_V1 "\",\"online\":%s}",
+             online ? "true" : "false");
 }
 
 static void current_ip_string(char* dest, size_t dest_size) {
