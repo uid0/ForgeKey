@@ -164,9 +164,22 @@ ForgeKey ships three device variants from one tree:
 These binaries are **not interchangeable**. Dispatch the right image for the
 target hardware and firmware family.
 
-### 2.1 Bump the version
+### 2.1 Bump the version and release metadata
+
+Every release artifact must have a unique `FORGEKEY_BUILD_ID`. The build
+metadata generator derives one from target environment, firmware version, git
+SHA, dirty flag, build timestamp, release channel, and signing key ID. CI or a
+release engineer may override it with `FORGEKEY_BUILD_ID`, but never reuse a
+build ID across two different `.bin` artifacts.
+
+Set the release metadata before building production artifacts:
 
 ```bash
+export FORGEKEY_RELEASE_CHANNEL=<dev|staging|production>
+export FORGEKEY_SIGNING_KEY_ID=<oms-signing-key-id>
+# Optional only when CI assigns immutable artifact IDs:
+# export FORGEKEY_BUILD_ID=<globally-unique-artifact-id>
+
 # Edit src/provisioning/device_config.h, bump FORGEKEY_FIRMWARE_VERSION.
 # If shipping the cabinet-lock build, keep esp32c6-lock/main/device_config.h
 # in sync before building.
@@ -204,27 +217,27 @@ PlatformIO writes the Arduino build outputs to:
 
 But you almost never need that path directly. The post-build hook
 (`scripts/build/version.py`) automatically copies the merged binary to a
-versioned artifact path keyed on the variant, version, and short git SHA:
+versioned artifact path keyed on the variant, version, short git SHA, and unique build ID:
 
 ```
 artifacts/
-  forgekey-people-counter-<version>-<commit>.bin
-  forgekey-people-counter-<version>-<commit>.bin.sha256
+  forgekey-people-counter-<version>-<commit>-<build-id>.bin
+  forgekey-people-counter-<version>-<commit>-<build-id>.bin.sha256
   forgekey-people-counter-latest.bin
   forgekey-people-counter-latest.bin.sha256
 
-  forgekey-temperature-sensor-<version>-<commit>.bin
-  forgekey-temperature-sensor-<version>-<commit>.bin.sha256
+  forgekey-temperature-sensor-<version>-<commit>-<build-id>.bin
+  forgekey-temperature-sensor-<version>-<commit>-<build-id>.bin.sha256
   forgekey-temperature-sensor-latest.bin
   forgekey-temperature-sensor-latest.bin.sha256
 
-  forgekey-epaper-display-<version>-<commit>.bin
-  forgekey-epaper-display-<version>-<commit>.bin.sha256
+  forgekey-epaper-display-<version>-<commit>-<build-id>.bin
+  forgekey-epaper-display-<version>-<commit>-<build-id>.bin.sha256
   forgekey-epaper-display-latest.bin
   forgekey-epaper-display-latest.bin.sha256
 ```
 
-The `.sha256` file holds the lowercase hex digest with no filename suffix
+The generated firmware also embeds the same build metadata under the `build` JSON object reported by enrollment, capability announcements, state/status snapshots, health/diagnostic reports, and OTA status payloads. The `.sha256` file holds the lowercase hex digest with no filename suffix
 — the exact shape OMS pastes into the dispatch payload's `sha256` field.
 
 `artifacts/` is gitignored — these are build outputs, not source.
@@ -263,15 +276,18 @@ In the OMS Django admin (`/admin/`):
 
 1. Navigate to **ForgeKey → Firmware Updates → Add new**.
 2. Upload the `.bin` from `artifacts/` (e.g.
-   `forgekey-people-counter-0.2.0-abcd123.bin`).
-3. Set the **version** field to match the embedded build version
+   `forgekey-people-counter-0.2.0-abcd123-<build-id>.bin`).
+3. Record the embedded **build ID** from the artifact name/CI metadata. It must
+   be unique for this binary and must match the `build.id` that devices report
+   after installation.
+4. Set the **version** field to match the embedded build version
    (semver, e.g. `0.2.0`). OMS uses this to populate the dispatch
    payload's `version` field, which the device echoes back in registration
    pings.
-4. Set the **hardware revision tag** if your fleet has multiple revs
+5. Set the **hardware revision tag** if your fleet has multiple revs
    (e.g. `esp32-s3-sense-v1`). OMS uses this when fleet-targeting to
    avoid shipping the wrong binary to incompatible hardware.
-5. **Save.** OMS computes the SHA-256, base64-encodes the ECDSA(P-256)
+6. **Save.** OMS computes the SHA-256, base64-encodes the ECDSA(P-256)
    signature using the private key from
    `FORGEKEY_FIRMWARE_SIGNING_KEY`, and stores both alongside the binary.
 

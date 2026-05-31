@@ -1,5 +1,6 @@
 #include "mqtt_client.h"
 #include "../time/time_sync.h"
+#include "build/build_metadata.h"
 #include "Arduino.h"
 
 #include <ArduinoJson.h>
@@ -155,6 +156,7 @@ String buildStatePayload(bool online, const char* ip, const char* reason) {
         payload += "\"";
     }
     ForgeKeyTime::appendJson(payload);
+    ForgeKeyBuildMetadata::appendJson(payload);
     payload += "}";
     return payload;
 }
@@ -841,7 +843,9 @@ bool MqttClient::publishLog(unsigned long timestampMs,
     payload += escapeJsonString(tag ? tag : "");
     payload += "\",\"message\":\"";
     payload += escapeJsonString(message ? message : "");
-    payload += "\"}";
+    payload += "\"";
+    ForgeKeyBuildMetadata::appendJson(payload);
+    payload += "}";
 
     bool ok = client->publish(logTopic.c_str(), payload.c_str());
     if (ok) lastPublishMs = millis();

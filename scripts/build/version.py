@@ -1,40 +1,6 @@
-"""PlatformIO extra script: version injection + artifact export.
+"""PlatformIO/ESP-IDF build metadata generator and artifact exporter."""
 
-Injects build-time identity into the firmware and copies the produced
-`firmware.bin` to a versioned artifact path that staff can hand to OMS for
-OTA dispatch.
-
-Wire-up: in `platformio.ini`, add:
-
-    extra_scripts =
-        pre:scripts/build/version.py
-        post:scripts/build/version.py
-
-The same script handles both the pre-build flag injection and the post-build
-artifact export; PlatformIO calls it twice with different `env` state.
-
-Build identity sources (each is overridable via the corresponding env var):
-
-* `FORGEKEY_FIRMWARE_VERSION`  - parsed from `src/provisioning/device_config.h`
-                                  default, or env override. Reported to OMS at
-                                  registration and used in the artifact name.
-* `FIRMWARE_GIT_COMMIT`        - short SHA from `git rev-parse --short HEAD`,
-                                  with `-dirty` suffix if the tree has uncommitted
-                                  changes. Falls back to `unknown`.
-* `FIRMWARE_BUILD_TIMESTAMP`   - Unix epoch seconds at build time. `SOURCE_DATE_EPOCH`
-                                  is honored for reproducible builds.
-
-Artifact layout (after a successful build):
-
-    artifacts/
-      forgekey-0.2.0-abcd123.bin
-      forgekey-0.2.0-abcd123.bin.sha256
-      forgekey-latest.bin            (symlink/copy)
-
-The sha256 file is plain hex on a single line — same shape OMS feeds back in
-the OTA dispatch payload, so staff can paste it verbatim.
-"""
-
+import argparse
 import hashlib
 import os
 import re
@@ -44,16 +10,16 @@ import sys
 import time
 from pathlib import Path
 
-Import("env")  # noqa: F821  (provided by PlatformIO at script time)
+try:
+    Import("env")  # noqa: F821
+except NameError:  # normal Python CLI mode for ESP-IDF/CMake
+    env = None  # type: ignore
 
-
-PROJECT_DIR = Path(env["PROJECT_DIR"])  # noqa: F821
-# SCons exec's extra_scripts via `exec(compile(...))` which does not
-# populate `__file__` in the script's namespace, so we derive the
-# script's own directory from PROJECT_DIR (the PlatformIO project
-# root, which for this repo is the same as the script's grandparent).
-SCRIPT_DIR = PROJECT_DIR / "scripts" / "build"
-REPO_ROOT = PROJECT_DIR
+if env is not None:
+    PROJECT_DIR = Path(env["PROJECT_DIR"])  # noqa: F821
+else:
+    PROJECT_DIR = Path.cwd()
+REPO_ROOT = PROJECT_DIR if (PROJECT_DIR / ".git").exists() else PROJECT_DIR.parent
 ARTIFACT_DIR = REPO_ROOT / "artifacts"
 
 DEVICE_CONFIG_CANDIDATES = [
@@ -63,119 +29,227 @@ DEVICE_CONFIG_CANDIDATES = [
 ]
 
 
-def _resolve_device_config():
-    for path in DEVICE_CONFIG_CANDIDATES:
+def _resolve_device_config(project_dir=PROJECT_DIR, repo_root=REPO_ROOT):
+    candidates = [
+        project_dir / "src" / "provisioning" / "device_config.h",
+        project_dir / "main" / "device_config.h",
+        repo_root / "src" / "provisioning" / "device_config.h",
+    ]
+    for path in candidates:
         if path.is_file():
             return path
-    return DEVICE_CONFIG_CANDIDATES[0]
+    return candidates[0]
 
 
 DEVICE_CONFIG = _resolve_device_config()
 
 
-def _run(cmd):
+def _run(cmd, cwd=None):
     try:
         return subprocess.check_output(
-            cmd, cwd=str(REPO_ROOT), stderr=subprocess.DEVNULL
+            cmd, cwd=str(cwd or REPO_ROOT), stderr=subprocess.DEVNULL
         ).decode().strip()
     except (subprocess.CalledProcessError, FileNotFoundError):
         return ""
 
 
-def _firmware_version():
-    # Env override wins so CI can stamp release tags without editing the header.
-    override = os.environ.get("FORGEKEY_FIRMWARE_VERSION")
-    if override:
-        return override
-    if not DEVICE_CONFIG.is_file():
-        return "0.0.0"
-    text = DEVICE_CONFIG.read_text()
-    match = re.search(
-        r'#define\s+FORGEKEY_FIRMWARE_VERSION\s+"([^"]+)"', text
+def _macro_from_header(path, name, default=""):
+    if not path.is_file():
+        return default
+    text = path.read_text()
+    match = re.search(r'#define\s+' + re.escape(name) + r'\s+"([^"]*)"', text)
+    return match.group(1) if match else default
+
+
+def _firmware_version(device_config=DEVICE_CONFIG):
+    return os.environ.get("FORGEKEY_FIRMWARE_VERSION") or _macro_from_header(
+        device_config, "FORGEKEY_FIRMWARE_VERSION", "0.0.0"
     )
-    return match.group(1) if match else "0.0.0"
 
 
-def _git_commit():
-    override = os.environ.get("FIRMWARE_GIT_COMMIT")
+def _git_sha(repo_root=REPO_ROOT, short=False):
+    env_name = "FIRMWARE_GIT_COMMIT" if short else "FORGEKEY_GIT_SHA"
+    override = os.environ.get(env_name)
     if override:
         return override
-    sha = _run(["git", "rev-parse", "--short=7", "HEAD"]) or "unknown"
-    if sha != "unknown":
-        dirty = _run(["git", "status", "--porcelain"])
-        if dirty:
-            sha += "-dirty"
-    return sha
+    args = ["git", "rev-parse"]
+    if short:
+        args.append("--short=12")
+    args.append("HEAD")
+    return _run(args, cwd=repo_root) or "unknown"
+
+
+def _git_dirty(repo_root=REPO_ROOT):
+    override = os.environ.get("FORGEKEY_GIT_DIRTY")
+    if override is not None:
+        return override.lower() in ("1", "true", "yes", "dirty")
+    return bool(_run(["git", "status", "--porcelain"], cwd=repo_root))
 
 
 def _build_timestamp():
-    # Honour SOURCE_DATE_EPOCH for reproducible builds when a downstream
-    # packager sets it. Otherwise stamp wall-clock.
     sde = os.environ.get("SOURCE_DATE_EPOCH")
     if sde and sde.isdigit():
         return int(sde)
     return int(time.time())
 
 
-VERSION = _firmware_version()
-COMMIT = _git_commit()
-BUILD_TS = _build_timestamp()
+def _release_channel():
+    return os.environ.get("FORGEKEY_RELEASE_CHANNEL", "dev")
 
 
-def _inject_flags():
-    # CPPDEFINES is the canonical place for -D flags in PlatformIO. Quoted
-    # strings need the embedded escaped quotes shape `\\"value\\"` so the
-    # compiler sees a string literal.
-    env.Append(CPPDEFINES=[  # noqa: F821
-        ("FIRMWARE_BUILD_TIMESTAMP", str(BUILD_TS)),
-        ("FIRMWARE_GIT_COMMIT", env.StringifyMacro(COMMIT)),  # noqa: F821
-        ("FORGEKEY_FIRMWARE_VERSION", env.StringifyMacro(VERSION)),  # noqa: F821
-    ])
-    print(f"[version] FORGEKEY_FIRMWARE_VERSION={VERSION} "
-          f"FIRMWARE_GIT_COMMIT={COMMIT} FIRMWARE_BUILD_TIMESTAMP={BUILD_TS}")
+def _signing_key_id():
+    return os.environ.get("FORGEKEY_SIGNING_KEY_ID", "unsigned")
 
 
-def _export_artifact(source, target, env):  # noqa: ARG001 (PIO callback signature)
-    src = Path(str(target[0]))
-    if not src.is_file():
-        print(f"[version] skip export: {src} missing")
-        return
-    ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+def _target_env(default="unknown"):
+    if env is not None:
+        return env.get("PIOENV", default)  # noqa: F821
+    return os.environ.get("FORGEKEY_BUILD_TARGET", default)
 
-    # Variant slug derived from the PlatformIO env name, so the different
-    # firmware targets do not overwrite each other's artifacts — cross-flashing
-    # the wrong binary would be a serious OTA foot-gun.
-    pioenv = env["PIOENV"]  # noqa: F821
-    if pioenv == "seeed_xiao_esp32s3":
-        variant = "people-counter"
-    elif pioenv == "seeed_xiao_esp32s3_temperature":
-        variant = "temperature-sensor"
-    elif pioenv == "seeed_xiao_esp32c6_lock":
-        variant = "cabinet-lock"
+
+def _slug(value):
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", str(value)).strip("-") or "unknown"
+
+
+def _build_id(version, target, git_sha, dirty, timestamp, channel, signing_key_id):
+    override = os.environ.get("FORGEKEY_BUILD_ID")
+    if override:
+        return override
+    dirty_suffix = "-dirty" if dirty else ""
+    short_sha = git_sha[:12] if git_sha and git_sha != "unknown" else "unknown"
+    return "-".join(_slug(part) for part in (target, version, f"{short_sha}{dirty_suffix}", timestamp, channel, signing_key_id))
+
+
+def collect_metadata(target=None, project_dir=PROJECT_DIR, repo_root=REPO_ROOT):
+    device_config = _resolve_device_config(project_dir, repo_root)
+    version = _firmware_version(device_config)
+    git_sha = _git_sha(repo_root, short=False)
+    short_sha = _git_sha(repo_root, short=True)
+    dirty = _git_dirty(repo_root)
+    timestamp = _build_timestamp()
+    target = target or _target_env(_macro_from_header(device_config, "FORGEKEY_BUILD_TARGET", "unknown"))
+    channel = _release_channel()
+    signing_key_id = _signing_key_id()
+    build_id = _build_id(version, target, git_sha, dirty, timestamp, channel, signing_key_id)
+    return {
+        "version": version,
+        "git_sha": git_sha,
+        "git_short_sha": short_sha,
+        "dirty": dirty,
+        "timestamp": timestamp,
+        "target": target,
+        "release_channel": channel,
+        "signing_key_id": signing_key_id,
+        "build_id": build_id,
+    }
+
+
+def _c_string(value):
+    return str(value).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def write_header(path, metadata):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        "// Generated by scripts/build/version.py; do not edit.\n"
+        "#ifndef FORGEKEY_GENERATED_BUILD_METADATA_H\n"
+        "#define FORGEKEY_GENERATED_BUILD_METADATA_H\n\n"
+        "#ifdef FORGEKEY_BUILD_ID\n#undef FORGEKEY_BUILD_ID\n#endif\n"
+        "#ifdef FORGEKEY_GIT_SHA\n#undef FORGEKEY_GIT_SHA\n#endif\n"
+        "#ifdef FIRMWARE_GIT_COMMIT\n#undef FIRMWARE_GIT_COMMIT\n#endif\n"
+        "#ifdef FORGEKEY_GIT_DIRTY\n#undef FORGEKEY_GIT_DIRTY\n#endif\n"
+        "#ifdef FIRMWARE_BUILD_TIMESTAMP\n#undef FIRMWARE_BUILD_TIMESTAMP\n#endif\n"
+        "#ifdef FORGEKEY_BUILD_TARGET\n#undef FORGEKEY_BUILD_TARGET\n#endif\n"
+        "#ifdef FORGEKEY_RELEASE_CHANNEL\n#undef FORGEKEY_RELEASE_CHANNEL\n#endif\n"
+        "#ifdef FORGEKEY_SIGNING_KEY_ID\n#undef FORGEKEY_SIGNING_KEY_ID\n#endif\n\n"
+        f"#define FORGEKEY_BUILD_ID \"{_c_string(metadata['build_id'])}\"\n"
+        f"#define FORGEKEY_GIT_SHA \"{_c_string(metadata['git_sha'])}\"\n"
+        f"#define FIRMWARE_GIT_COMMIT \"{_c_string(metadata['git_short_sha'])}\"\n"
+        f"#define FORGEKEY_GIT_DIRTY {1 if metadata['dirty'] else 0}\n"
+        f"#define FIRMWARE_BUILD_TIMESTAMP {int(metadata['timestamp'])}\n"
+        f"#define FORGEKEY_BUILD_TARGET \"{_c_string(metadata['target'])}\"\n"
+        f"#define FORGEKEY_RELEASE_CHANNEL \"{_c_string(metadata['release_channel'])}\"\n"
+        f"#define FORGEKEY_SIGNING_KEY_ID \"{_c_string(metadata['signing_key_id'])}\"\n\n"
+        "#endif\n"
+    )
+    if path.exists() and path.read_text() == tmp.read_text():
+        tmp.unlink()
     else:
-        variant = pioenv
-
-    name = f"forgekey-{variant}-{VERSION}-{COMMIT}.bin"
-    dest = ARTIFACT_DIR / name
-    shutil.copy2(src, dest)
-
-    digest = hashlib.sha256(dest.read_bytes()).hexdigest()
-    (ARTIFACT_DIR / f"{name}.sha256").write_text(digest + "\n")
-
-    # Convenience copy for staff who just want "the latest". One per variant
-    # so the wrong binary cannot get pulled by accident.
-    latest = ARTIFACT_DIR / f"forgekey-{variant}-latest.bin"
-    shutil.copy2(dest, latest)
-    (ARTIFACT_DIR / f"forgekey-{variant}-latest.bin.sha256").write_text(digest + "\n")
-
-    size = dest.stat().st_size
-    print(f"[version] exported {dest.relative_to(PROJECT_DIR)} ({size} bytes)")
-    print(f"[version] sha256 {digest}")
-    print(f"[version] upload this .bin to OMS; sha256 goes in the dispatch payload")
+        tmp.replace(path)
 
 
-_inject_flags()
+if env is not None:
+    METADATA = collect_metadata()
+    VERSION = METADATA["version"]
+    COMMIT = METADATA["git_short_sha"] + ("-dirty" if METADATA["dirty"] else "")
+    BUILD_TS = METADATA["timestamp"]
+    GENERATED_DIR = Path(env["BUILD_DIR"]) / "generated"  # noqa: F821
+    GENERATED_HEADER = GENERATED_DIR / "forgekey_build_metadata.h"
 
-# Hook the post-build action onto firmware.bin (the merged binary that ends up
-# on the device). PlatformIO emits this artifact under .pio/build/<env>/.
-env.AddPostAction("$BUILD_DIR/firmware.bin", _export_artifact)  # noqa: F821
+    def _inject_flags():
+        write_header(GENERATED_HEADER, METADATA)
+        env.Append(CPPPATH=[str(GENERATED_DIR)])  # noqa: F821
+        env.Append(CPPDEFINES=[  # noqa: F821
+            ("FIRMWARE_BUILD_TIMESTAMP", str(BUILD_TS)),
+            ("FIRMWARE_GIT_COMMIT", env.StringifyMacro(METADATA["git_short_sha"])),  # noqa: F821
+            ("FORGEKEY_FIRMWARE_VERSION", env.StringifyMacro(VERSION)),  # noqa: F821
+            ("FORGEKEY_BUILD_ID", env.StringifyMacro(METADATA["build_id"])),  # noqa: F821
+            ("FORGEKEY_GIT_SHA", env.StringifyMacro(METADATA["git_sha"])),  # noqa: F821
+            ("FORGEKEY_GIT_DIRTY", "1" if METADATA["dirty"] else "0"),
+            ("FORGEKEY_RELEASE_CHANNEL", env.StringifyMacro(METADATA["release_channel"])),  # noqa: F821
+            ("FORGEKEY_SIGNING_KEY_ID", env.StringifyMacro(METADATA["signing_key_id"])),  # noqa: F821
+        ])
+        print(
+            f"[version] build_id={METADATA['build_id']} target={METADATA['target']} "
+            f"git={METADATA['git_short_sha']} dirty={int(METADATA['dirty'])} "
+            f"timestamp={BUILD_TS} channel={METADATA['release_channel']} "
+            f"signing_key_id={METADATA['signing_key_id']} header={GENERATED_HEADER}"
+        )
+
+    def _export_artifact(source, target, env):  # noqa: ARG001
+        src = Path(str(target[0]))
+        if not src.is_file():
+            print(f"[version] skip export: {src} missing")
+            return
+        ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+        pioenv = env["PIOENV"]  # noqa: F821
+        if pioenv in ("seeed_xiao_esp32s3", "seeed_xiao_esp32s3_prod"):
+            variant = "people-counter"
+        elif pioenv in ("seeed_xiao_esp32s3_temperature", "seeed_xiao_esp32s3_temperature_prod"):
+            variant = "temperature-sensor"
+        elif pioenv in ("seeed_xiao_epaper", "seeed_xiao_epaper_prod"):
+            variant = "epaper-display"
+        else:
+            variant = pioenv
+
+        name = f"forgekey-{_slug(variant)}-{_slug(VERSION)}-{_slug(COMMIT)}-{_slug(METADATA['build_id'])}.bin"
+        dest = ARTIFACT_DIR / name
+        shutil.copy2(src, dest)
+        digest = hashlib.sha256(dest.read_bytes()).hexdigest()
+        (ARTIFACT_DIR / f"{name}.sha256").write_text(digest + "\n")
+        latest = ARTIFACT_DIR / f"forgekey-{variant}-latest.bin"
+        shutil.copy2(dest, latest)
+        (ARTIFACT_DIR / f"forgekey-{variant}-latest.bin.sha256").write_text(digest + "\n")
+        print(f"[version] exported {dest.relative_to(PROJECT_DIR)} ({dest.stat().st_size} bytes)")
+        print(f"[version] sha256 {digest}")
+
+    _inject_flags()
+    env.AddPostAction("$BUILD_DIR/firmware.bin", _export_artifact)  # noqa: F821
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Generate ForgeKey build metadata header")
+    parser.add_argument("--output", required=True, help="header path to write")
+    parser.add_argument("--target", default=None, help="build target/env name")
+    parser.add_argument("--project-dir", default=str(PROJECT_DIR))
+    parser.add_argument("--repo-root", default=str(REPO_ROOT))
+    args = parser.parse_args(argv)
+    metadata = collect_metadata(args.target, Path(args.project_dir), Path(args.repo_root))
+    write_header(args.output, metadata)
+    print(f"[version] generated {args.output} build_id={metadata['build_id']}")
+
+
+if __name__ == "__main__":
+    main()

@@ -8,6 +8,7 @@
 #include "provisioning/device_config.h"
 #include "provisioning/register.h"
 #include "ota/ota_updater.h"
+#include "build/build_metadata.h"
 #include "config/credential_rotation.h"
 #include "config/device_lifecycle.h"
 #include "config/wifi_desired_state.h"
@@ -273,6 +274,7 @@ static void publishStatusSnapshot(const char* requestedCmd, const char* commandI
     payload += ",\"mac\":\"";
     payload += macAddress;
     payload += "\"";
+    ForgeKeyBuildMetadata::appendJson(payload);
     OtaUpdater::appendHealthJson(payload);
     ForgeKeyWatchdog::appendHealthJson(payload);
     payload += "}";

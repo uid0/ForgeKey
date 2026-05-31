@@ -15,7 +15,7 @@ idf_component_register(
          "watchdog_manager.c"
          "boards/lock_board_manifest.c"
          "power/power_manager.c"
-    INCLUDE_DIRS "."
+    INCLUDE_DIRS "." "${FORGEKEY_LOCK_GENERATED_DIR}"
     REQUIRES 
         esp_wifi
         esp_event

@@ -1,4 +1,5 @@
 #include "registry.h"
+#include "build/build_metadata.h"
 #include <Arduino.h>
 #include "../mqtt/mqtt_client.h"
 
@@ -87,7 +88,9 @@ String announcementJson(const char* firmwareVersion) {
     }
     out += "],\"firmware_version\":\"";
     out += firmwareVersion ? firmwareVersion : "";
-    out += "\"}";
+    out += "\"";
+    ForgeKeyBuildMetadata::appendJson(out);
+    out += "}";
     return out;
 }
 

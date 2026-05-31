@@ -55,6 +55,7 @@
 #include "schema_contract.h"
 #include "power/power_manager.h"
 #include "watchdog_manager.h"
+#include "build_metadata.h"
 
 static const char* TAG = "LOCK";
 
@@ -365,6 +366,7 @@ void app_main(void) {
             cJSON_AddStringToObject(root, "firmware_version", FORGEKEY_FIRMWARE_VERSION);
             cJSON_AddStringToObject(root, "build_target", FORGEKEY_BUILD_TARGET);
             cJSON_AddStringToObject(root, "framework", FORGEKEY_BUILD_FRAMEWORK);
+            forgekey_build_metadata_add_json(root);
             lock_board_manifest_add_health_json(root);
             forgekey_power_add_health_json(root, lock_board_manifest_battery_config());
             ota_add_health_json(root);
@@ -420,6 +422,7 @@ static void publish_lock_cmd_ack(const char* cmd, const char* command_id,
         cJSON_AddStringToObject(root, "error", error);
     }
     forgekey_time_add_json(root);
+    forgekey_build_metadata_add_json(root);
     char* json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     if (json_str) {
@@ -463,6 +466,7 @@ static void publish_lock_event(const char* event_type, bool active, const char* 
     cJSON_AddBoolToObject(root, "lockout_active", tel.lockout_active);
     cJSON_AddBoolToObject(root, "commissioning_active", tel.commissioning_active);
     forgekey_time_add_json(root);
+    forgekey_build_metadata_add_json(root);
     char* json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     if (json_str) {
@@ -618,6 +622,7 @@ static void publish_lifecycle_final_state(const char* cmd, const char* state,
     cJSON_AddStringToObject(root, "command_id", command_id ? command_id : "");
     cJSON_AddStringToObject(root, "actor", actor ? actor : "");
     forgekey_time_add_json(root);
+    forgekey_build_metadata_add_json(root);
     char* json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     if (json_str) {
@@ -678,6 +683,7 @@ static void publish_status_snapshot(const char* mac_str, const char* requested_c
     cJSON_AddStringToObject(root, "firmware_version", FORGEKEY_FIRMWARE_VERSION);
     cJSON_AddStringToObject(root, "build_target", FORGEKEY_BUILD_TARGET);
     cJSON_AddStringToObject(root, "framework", FORGEKEY_BUILD_FRAMEWORK);
+    forgekey_build_metadata_add_json(root);
     lock_board_manifest_add_health_json(root);
     forgekey_power_add_health_json(root, lock_board_manifest_battery_config());
     ota_add_health_json(root);
