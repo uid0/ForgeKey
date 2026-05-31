@@ -9,6 +9,7 @@
 #include "provisioning/register.h"
 #include "ota/ota_updater.h"
 #include "config/credential_rotation.h"
+#include "security/command_validation.h"
 #include "wifi_setup/captive.h"
 
 #include "capabilities/registry.h"
@@ -239,6 +240,20 @@ static void publishUnknownCommandAck(const char* cmd) {
     StatusLed::triggerMessageFlash();
 }
 
+static void publishCommandRejectAck(const char* cmd, const char* commandId,
+                                    const char* error, const char* detail = nullptr) {
+    StaticJsonDocument<256> ack;
+    ack["cmd_ack"] = cmd ? cmd : "";
+    if (commandId && *commandId) ack["command_id"] = commandId;
+    ack["ok"] = false;
+    ack["error"] = error ? error : "invalid_command";
+    if (detail && *detail) ack["detail"] = detail;
+    String payload;
+    serializeJson(ack, payload);
+    mqttClient.publishStatus(payload.c_str());
+    StatusLed::triggerMessageFlash();
+}
+
 #ifdef FORGEKEY_LOCK
 // Publish a cmd_ack for a lock verb. Includes command_id when the caller
 // (OMS) provided one so the backend's structured ack path can match the row.
@@ -256,17 +271,28 @@ static void publishLockCmdAck(const char* cmd, const char* commandId,
 #endif
 
 static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned int length) {
-    StaticJsonDocument<256> doc;
+    StaticJsonDocument<1536> doc;
     DeserializationError err = deserializeJson(doc, payload, length);
     if (err) {
         debugPrintf("WARN", "CMD", "parse error: %s", err.c_str());
+        publishCommandRejectAck("", nullptr, "parse_error", err.c_str());
         return;
     }
     const char* cmd = doc["cmd"] | "";
+    const char* commandId = doc["command_id"] | "";
     debugPrintf("INFO", "CMD", "rx topic=%s cmd=%s len=%u",
                 topic ? topic : "(null)",
                 cmd[0] ? cmd : "(missing)",
                 length);
+
+    CommandValidation::Result validation = CommandValidation::validate(doc.as<JsonVariantConst>(), macAddress);
+    if (!validation.ok) {
+        publishCommandRejectAck(cmd, commandId, CommandValidation::canonicalError(validation));
+        debugPrintf("WARN", "CMD", "%s rejected: %s",
+                    cmd[0] ? cmd : "(missing)", CommandValidation::canonicalError(validation));
+        return;
+    }
+    CommandValidation::rememberAccepted(validation);
     if (strcmp(cmd, "blink") == 0) {
         // Three accepted forms:
         //   {"cmd":"blink"}                     -> toggle (back-compat)
@@ -732,6 +758,7 @@ void setup() {
 #endif
 
     provisioning.begin();
+    CommandValidation::begin();
     otaUpdater.begin();
     extendOtaRapidChecking("restart");
     otaUpdater.setStatusCallback([](const char* state,

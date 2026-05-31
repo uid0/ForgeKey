@@ -49,6 +49,7 @@
 #include "web_server.h"
 #include "ota_update.h"
 #include "credential_rotation.h"
+#include "command_validation.h"
 
 static const char* TAG = "LOCK";
 
@@ -63,6 +64,7 @@ static void on_firmware_dispatch(const char* topic, const uint8_t* payload, uint
 
 static void publish_status_snapshot(const char* mac_str, const char* requested_cmd);
 static void publish_unknown_command_ack(const char* cmd);
+static void publish_command_reject_ack(const char* cmd, const char* command_id, const char* error);
 static void publish_unsupported_command_ack(const char* cmd);
 static void publish_lock_cmd_ack(const char* cmd, const char* command_id,
                                   const char* state, const char* error);
@@ -105,6 +107,7 @@ void app_main(void) {
     snprintf(mac_str, sizeof(mac_str), "%02x%02x%02x%02x%02x%02x",
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     lock_state_set_mac(mac_str);
+    command_validation_begin();
     LOCK_LOGI("MAC Address: %s", mac_str);
 
     /* ===== 4. NTP sync ===== */
@@ -340,20 +343,24 @@ static void on_command_message(const char* topic, const uint8_t* payload, uint32
     cJSON* doc = cJSON_Parse(payload_copy);
     if (!doc) {
         LOCK_LOGW("Command message: JSON parse error");
+        publish_command_reject_ack("", NULL, "parse_error");
         return;
     }
 
     cJSON* cmd = cJSON_GetObjectItem(doc, "cmd");
-    if (!cmd || !cJSON_IsString(cmd) || !cmd->valuestring || cmd->valuestring[0] == '\0') {
-        LOCK_LOGW("Command message: missing cmd");
-        cJSON_Delete(doc);
-        return;
-    }
-
-    const char* cmd_str = cmd->valuestring;
+    const char* cmd_str = (cmd && cJSON_IsString(cmd) && cmd->valuestring) ? cmd->valuestring : "";
     cJSON* command_id_field = cJSON_GetObjectItem(doc, "command_id");
     const char* command_id = (command_id_field && cJSON_IsString(command_id_field))
         ? command_id_field->valuestring : NULL;
+
+    command_validation_result_t validation = command_validation_validate(doc, lock_state_get_mac_address());
+    if (!validation.ok) {
+        LOCK_LOGW("Command %s rejected: %s", cmd_str[0] ? cmd_str : "(missing)", validation.error);
+        publish_command_reject_ack(cmd_str, command_id, validation.error);
+        cJSON_Delete(doc);
+        return;
+    }
+    command_validation_remember_accepted(&validation);
 
     if (strcmp(cmd_str, "status") == 0 || strcmp(cmd_str, "ping") == 0) {
         publish_status_snapshot(lock_state_get_mac_address(), cmd_str);
@@ -441,6 +448,22 @@ static void publish_unknown_command_ack(const char* cmd) {
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "cmd_ack", cmd ? cmd : "");
     cJSON_AddStringToObject(root, "error", "unknown_command");
+    char* json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (json_str) {
+        mqtt_handler_publish(mqtt_handler_get_status_topic(), json_str, strlen(json_str), 0, 0);
+        cJSON_free(json_str);
+    }
+}
+
+static void publish_command_reject_ack(const char* cmd, const char* command_id, const char* error) {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "cmd_ack", cmd ? cmd : "");
+    if (command_id && command_id[0]) {
+        cJSON_AddStringToObject(root, "command_id", command_id);
+    }
+    cJSON_AddBoolToObject(root, "ok", false);
+    cJSON_AddStringToObject(root, "error", error ? error : "invalid_command");
     char* json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     if (json_str) {

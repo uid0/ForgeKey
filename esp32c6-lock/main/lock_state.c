@@ -413,6 +413,22 @@ bool lock_state_validate_signed_command(const char* token, long timestamp,
     return true;
 }
 
+bool lock_state_validate_command_signature(const char* signing_input,
+                                           const char* signature_b64url) {
+    if (!signing_input || !signature_b64url || signature_b64url[0] == '\0') {
+        return false;
+    }
+    uint8_t signature[80];
+    size_t signature_decoded_len = 0;
+    if (!base64url_decode(signature_b64url, strlen(signature_b64url),
+                          signature, sizeof(signature), &signature_decoded_len)) {
+        ESP_LOGW(TAG, "Detached command signature decode failed");
+        return false;
+    }
+    return verify_es256_signature(signing_input, strlen(signing_input),
+                                  signature, signature_decoded_len);
+}
+
 /* ===== State machine ===== */
 
 void lock_state_tick(void) {
