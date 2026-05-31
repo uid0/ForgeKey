@@ -17,6 +17,8 @@ typedef enum {
     LOCK_STATE_UNLOCKED,
     LOCK_STATE_ACCESSING,
     LOCK_STATE_ALARM,
+    LOCK_STATE_LOCKOUT,
+    LOCK_STATE_COMMISSIONING,
 } lock_state_t;
 
 /* Lock trigger types */
@@ -27,6 +29,11 @@ typedef enum {
     LOCK_TRIGGER_AUTO_UNLOCK,
     LOCK_TRIGGER_DOOR_CLOSE,
     LOCK_TRIGGER_ALARM_TIMEOUT,
+    LOCK_TRIGGER_LOCKOUT,
+    LOCK_TRIGGER_CLEAR_LOCKOUT,
+    LOCK_TRIGGER_COMMISSION,
+    LOCK_TRIGGER_INIT_ACK,
+    LOCK_TRIGGER_EMERGENCY_UNLOCK,
 } lock_trigger_t;
 
 /* Telemetry data */
@@ -37,6 +44,9 @@ typedef struct {
     bool ir_broken;
     bool mortise_active;
     uint32_t uptime_ms;
+    bool lockout_active;
+    bool commissioning_active;
+    bool tamper_active;
 } lock_telemetry_t;
 
 /* Initialize GPIO pins for lock sensors and solenoid. */
@@ -63,6 +73,12 @@ lock_telemetry_t lock_state_get_telemetry(void);
 /* Handle an incoming unlock command with a signed token.
  * Returns true if token was valid and solenoid was pulsed. */
 bool lock_state_handle_unlock(const char* token, long timestamp);
+
+/* Enter/clear operational modes driven by signed operator commands. */
+bool lock_state_set_lockout(bool enabled);
+bool lock_state_start_commissioning(void);
+bool lock_state_ack_initialization(void);
+bool lock_state_handle_emergency_unlock(void);
 
 /* Validate a signed command token (header.payload.signature).
  * Performs ES256 signature verification against the OMS command public key

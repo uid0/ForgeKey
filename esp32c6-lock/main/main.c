@@ -70,7 +70,11 @@ static void publish_command_reject_ack(const char* cmd, const char* command_id, 
 static void publish_unsupported_command_ack(const char* cmd, const char* command_id);
 static void publish_lock_cmd_ack(const char* cmd, const char* command_id,
                                   const char* state, const char* error);
+static void publish_lock_event(const char* event_type, bool active, const char* command_id,
+                               lock_telemetry_t tel);
+static bool command_has_operator_identity(cJSON* doc);
 static int current_wifi_rssi(void);
+static char s_last_command_id[72] = {0};
 static void ota_status_callback(const char* state, const char* version, int progress, const char* error);
 
 /* Application entry point */
@@ -227,6 +231,8 @@ void app_main(void) {
     uint32_t last_telemetry_ms = 0;
     bool mqtt_was_connected = false;
     bool capabilities_announced = false;
+    bool have_prev_event_sample = false;
+    lock_telemetry_t prev_event_tel = {0};
 
     while (1) {
         /* Tick lock state machine */
@@ -270,6 +276,29 @@ void app_main(void) {
             mqtt_was_connected = false;
         }
 
+        lock_telemetry_t event_tel = lock_state_get_telemetry();
+        if (!have_prev_event_sample) {
+            prev_event_tel = event_tel;
+            have_prev_event_sample = true;
+        } else {
+            if (event_tel.tamper_active != prev_event_tel.tamper_active) {
+                publish_lock_event("tamper", event_tel.tamper_active, s_last_command_id, event_tel);
+            }
+            if (event_tel.mortise_active != prev_event_tel.mortise_active) {
+                publish_lock_event("mortise_key", event_tel.mortise_active, s_last_command_id, event_tel);
+            }
+            if (event_tel.latch_locked != prev_event_tel.latch_locked) {
+                publish_lock_event("latch", event_tel.latch_locked, s_last_command_id, event_tel);
+            }
+            if (event_tel.reed_closed != prev_event_tel.reed_closed) {
+                publish_lock_event("reed", event_tel.reed_closed, s_last_command_id, event_tel);
+            }
+            if (event_tel.ir_broken != prev_event_tel.ir_broken) {
+                publish_lock_event("ir_beam", event_tel.ir_broken, s_last_command_id, event_tel);
+            }
+            prev_event_tel = event_tel;
+        }
+
         /* Publish telemetry at interval */
         uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
         if (now_ms - last_telemetry_ms >= FORGEKEY_LOCK_TELEMETRY_INTERVAL_MS) {
@@ -283,6 +312,11 @@ void app_main(void) {
                 case LOCK_TRIGGER_AUTO_UNLOCK: trigger_str = "auto_unlock"; break;
                 case LOCK_TRIGGER_DOOR_CLOSE: trigger_str = "door_close"; break;
                 case LOCK_TRIGGER_ALARM_TIMEOUT: trigger_str = "alarm_timeout"; break;
+                case LOCK_TRIGGER_LOCKOUT: trigger_str = "lockout"; break;
+                case LOCK_TRIGGER_CLEAR_LOCKOUT: trigger_str = "clear_lockout"; break;
+                case LOCK_TRIGGER_COMMISSION: trigger_str = "commission"; break;
+                case LOCK_TRIGGER_INIT_ACK: trigger_str = "init_ack"; break;
+                case LOCK_TRIGGER_EMERGENCY_UNLOCK: trigger_str = "emergency_unlock"; break;
                 default: trigger_str = "unknown"; break;
             }
 
@@ -303,6 +337,9 @@ void app_main(void) {
             cJSON_AddBoolToObject(root, "latch_locked", tel.latch_locked);
             cJSON_AddBoolToObject(root, "ir_broken", tel.ir_broken);
             cJSON_AddBoolToObject(root, "mortise_active", tel.mortise_active);
+            cJSON_AddBoolToObject(root, "lockout_active", tel.lockout_active);
+            cJSON_AddBoolToObject(root, "commissioning_active", tel.commissioning_active);
+            cJSON_AddBoolToObject(root, "tamper_active", tel.tamper_active);
 
             char* json_str = cJSON_PrintUnformatted(root);
             cJSON_Delete(root);
@@ -351,6 +388,48 @@ static void publish_lock_cmd_ack(const char* cmd, const char* command_id,
     }
 }
 
+static bool command_has_operator_identity(cJSON* doc) {
+    cJSON* actor = cJSON_GetObjectItemCaseSensitive(doc, "actor");
+    if (cJSON_IsString(actor) && actor->valuestring && actor->valuestring[0]) {
+        return true;
+    }
+    cJSON* operator_id = cJSON_GetObjectItemCaseSensitive(doc, "operator_id");
+    if (cJSON_IsString(operator_id) && operator_id->valuestring && operator_id->valuestring[0]) {
+        return true;
+    }
+    cJSON* operator_obj = cJSON_GetObjectItemCaseSensitive(doc, "operator");
+    cJSON* id = cJSON_IsObject(operator_obj) ? cJSON_GetObjectItemCaseSensitive(operator_obj, "id") : NULL;
+    return cJSON_IsString(id) && id->valuestring && id->valuestring[0];
+}
+
+static void publish_lock_event(const char* event_type, bool active, const char* command_id,
+                               lock_telemetry_t tel) {
+    const char* status_topic = mqtt_handler_get_status_topic();
+    if (!status_topic[0]) {
+        return;
+    }
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "event", event_type ? event_type : "lock_event");
+    cJSON_AddBoolToObject(root, "active", active);
+    cJSON_AddStringToObject(root, "command_id", command_id ? command_id : "");
+    cJSON_AddStringToObject(root, "state", lock_state_state_name(lock_state_get_state()));
+    cJSON_AddNumberToObject(root, "uptime", tel.uptime_ms);
+    cJSON_AddBoolToObject(root, "reed_closed", tel.reed_closed);
+    cJSON_AddBoolToObject(root, "latch_locked", tel.latch_locked);
+    cJSON_AddBoolToObject(root, "ir_broken", tel.ir_broken);
+    cJSON_AddBoolToObject(root, "mortise_active", tel.mortise_active);
+    cJSON_AddBoolToObject(root, "tamper_active", tel.tamper_active);
+    cJSON_AddBoolToObject(root, "lockout_active", tel.lockout_active);
+    cJSON_AddBoolToObject(root, "commissioning_active", tel.commissioning_active);
+    forgekey_time_add_json(root);
+    char* json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (json_str) {
+        mqtt_handler_publish_queued(status_topic, json_str, strlen(json_str), 0, 0, true);
+        cJSON_free(json_str);
+    }
+}
+
 static void on_command_message(const char* topic, const uint8_t* payload, uint32_t length) {
     LOCK_LOGI("Command message on %s", topic);
 
@@ -378,7 +457,23 @@ static void on_command_message(const char* topic, const uint8_t* payload, uint32
         cJSON_Delete(doc);
         return;
     }
+    const bool safety_sensitive = strcmp(cmd_str, "unlock") == 0 ||
+                                  strcmp(cmd_str, "lockout") == 0 ||
+                                  strcmp(cmd_str, "clear_lockout") == 0 ||
+                                  strcmp(cmd_str, "init_ack") == 0 ||
+                                  strcmp(cmd_str, "emergency_unlock") == 0 ||
+                                  strcmp(cmd_str, "commission") == 0 ||
+                                  strcmp(cmd_str, "restart") == 0;
+    if (safety_sensitive && !command_has_operator_identity(doc)) {
+        publish_command_reject_ack(cmd_str, command_id, "missing_operator_identity");
+        cJSON_Delete(doc);
+        return;
+    }
+
     command_validation_remember_accepted(&validation);
+    if (command_id && command_id[0]) {
+        snprintf(s_last_command_id, sizeof(s_last_command_id), "%s", command_id);
+    }
 
     if (strcmp(cmd_str, "status") == 0 || strcmp(cmd_str, "ping") == 0) {
         publish_status_snapshot(lock_state_get_mac_address(), cmd_str, command_id);
@@ -411,11 +506,36 @@ static void on_command_message(const char* topic, const uint8_t* payload, uint32
             publish_lock_cmd_ack("unlock", command_id, NULL, "invalid_token");
             LOCK_LOGW("Unlock rejected");
         }
-    } else if (strcmp(cmd_str, "lockout") == 0 ||
-               strcmp(cmd_str, "clear_lockout") == 0 ||
-               strcmp(cmd_str, "init_ack") == 0) {
-        publish_lock_cmd_ack(cmd_str, command_id, NULL, "not_implemented");
-        LOCK_LOGW("Command %s not implemented on this firmware build", cmd_str);
+    } else if (strcmp(cmd_str, "lockout") == 0) {
+        lock_state_set_lockout(true);
+        publish_lock_cmd_ack("lockout", command_id, lock_state_state_name(lock_state_get_state()), NULL);
+        publish_lock_event("lockout", true, command_id, lock_state_get_telemetry());
+        LOCK_LOGW("Operator lockout active");
+    } else if (strcmp(cmd_str, "clear_lockout") == 0) {
+        lock_state_set_lockout(false);
+        publish_lock_cmd_ack("clear_lockout", command_id, lock_state_state_name(lock_state_get_state()), NULL);
+        publish_lock_event("lockout", false, command_id, lock_state_get_telemetry());
+        LOCK_LOGI("Operator lockout cleared");
+    } else if (strcmp(cmd_str, "init_ack") == 0) {
+        if (lock_state_ack_initialization()) {
+            publish_lock_cmd_ack("init_ack", command_id, lock_state_state_name(lock_state_get_state()), NULL);
+            LOCK_LOGI("Initialization acknowledged by operator");
+        } else {
+            publish_lock_cmd_ack("init_ack", command_id, NULL, "lockout_active");
+        }
+    } else if (strcmp(cmd_str, "emergency_unlock") == 0) {
+        lock_state_handle_emergency_unlock();
+        publish_lock_cmd_ack("emergency_unlock", command_id, "unlocked", NULL);
+        publish_lock_event("emergency_unlock", true, command_id, lock_state_get_telemetry());
+        LOCK_LOGW("Emergency unlock accepted");
+    } else if (strcmp(cmd_str, "commission") == 0) {
+        if (lock_state_start_commissioning()) {
+            publish_lock_cmd_ack("commission", command_id, lock_state_state_name(lock_state_get_state()), NULL);
+            publish_lock_event("commissioning", true, command_id, lock_state_get_telemetry());
+            LOCK_LOGI("Commissioning mode entered");
+        } else {
+            publish_lock_cmd_ack("commission", command_id, NULL, "lockout_active");
+        }
     } else if (strcmp(cmd_str, "blink") == 0 || strcmp(cmd_str, "identify") == 0) {
         publish_unsupported_command_ack(cmd_str, command_id);
         LOCK_LOGW("Command %s unsupported on ESP32-C6 lock build", cmd_str);
@@ -453,6 +573,13 @@ static void publish_status_snapshot(const char* mac_str, const char* requested_c
     cJSON_AddStringToObject(root, "mac", mac_str ? mac_str : "");
     cJSON_AddStringToObject(root, "state", lock_state_state_name(lock_state_get_state()));
     cJSON_AddBoolToObject(root, "secure", tel.secure);
+    cJSON_AddBoolToObject(root, "reed_closed", tel.reed_closed);
+    cJSON_AddBoolToObject(root, "latch_locked", tel.latch_locked);
+    cJSON_AddBoolToObject(root, "ir_broken", tel.ir_broken);
+    cJSON_AddBoolToObject(root, "mortise_active", tel.mortise_active);
+    cJSON_AddBoolToObject(root, "lockout_active", tel.lockout_active);
+    cJSON_AddBoolToObject(root, "commissioning_active", tel.commissioning_active);
+    cJSON_AddBoolToObject(root, "tamper_active", tel.tamper_active);
 
     char* json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
