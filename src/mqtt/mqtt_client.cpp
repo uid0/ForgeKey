@@ -616,6 +616,27 @@ bool MqttClient::subscribeFirmware(MessageHandler handler) {
     return ok;
 }
 
+
+bool MqttClient::refreshFirmwareSubscription() {
+    if (firmwareTopic.length() == 0 || !client || !client->connected()) {
+        Serial.printf("[MQTT] refreshFirmwareSubscription SKIPPED: topic_len=%u client=%s connected=%d\n",
+                      (unsigned)firmwareTopic.length(), client ? "ok" : "(null)",
+                      client && client->connected() ? 1 : 0);
+        return false;
+    }
+
+    // Re-subscribing is safe for normal MQTT flow and gives brokers another
+    // opportunity to send the retained firmware dispatch, which is how this
+    // firmware performs an explicit OTA "check" without adding a separate
+    // HTTP polling endpoint. Unsubscribe first so brokers reliably treat this
+    // as a new subscription instead of a no-op duplicate SUBSCRIBE.
+    bool unsubOk = client->unsubscribe(firmwareTopic.c_str());
+    bool subOk = client->subscribe(firmwareTopic.c_str());
+    Serial.printf("[MQTT] refreshFirmwareSubscription: topic=%s unsubscribe_ok=%d subscribe_ok=%d\n",
+                  firmwareTopic.c_str(), (int)unsubOk, (int)subOk);
+    return subOk;
+}
+
 bool MqttClient::subscribeCommand(MessageHandler handler) {
     commandHandler = handler;
     if (commandTopic.length() == 0 || !client) {
