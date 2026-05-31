@@ -7,7 +7,8 @@ internals (apply flow, rollback, status payloads, signature verification),
 see [FORGEKEY_DEVICE.md "OTA firmware updates"](../FORGEKEY_DEVICE.md#ota-firmware-updates).
 
 The sections below are cumulative: do (1) once per fleet, then (2)–(5)
-each release.
+each release. Before dispatching a release to production, complete the build,
+schema, documentation, and HIL rungs in [VERIFICATION_LADDER.md](VERIFICATION_LADDER.md).
 
 - [1. One-time signing-key setup](#1-one-time-signing-key-setup)
 - [2. Build a deployable binary](#2-build-a-deployable-binary)

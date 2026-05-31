@@ -35,13 +35,18 @@ cd esp32c6-lock
 idf.py build
 ```
 
-To run Celery task runner locally during development or testing, use the following command:
+To run the host-side verification ladder locally during development or testing, use the following commands:
 ```bash
-# TODO: Replace with actual command to start Celery task runner
+python -m pip install -r requirements-dev.txt
+python -m pytest -m "not hil"
+python scripts/validate_schemas.py
+python scripts/check_docs_links.py
 ```
 
 ## Testing Framework
-To run tests locally during development or testing, ensure the following services are running: Postgresql, Redis, and MQTT. Then use the following command:
+To run hardware-in-the-loop smoke tests locally, provision the required devices and save a smoke evidence JSON file. Then use the following command:
 ```bash
-# TODO: Replace with actual test command
+FORGEKEY_HIL_EVIDENCE=/path/to/smoke_evidence.json python -m pytest -m hil
 ```
+
+See `docs/VERIFICATION_LADDER.md` for the full practical verification ladder and the checks that must pass before merging to `main`.
