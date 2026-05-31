@@ -25,6 +25,7 @@
 
 #include "mqtt_client.h"
 #include "watchdog_manager.h"
+#include "build_metadata.h"
 
 static const char* TAG = "MQTT";
 
@@ -56,7 +57,7 @@ static char s_client_key_pem[2048] = {0};
 
 /* Last reconnect attempt time (seconds since epoch) */
 static time_t s_last_reconnect = 0;
-static const char kUnexpectedDisconnectState[] =
+static char s_unexpected_disconnect_state[256] =
     "{\"online\":false,\"reason\":\"unexpected_disconnect\"}";
 
 #define MQTT_OUTBOUND_QUEUE_SIZE 8
@@ -156,22 +157,24 @@ static void load_critical_queue(void) {
 
 static void build_state_payload(char* dest, size_t dest_size, bool online,
                                 const char* ip, const char* reason) {
-    if (!dest || dest_size == 0) {
+    if (!dest || dest_size == 0) return;
+    cJSON* root = cJSON_CreateObject();
+    if (!root) {
+        snprintf(dest, dest_size, "{\"online\":%s}", online ? "true" : "false");
         return;
     }
-
-    if (ip && ip[0]) {
-        snprintf(dest, dest_size, "{\"online\":%s,\"ip\":\"%s\"}",
-                 online ? "true" : "false", ip);
-        return;
+    cJSON_AddBoolToObject(root, "online", online);
+    if (ip && ip[0]) cJSON_AddStringToObject(root, "ip", ip);
+    if (reason && reason[0]) cJSON_AddStringToObject(root, "reason", reason);
+    forgekey_build_metadata_add_json(root);
+    char* json = cJSON_PrintUnformatted(root);
+    if (json) {
+        snprintf(dest, dest_size, "%s", json);
+        cJSON_free(json);
+    } else {
+        snprintf(dest, dest_size, "{\"online\":%s}", online ? "true" : "false");
     }
-    if (reason && reason[0]) {
-        snprintf(dest, dest_size, "{\"online\":%s,\"reason\":\"%s\"}",
-                 online ? "true" : "false", reason);
-        return;
-    }
-    snprintf(dest, dest_size, "{\"online\":%s}",
-             online ? "true" : "false");
+    cJSON_Delete(root);
 }
 
 static void current_ip_string(char* dest, size_t dest_size) {
@@ -326,8 +329,11 @@ bool mqtt_handler_begin(const char* broker_host, int port,
     mqtt_cfg.credentials.authentication.key = client_private_key_pem;
     mqtt_cfg.session.keepalive = 60;
     mqtt_cfg.session.last_will.topic = s_state_topic[0] ? s_state_topic : NULL;
-    mqtt_cfg.session.last_will.msg = kUnexpectedDisconnectState;
-    mqtt_cfg.session.last_will.msg_len = sizeof(kUnexpectedDisconnectState) - 1;
+    build_state_payload(s_unexpected_disconnect_state,
+                        sizeof(s_unexpected_disconnect_state),
+                        false, NULL, "unexpected_disconnect");
+    mqtt_cfg.session.last_will.msg = s_unexpected_disconnect_state;
+    mqtt_cfg.session.last_will.msg_len = strlen(s_unexpected_disconnect_state);
     mqtt_cfg.session.last_will.qos = 0;
     mqtt_cfg.session.last_will.retain = true;
     mqtt_cfg.session.disable_clean_session = false;
@@ -340,8 +346,11 @@ bool mqtt_handler_begin(const char* broker_host, int port,
     mqtt_cfg.client_key_pem = client_private_key_pem;
     mqtt_cfg.keepalive = 60;
     mqtt_cfg.lwt_topic = s_state_topic[0] ? s_state_topic : NULL;
-    mqtt_cfg.lwt_msg = kUnexpectedDisconnectState;
-    mqtt_cfg.lwt_msg_len = sizeof(kUnexpectedDisconnectState) - 1;
+    build_state_payload(s_unexpected_disconnect_state,
+                        sizeof(s_unexpected_disconnect_state),
+                        false, NULL, "unexpected_disconnect");
+    mqtt_cfg.lwt_msg = s_unexpected_disconnect_state;
+    mqtt_cfg.lwt_msg_len = strlen(s_unexpected_disconnect_state);
     mqtt_cfg.lwt_qos = 0;
     mqtt_cfg.lwt_retain = true;
     mqtt_cfg.disable_clean_session = false;

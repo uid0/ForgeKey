@@ -1,5 +1,6 @@
 #include "mqtt_client.h"
 #include "../time/time_sync.h"
+#include "build/build_metadata.h"
 #include "Arduino.h"
 
 #include <ArduinoJson.h>
@@ -96,7 +97,7 @@ String defaultStateTopic() {
 
 String buildStatePayload(bool online, const char* ip, const char* reason) {
     String payload;
-    payload.reserve(96);
+    payload.reserve(320);
     payload += "{\"online\":";
     payload += online ? "true" : "false";
     if (ip && *ip) {
@@ -110,6 +111,7 @@ String buildStatePayload(bool online, const char* ip, const char* reason) {
         payload += "\"";
     }
     ForgeKeyTime::appendJson(payload);
+    ForgeKeyBuildMetadata::appendJson(payload);
     payload += "}";
     return payload;
 }
@@ -733,7 +735,9 @@ bool MqttClient::publishStatus(const char* jsonPayload) {
     StaticJsonDocument<1024> doc;
     DeserializationError err = deserializeJson(doc, jsonPayload);
     if (!err && doc.is<JsonObject>()) {
-        ForgeKeyTime::addJson(doc.as<JsonObject>());
+        JsonObject root = doc.as<JsonObject>();
+        ForgeKeyTime::addJson(root);
+        ForgeKeyBuildMetadata::addJson(root);
         serializeJson(doc, enriched);
         jsonPayload = enriched.c_str();
     }
@@ -774,7 +778,7 @@ bool MqttClient::publishLog(unsigned long timestampMs,
     if (logTopic.length() == 0) return false;
 
     String payload;
-    payload.reserve(256);
+    payload.reserve(512);
     payload += "{\"timestamp\":";
     payload += String(timestampMs);
     payload += ",\"level\":\"";
@@ -783,7 +787,9 @@ bool MqttClient::publishLog(unsigned long timestampMs,
     payload += escapeJsonString(tag ? tag : "");
     payload += "\",\"message\":\"";
     payload += escapeJsonString(message ? message : "");
-    payload += "\"}";
+    payload += "\"";
+    ForgeKeyBuildMetadata::appendJson(payload);
+    payload += "}";
 
     bool ok = client->publish(logTopic.c_str(), payload.c_str());
     if (ok) lastPublishMs = millis();

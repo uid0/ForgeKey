@@ -5,6 +5,7 @@
 
 #include "provisioning.h"
 #include "device_config.h"
+#include "build_metadata.h"
 #include "oms_ca.h"
 #include "oms_command_pubkey.h"
 
@@ -189,6 +190,7 @@ static char* build_enrollment_metadata_json(const char* mac,
 
     cJSON_AddStringToObject(meta, "mac_address", mac);
     cJSON_AddStringToObject(meta, "firmware_version", FORGEKEY_FIRMWARE_VERSION);
+    forgekey_build_metadata_add_json(meta);
     cJSON_AddStringToObject(meta, "sensor_kind", FORGEKEY_SENSOR_KIND);
     cJSON_AddNumberToObject(meta, "boot_count", (double)s_boot_count);
     cJSON_AddNumberToObject(meta, "free_heap", (double)esp_get_free_heap_size());

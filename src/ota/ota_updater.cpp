@@ -22,6 +22,7 @@
 #include "security/firmware_verify.h"
 #include "provisioning/device_config.h"
 #include "capabilities/registry.h"
+#include "build/build_metadata.h"
 
 #ifndef ARDUINO_BOARD
 #define ARDUINO_BOARD "arduino"
@@ -544,6 +545,7 @@ void OtaUpdater::appendHealthJson(String& payload) {
     String partition = running ? String(running->label) : String("");
     String bootPartition = boot ? String(boot->label) : String("");
     String nextPartition = next ? String(next->label) : String("");
+    ForgeKeyBuildMetadata::appendJson(payload);
     jsonStringField(payload, "ota_partition", partition);
     jsonStringField(payload, "ota_running_slot", partition);
     jsonStringField(payload, "ota_boot_slot", bootPartition);

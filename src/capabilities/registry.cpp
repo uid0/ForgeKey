@@ -1,4 +1,5 @@
 #include "registry.h"
+#include "build/build_metadata.h"
 #include <Arduino.h>
 
 namespace {
@@ -73,7 +74,7 @@ void tickAll() {
 
 String announcementJson(const char* firmwareVersion) {
     String out;
-    out.reserve(192);
+    out.reserve(512);
     out += "{\"capabilities\":[";
     bool first = true;
     for (Capability* c = g_head; c; c = c->next) {
@@ -86,7 +87,9 @@ String announcementJson(const char* firmwareVersion) {
     }
     out += "],\"firmware_version\":\"";
     out += firmwareVersion ? firmwareVersion : "";
-    out += "\"}";
+    out += "\"";
+    ForgeKeyBuildMetadata::appendJson(out);
+    out += "}";
     return out;
 }
 

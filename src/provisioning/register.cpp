@@ -14,6 +14,7 @@
 #include "security/oms_ca.h"
 #include "security/oms_command_pubkey.h"
 #include "../capabilities/status_led/status_led.h"
+#include "build/build_metadata.h"
 
 Provisioning provisioning;
 
@@ -361,6 +362,7 @@ bool Provisioning::enrollDevice(const char* host, uint16_t port,
 
     meta["mac_address"]      = mac;
     meta["firmware_version"] = FORGEKEY_FIRMWARE_VERSION;
+    ForgeKeyBuildMetadata::addJson(meta.as<JsonObject>());
     meta["sensor_kind"]      = FORGEKEY_SENSOR_KIND;
     meta["boot_count"]       = cachedBootCount;
     meta["free_heap"]        = ESP.getFreeHeap();

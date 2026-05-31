@@ -5,6 +5,7 @@
  */
 
 #include "ota_update.h"
+#include "build_metadata.h"
 #include "firmware_verify.h"
 #include "watchdog_manager.h"
 #include "oms_ca.h"
@@ -347,6 +348,8 @@ static void ota_load_previous_version(char* out, size_t out_len) {
 }
 
 void ota_add_health_json(cJSON* root) {
+    if (!root) return;
+    forgekey_build_metadata_add_json(root);
     const esp_partition_t* running = esp_ota_get_running_partition();
     const esp_partition_t* boot = esp_ota_get_boot_partition();
     const esp_partition_t* next = esp_ota_get_next_update_partition(NULL);
