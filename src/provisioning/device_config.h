@@ -1,10 +1,9 @@
 #ifndef DEVICE_CONFIG_H
 #define DEVICE_CONFIG_H
 
-// Compile-time configuration overrides for the OMS endpoint and the
-// shared provisioning bearer token. Override either via -D build flags
-// in platformio.ini (preferred for CI / per-build secrets) or by
-// editing this header.
+// Compile-time configuration overrides for the OMS endpoint and per-device
+// bootstrap identity. Override via -D build flags in platformio.ini
+// (preferred for CI / manufacturing) or by editing this header.
 
 #ifndef OMS_HOST
 #define OMS_HOST "dms.openmakersuite.net"
@@ -14,11 +13,30 @@
 #define OMS_PORT 443
 #endif
 
-// Bearer used in the X-ForgeKey-Provisioning-Token header for
-// /api/forgekey/devices/enroll/. Devices are physically controlled
-// in v1, so a shared token is acceptable; rotation arrives over OTA.
-#ifndef FORGEKEY_PROVISIONING_TOKEN
-#define FORGEKEY_PROVISIONING_TOKEN "019de078-eb77-706a-a52a-5901e10bcf8b"
+// Short-lived or per-device bearer used in the X-ForgeKey-Bootstrap-Token
+// header for /api/forgekey/devices/enroll/. Manufacturing should mint a
+// unique token per device (or per small batch with a short expiry) and bind it
+// to the MAC, device class, claim code, and manufacturing record in OMS.
+#ifndef FORGEKEY_BOOTSTRAP_TOKEN
+#ifdef FORGEKEY_PROVISIONING_TOKEN
+// Backward-compatible build flag alias while CI/manufacturing moves to the
+// per-device bootstrap name. Do not use this for new shared fleet secrets.
+#define FORGEKEY_BOOTSTRAP_TOKEN FORGEKEY_PROVISIONING_TOKEN
+#else
+#define FORGEKEY_BOOTSTRAP_TOKEN "REPLACE_ME_BOOTSTRAP_TOKEN"
+#endif
+#endif
+
+#ifndef FORGEKEY_BOOTSTRAP_CLAIM_CODE
+#define FORGEKEY_BOOTSTRAP_CLAIM_CODE ""
+#endif
+
+#ifndef FORGEKEY_MANUFACTURING_RECORD_ID
+#define FORGEKEY_MANUFACTURING_RECORD_ID ""
+#endif
+
+#ifndef FORGEKEY_SUPPORT_URL
+#define FORGEKEY_SUPPORT_URL "https://openmakersuite.net/forgekey/support"
 #endif
 
 // Static identity broadcast at enrollment. The OMS enroll endpoint

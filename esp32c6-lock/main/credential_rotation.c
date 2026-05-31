@@ -39,13 +39,13 @@ bool credential_rotation_handle_config(const char* topic, const uint8_t* payload
     strncpy(new_token, tok_q1 + 1, tok_len);
     new_token[tok_len] = '\0';
 
-    /* Update provisioning token */
+    /* Update bootstrap token */
     if (provisioning_set_token(new_token)) {
-        ESP_LOGI(TAG, "Provisioning token updated via MQTT");
+        ESP_LOGI(TAG, "Bootstrap token updated via MQTT");
         return true;
     }
 
-    ESP_LOGE(TAG, "Failed to update provisioning token");
+    ESP_LOGE(TAG, "Failed to update bootstrap token");
     return false;
 }
 
