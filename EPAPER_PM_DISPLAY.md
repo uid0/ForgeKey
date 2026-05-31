@@ -19,14 +19,14 @@ to. Builds against the `seeed_xiao_epaper` PlatformIO env.
   via the on-board LED1/LED2/LED3
 - **Battery ADC**: **not exposed** to the XIAO socket on the SKU
   6416 driver board (verified against the official schematic PDF).
-  The stock firmware reports `battery.available=false` in health
+  The stock firmware reports `power.battery.available=false` in health
   telemetry instead of a placeholder percentage. A hardware spin or
   field mod can route `BAT_4V2` through a divider to an ADC-capable
-  XIAO pin and define `FORGEKEY_EPAPER_BATTERY_ADC_PIN`,
-  `FORGEKEY_EPAPER_BATTERY_DIVIDER_NUM`,
-  `FORGEKEY_EPAPER_BATTERY_DIVIDER_DEN`,
-  `FORGEKEY_EPAPER_BATTERY_EMPTY_MV`, and
-  `FORGEKEY_EPAPER_BATTERY_FULL_MV` to enable voltage/percent reporting.
+  XIAO pin and define `FORGEKEY_BATTERY_ADC_PIN`,
+  `FORGEKEY_BATTERY_DIVIDER_NUM`,
+  `FORGEKEY_BATTERY_DIVIDER_DEN`,
+  `FORGEKEY_BATTERY_EMPTY_MV`, and
+  `FORGEKEY_BATTERY_FULL_MV` to enable voltage/percent reporting.
 
 ### Pin map (driver-board → XIAO socket)
 
@@ -179,8 +179,8 @@ persist at least these ePaper-specific fields:
 - `cycle_result`
 - `last_http_status`
 - `retired`
-- `battery.available`, `battery.source`, `battery.reason` or
-  `battery.voltage_mv`/`battery.percent` when ADC sensing is compiled in
+- `power.battery.available`, `power.battery.source`, `power.battery.reason` or
+  `power.battery.voltage_mv`/`power.battery.percent` when ADC sensing is compiled in; plus `power.wake_reason`, `power.reset_reason`, `power.brownout_count`, `power.source`, `power.sleep_policy`, and `power.alarms`
 
 The firmware also appends existing OTA slot health and board-manifest health
 fields to the same payload.

@@ -419,26 +419,49 @@ bool provisioning_persist(const prov_credentials_t* creds) {
     return true;
 }
 
-void provisioning_clear(void) {
+bool provisioning_wipe_credentials(bool wipe_bootstrap_token, bool wipe_wifi_credentials) {
+    bool ok = true;
     nvs_handle_t nvs_handle;
     esp_err_t err = forgekey_nvs_open(NVS_READWRITE, &nvs_handle);
-    if (err != ESP_OK) return;
+    if (err == ESP_OK) {
+        nvs_erase_key(nvs_handle, NVS_KEY_DEV_ID);
+        nvs_erase_key(nvs_handle, NVS_KEY_FW_TOPIC);
+        nvs_erase_key(nvs_handle, NVS_KEY_P_TOPIC);
+        nvs_erase_key(nvs_handle, NVS_KEY_CERT);
+        nvs_erase_key(nvs_handle, NVS_KEY_KEY);
+        nvs_erase_key(nvs_handle, NVS_KEY_CMD_PUB);
+        nvs_erase_key(nvs_handle, NVS_KEY_B_HOST);
+        nvs_erase_key(nvs_handle, NVS_KEY_B_PORT);
+        nvs_erase_key(nvs_handle, NVS_KEY_B_TLS);
+        nvs_erase_key(nvs_handle, NVS_KEY_ASSET_ID);
+        if (wipe_bootstrap_token) {
+            nvs_erase_key(nvs_handle, NVS_KEY_PROV_TOK);
+        }
+        nvs_commit(nvs_handle);
+        nvs_close(nvs_handle);
+    } else {
+        ok = false;
+    }
 
-    nvs_erase_key(nvs_handle, NVS_KEY_DEV_ID);
-    nvs_erase_key(nvs_handle, NVS_KEY_FW_TOPIC);
-    nvs_erase_key(nvs_handle, NVS_KEY_P_TOPIC);
-    nvs_erase_key(nvs_handle, NVS_KEY_CERT);
-    nvs_erase_key(nvs_handle, NVS_KEY_KEY);
-    nvs_erase_key(nvs_handle, NVS_KEY_CMD_PUB);
-    nvs_erase_key(nvs_handle, NVS_KEY_B_HOST);
-    nvs_erase_key(nvs_handle, NVS_KEY_B_PORT);
-    nvs_erase_key(nvs_handle, NVS_KEY_B_TLS);
-    nvs_erase_key(nvs_handle, NVS_KEY_ASSET_ID);
-    nvs_commit(nvs_handle);
-    nvs_close(nvs_handle);
+    if (wipe_wifi_credentials) {
+        nvs_handle_t wifi_handle;
+        if (nvs_open("wifi_creds", NVS_READWRITE, &wifi_handle) == ESP_OK) {
+            nvs_erase_all(wifi_handle);
+            nvs_commit(wifi_handle);
+            nvs_close(wifi_handle);
+        } else {
+            ok = false;
+        }
+    }
 
     memset(&s_creds, 0, sizeof(s_creds));
-    ESP_LOGI(TAG, "Credentials cleared");
+    ESP_LOGI(TAG, "Credentials wiped (bootstrap=%d wifi=%d ok=%d)",
+             (int)wipe_bootstrap_token, (int)wipe_wifi_credentials, (int)ok);
+    return ok;
+}
+
+void provisioning_clear(void) {
+    provisioning_wipe_credentials(false, false);
 }
 
 const char* provisioning_active_token(void) {

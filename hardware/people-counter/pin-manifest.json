@@ -19,34 +19,148 @@
       "id": "J2",
       "name": "Power",
       "type": "USB-C or solder pads",
-      "pins": ["5V", "GND"],
+      "pins": [
+        "5V",
+        "GND"
+      ],
       "notes": "Use the same ground reference for any fixture status LED or external power supply."
     }
   ],
   "pins": [
-    {"gpio": 10, "signal": "camera_xclk", "direction": "output", "pull": "none", "connector": "J1"},
-    {"gpio": 13, "signal": "camera_pclk", "direction": "input", "pull": "none", "connector": "J1"},
-    {"gpio": 38, "signal": "camera_vsync", "direction": "input", "pull": "none", "connector": "J1"},
-    {"gpio": 47, "signal": "camera_href", "direction": "input", "pull": "none", "connector": "J1"},
-    {"gpio": 15, "signal": "camera_d0_y2", "direction": "input", "pull": "none", "connector": "J1"},
-    {"gpio": 17, "signal": "camera_d1_y3", "direction": "input", "pull": "none", "connector": "J1"},
-    {"gpio": 18, "signal": "camera_d2_y4", "direction": "input", "pull": "none", "connector": "J1"},
-    {"gpio": 16, "signal": "camera_d3_y5", "direction": "input", "pull": "none", "connector": "J1"},
-    {"gpio": 14, "signal": "camera_d4_y6", "direction": "input", "pull": "none", "connector": "J1"},
-    {"gpio": 12, "signal": "camera_d5_y7", "direction": "input", "pull": "none", "connector": "J1"},
-    {"gpio": 11, "signal": "camera_d6_y8", "direction": "input", "pull": "none", "connector": "J1"},
-    {"gpio": 48, "signal": "camera_d7_y9", "direction": "input", "pull": "none", "connector": "J1"},
-    {"gpio": 40, "signal": "camera_sda", "direction": "bidirectional", "pull": "camera module pull-up", "bus": "camera_sccb", "connector": "J1"},
-    {"gpio": 39, "signal": "camera_scl", "direction": "output", "pull": "camera module pull-up", "bus": "camera_sccb", "connector": "J1"},
-    {"gpio": 21, "signal": "onboard_status_led", "direction": "output", "active": "low", "connector": "on-board"}
+    {
+      "gpio": 10,
+      "signal": "camera_xclk",
+      "direction": "output",
+      "pull": "none",
+      "connector": "J1"
+    },
+    {
+      "gpio": 13,
+      "signal": "camera_pclk",
+      "direction": "input",
+      "pull": "none",
+      "connector": "J1"
+    },
+    {
+      "gpio": 38,
+      "signal": "camera_vsync",
+      "direction": "input",
+      "pull": "none",
+      "connector": "J1"
+    },
+    {
+      "gpio": 47,
+      "signal": "camera_href",
+      "direction": "input",
+      "pull": "none",
+      "connector": "J1"
+    },
+    {
+      "gpio": 15,
+      "signal": "camera_d0_y2",
+      "direction": "input",
+      "pull": "none",
+      "connector": "J1"
+    },
+    {
+      "gpio": 17,
+      "signal": "camera_d1_y3",
+      "direction": "input",
+      "pull": "none",
+      "connector": "J1"
+    },
+    {
+      "gpio": 18,
+      "signal": "camera_d2_y4",
+      "direction": "input",
+      "pull": "none",
+      "connector": "J1"
+    },
+    {
+      "gpio": 16,
+      "signal": "camera_d3_y5",
+      "direction": "input",
+      "pull": "none",
+      "connector": "J1"
+    },
+    {
+      "gpio": 14,
+      "signal": "camera_d4_y6",
+      "direction": "input",
+      "pull": "none",
+      "connector": "J1"
+    },
+    {
+      "gpio": 12,
+      "signal": "camera_d5_y7",
+      "direction": "input",
+      "pull": "none",
+      "connector": "J1"
+    },
+    {
+      "gpio": 11,
+      "signal": "camera_d6_y8",
+      "direction": "input",
+      "pull": "none",
+      "connector": "J1"
+    },
+    {
+      "gpio": 48,
+      "signal": "camera_d7_y9",
+      "direction": "input",
+      "pull": "none",
+      "connector": "J1"
+    },
+    {
+      "gpio": 40,
+      "signal": "camera_sda",
+      "direction": "bidirectional",
+      "pull": "camera module pull-up",
+      "bus": "camera_sccb",
+      "connector": "J1"
+    },
+    {
+      "gpio": 39,
+      "signal": "camera_scl",
+      "direction": "output",
+      "pull": "camera module pull-up",
+      "bus": "camera_sccb",
+      "connector": "J1"
+    },
+    {
+      "gpio": 21,
+      "signal": "onboard_status_led",
+      "direction": "output",
+      "active": "low",
+      "connector": "on-board"
+    }
   ],
   "power": [
-    {"net": "5V", "source": "USB-C or regulated 5V", "load": "XIAO ESP32-S3 Sense"},
-    {"net": "3V3", "source": "XIAO regulator", "load": "OV3660 camera module"},
-    {"net": "GND", "source": "common", "load": "MCU and camera"}
+    {
+      "net": "5V",
+      "source": "USB-C or regulated 5V",
+      "load": "XIAO ESP32-S3 Sense"
+    },
+    {
+      "net": "3V3",
+      "source": "XIAO regulator",
+      "load": "OV3660 camera module"
+    },
+    {
+      "net": "GND",
+      "source": "common",
+      "load": "MCU and camera"
+    }
   ],
   "simulation": {
     "wokwi": "unsupported",
     "reason": "Wokwi does not model the XIAO ESP32-S3 Sense OV3660 camera pipeline or TensorFlow Lite inference path."
+  },
+  "battery_sense": {
+    "adc_pin": null,
+    "divider_ratio": null,
+    "low_mv": 3450,
+    "battery_supported": false,
+    "reason": "XIAO ESP32-S3 Sense build is powered from USB-C/5V and has no battery divider in the reference harness."
   }
 }

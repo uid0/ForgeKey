@@ -252,20 +252,45 @@ bool Provisioning::isProvisioned() const {
            creds.clientPrivateKeyPem.length() > 0;
 }
 
-void Provisioning::clear() {
+bool Provisioning::wipeCredentials(bool wipeBootstrapToken, bool wipeWifiProfiles) {
+    bool ok = true;
     Preferences p;
-    beginProvisioningPrefs(p, /*readOnly=*/false);
-    p.remove(kKeyDeviceId);
-    p.remove(kKeyFwTopic);
-    p.remove(kKeyPingTopic);
-    p.remove(kKeyClientCert);
-    p.remove(kKeyClientKey);
-    p.remove(kKeyCmdPubKey);
-    p.remove(kKeyBrokerHost);
-    p.remove(kKeyBrokerPort);
-    p.remove(kKeyBrokerTls);
-    p.end();
+    if (beginProvisioningPrefs(p, /*readOnly=*/false)) {
+        p.remove(kKeyDeviceId);
+        p.remove(kKeyFwTopic);
+        p.remove(kKeyPingTopic);
+        p.remove(kKeyClientCert);
+        p.remove(kKeyClientKey);
+        p.remove(kKeyCmdPubKey);
+        p.remove(kKeyBrokerHost);
+        p.remove(kKeyBrokerPort);
+        p.remove(kKeyBrokerTls);
+        if (wipeBootstrapToken) {
+            p.remove(kKeyProvTok);
+        }
+        p.end();
+    } else {
+        ok = false;
+    }
+
+    if (wipeWifiProfiles) {
+        Preferences wifiPrefs;
+        if (wifiPrefs.begin("fk_wifi", false)) {
+            wifiPrefs.clear();
+            wifiPrefs.end();
+        } else {
+            ok = false;
+        }
+    }
+
     creds = DeviceCredentials{};
+    Serial.printf("provisioning: credentials wiped (bootstrap=%d wifi_profiles=%d ok=%d)\n",
+                  (int)wipeBootstrapToken, (int)wipeWifiProfiles, (int)ok);
+    return ok;
+}
+
+void Provisioning::clear() {
+    wipeCredentials(false, false);
 }
 
 DeviceCredentials Provisioning::credentials() const { return creds; }

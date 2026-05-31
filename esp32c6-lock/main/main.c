@@ -53,6 +53,8 @@
 #include "boards/lock_board_manifest.h"
 #include "forgekey_time.h"
 #include "schema_contract.h"
+#include "power/power_manager.h"
+#include "watchdog_manager.h"
 
 static const char* TAG = "LOCK";
 
@@ -77,12 +79,38 @@ static bool command_has_operator_identity(cJSON* doc);
 static int current_wifi_rssi(void);
 static char s_last_command_id[72] = {0};
 static void ota_status_callback(const char* state, const char* version, int progress, const char* error);
+static void handle_lifecycle_command(const char* cmd, const char* command_id, const char* actor);
+static bool recover_subsystem(forgekey_watchdog_subsystem_t subsystem, const char* reason);
+
+static bool recover_subsystem(forgekey_watchdog_subsystem_t subsystem, const char* reason) {
+    LOCK_LOGW("Recovering subsystem %s: %s",
+              forgekey_watchdog_subsystem_name(subsystem), reason ? reason : "timeout");
+    switch (subsystem) {
+        case FORGEKEY_WATCHDOG_WIFI:
+            esp_wifi_disconnect();
+            esp_wifi_connect();
+            return true;
+        case FORGEKEY_WATCHDOG_MQTT:
+            return mqtt_handler_restart();
+        case FORGEKEY_WATCHDOG_BLE:
+        case FORGEKEY_WATCHDOG_CAMERA:
+        case FORGEKEY_WATCHDOG_SENSORS:
+            return true;
+        case FORGEKEY_WATCHDOG_LOCK_STATE_MACHINE:
+        case FORGEKEY_WATCHDOG_OTA:
+        case FORGEKEY_WATCHDOG_COUNT:
+        default:
+            return false;
+    }
+}
 
 /* Application entry point */
 void app_main(void) {
     LOCK_LOGI("ForgeKey Lock Starting...");
     LOCK_LOGI("Firmware version: %s", FORGEKEY_FIRMWARE_VERSION);
     LOCK_LOGI("ESP-IDF version: %s", esp_get_idf_version());
+    forgekey_watchdog_begin();
+    forgekey_watchdog_set_recovery_callback(recover_subsystem);
 
     /* ===== 1. NVS init ===== */
     esp_err_t ret = nvs_flash_init();
@@ -91,6 +119,8 @@ void app_main(void) {
         ESP_ERROR_CHECK(nvs_flash_init());
     }
     ESP_ERROR_CHECK(ret);
+    forgekey_power_init();
+    forgekey_power_set_sleep_policy("always_awake");
 
     /* ===== 2. GPIO manifest check + init (lock sensors) ===== */
     if (!lock_board_manifest_check()) {
@@ -238,6 +268,8 @@ void app_main(void) {
     while (1) {
         /* Tick lock state machine */
         lock_state_tick();
+        forgekey_watchdog_mark_healthy(FORGEKEY_WATCHDOG_LOCK_STATE_MACHINE);
+        forgekey_watchdog_mark_healthy(FORGEKEY_WATCHDOG_SENSORS);
 
         /* Tick web server */
         lock_web_server_tick();
@@ -260,6 +292,7 @@ void app_main(void) {
                 cJSON_AddStringToObject(root, "build_target", FORGEKEY_BUILD_TARGET);
                 cJSON_AddStringToObject(root, "framework", FORGEKEY_BUILD_FRAMEWORK);
                 lock_board_manifest_add_health_json(root);
+                forgekey_power_add_health_json(root, lock_board_manifest_battery_config());
                 char* json_str = cJSON_PrintUnformatted(root);
                 cJSON_Delete(root);
 
@@ -333,7 +366,9 @@ void app_main(void) {
             cJSON_AddStringToObject(root, "build_target", FORGEKEY_BUILD_TARGET);
             cJSON_AddStringToObject(root, "framework", FORGEKEY_BUILD_FRAMEWORK);
             lock_board_manifest_add_health_json(root);
+            forgekey_power_add_health_json(root, lock_board_manifest_battery_config());
             ota_add_health_json(root);
+            forgekey_watchdog_add_health_json(root);
             cJSON_AddStringToObject(root, "last_trigger", trigger_str);
             cJSON_AddStringToObject(root, "state", lock_state_state_name(lock_state_get_state()));
             cJSON_AddBoolToObject(root, "reed_closed", tel.reed_closed);
@@ -361,6 +396,7 @@ void app_main(void) {
 
         forgekey_time_tick();
         mqtt_handler_tick();
+        forgekey_watchdog_tick(mqtt_handler_is_connected());
         vTaskDelay(10 / portTICK_PERIOD_MS);
     }
 }
@@ -468,7 +504,10 @@ static void on_command_message(const char* topic, const uint8_t* payload, uint32
                                   strcmp(cmd_str, "init_ack") == 0 ||
                                   strcmp(cmd_str, "emergency_unlock") == 0 ||
                                   strcmp(cmd_str, "commission") == 0 ||
-                                  strcmp(cmd_str, "restart") == 0;
+                                  strcmp(cmd_str, "restart") == 0 ||
+                                  strcmp(cmd_str, "retire") == 0 ||
+                                  strcmp(cmd_str, "factory_reset") == 0 ||
+                                  strcmp(cmd_str, "reprovision") == 0;
     if (safety_sensitive && !command_has_operator_identity(doc)) {
         publish_command_reject_ack(cmd_str, command_id, "missing_operator_identity");
         cJSON_Delete(doc);
@@ -482,6 +521,14 @@ static void on_command_message(const char* topic, const uint8_t* payload, uint32
 
     if (strcmp(cmd_str, "status") == 0 || strcmp(cmd_str, "ping") == 0) {
         publish_status_snapshot(lock_state_get_mac_address(), cmd_str, command_id);
+    } else if (strcmp(cmd_str, "retire") == 0 ||
+               strcmp(cmd_str, "factory_reset") == 0 ||
+               strcmp(cmd_str, "reprovision") == 0) {
+        cJSON* actor_field = cJSON_GetObjectItemCaseSensitive(doc, "actor");
+        const char* actor = (cJSON_IsString(actor_field) && actor_field->valuestring) ? actor_field->valuestring : "";
+        handle_lifecycle_command(cmd_str, command_id, actor);
+        cJSON_Delete(doc);
+        return;
     } else if (strcmp(cmd_str, "restart") == 0) {
         cJSON* ack = cJSON_CreateObject();
         cJSON_AddStringToObject(ack, "schema_version", FORGEKEY_SCHEMA_COMMAND_ACK_V1);
@@ -552,6 +599,65 @@ static void on_command_message(const char* topic, const uint8_t* payload, uint32
     cJSON_Delete(doc);
 }
 
+static void persist_lifecycle_state(const char* state) {
+    nvs_handle_t nvs_handle;
+    if (nvs_open("fk_lifecycle", NVS_READWRITE, &nvs_handle) != ESP_OK) {
+        return;
+    }
+    nvs_set_str(nvs_handle, "state", state ? state : "unknown");
+    nvs_commit(nvs_handle);
+    nvs_close(nvs_handle);
+}
+
+static void publish_lifecycle_final_state(const char* cmd, const char* state,
+                                          const char* command_id, const char* actor) {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "online", false);
+    cJSON_AddStringToObject(root, "lifecycle_state", state ? state : "unknown");
+    cJSON_AddStringToObject(root, "reason", cmd ? cmd : "lifecycle_command");
+    cJSON_AddStringToObject(root, "command_id", command_id ? command_id : "");
+    cJSON_AddStringToObject(root, "actor", actor ? actor : "");
+    forgekey_time_add_json(root);
+    char* json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (json_str) {
+        mqtt_handler_publish_state_payload(json_str);
+        cJSON_free(json_str);
+    }
+}
+
+static void handle_lifecycle_command(const char* cmd, const char* command_id, const char* actor) {
+    const bool factory_reset = strcmp(cmd, "factory_reset") == 0;
+    const bool reprovision = strcmp(cmd, "reprovision") == 0;
+    const char* state = factory_reset ? "factory_reset" : (reprovision ? "reprovisioning" : "retired");
+    const char* detail = factory_reset ? "all_local_credentials_wiped" : "identity_cleared_wifi_retained";
+
+    persist_lifecycle_state(state);
+    publish_lifecycle_final_state(cmd, state, command_id, actor);
+    publish_lock_cmd_ack(cmd, command_id, state, NULL);
+
+    cJSON* ack = cJSON_CreateObject();
+    cJSON_AddStringToObject(ack, "cmd_ack", cmd ? cmd : "");
+    cJSON_AddStringToObject(ack, "command_id", command_id ? command_id : "");
+    cJSON_AddBoolToObject(ack, "ok", true);
+    cJSON_AddStringToObject(ack, "detail", detail);
+    forgekey_time_add_json(ack);
+    char* ack_json = cJSON_PrintUnformatted(ack);
+    cJSON_Delete(ack);
+    if (ack_json) {
+        mqtt_handler_publish_queued(mqtt_handler_get_status_topic(), ack_json, strlen(ack_json), 0, 0, true);
+        cJSON_free(ack_json);
+    }
+
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+    provisioning_wipe_credentials(factory_reset, factory_reset);
+    if (factory_reset) {
+        esp_wifi_restore();
+    }
+    vTaskDelay(250 / portTICK_PERIOD_MS);
+    esp_restart();
+}
+
 static void publish_status_snapshot(const char* mac_str, const char* requested_cmd, const char* command_id) {
     const char* status_topic = mqtt_handler_get_status_topic();
     if (!status_topic[0]) {
@@ -573,7 +679,9 @@ static void publish_status_snapshot(const char* mac_str, const char* requested_c
     cJSON_AddStringToObject(root, "build_target", FORGEKEY_BUILD_TARGET);
     cJSON_AddStringToObject(root, "framework", FORGEKEY_BUILD_FRAMEWORK);
     lock_board_manifest_add_health_json(root);
+    forgekey_power_add_health_json(root, lock_board_manifest_battery_config());
     ota_add_health_json(root);
+    forgekey_watchdog_add_health_json(root);
     forgekey_time_add_json(root);
     cJSON_AddNumberToObject(root, "free_heap", esp_get_free_heap_size());
     cJSON_AddNumberToObject(root, "rssi", current_wifi_rssi());
@@ -693,7 +801,9 @@ static void ota_status_callback(const char* state, const char* version, int prog
     if (progress >= 0 && progress <= 100) cJSON_AddNumberToObject(root, "progress", progress);
     if (error && error[0]) cJSON_AddStringToObject(root, "error", error);
     lock_board_manifest_add_health_json(root);
+    forgekey_power_add_health_json(root, lock_board_manifest_battery_config());
     ota_add_health_json(root);
+    forgekey_watchdog_add_health_json(root);
     forgekey_time_add_json(root);
     char* json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -752,7 +862,9 @@ static void on_firmware_dispatch(const char* topic, const uint8_t* payload, uint
     }
 
     LOCK_LOGI("Firmware dispatch: applying update");
+    forgekey_watchdog_mark_busy(FORGEKEY_WATCHDOG_OTA);
     ota_apply(url, sha256, signature, version, mandatory, ota_status_callback);
+    forgekey_watchdog_mark_idle(FORGEKEY_WATCHDOG_OTA);
     /* unreachable on success */
     LOCK_LOGW("Firmware dispatch: apply returned (failed)");
 }

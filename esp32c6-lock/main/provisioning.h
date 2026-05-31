@@ -42,8 +42,12 @@ prov_credentials_t provisioning_credentials(void);
 /* Persist credentials to NVS. */
 bool provisioning_persist(const prov_credentials_t* creds);
 
-/* Wipe stored credentials from NVS. */
+/* Wipe stored identity credentials from NVS, retaining bootstrap token and WiFi. */
 void provisioning_clear(void);
+
+/* Wipe lifecycle credentials from NVS. Optional flags also erase bootstrap token
+ * and lock WiFi credentials. */
+bool provisioning_wipe_credentials(bool wipe_bootstrap_token, bool wipe_wifi_credentials);
 
 /* Get active short-lived/per-device bootstrap token (NVS override or compile-time default). */
 const char* provisioning_active_token(void);

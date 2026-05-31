@@ -2,6 +2,7 @@
 #include "../lock_config.h"
 
 #include "esp_log.h"
+#include <stdio.h>
 
 static const char* TAG = "LOCK_BOARD";
 
@@ -16,6 +17,25 @@ static const lock_pin_claim_t PIN_CLAIMS[] = {
 static const int BOOT_STRAP_PINS[] = {8, 9, 15};
 static const int ADC_PINS[] = {0, 1, 2, 3, 4, 5, 6, 7};
 
+#ifndef CONFIG_FORGEKEY_LOCK_BATTERY_ADC_PIN
+#define CONFIG_FORGEKEY_LOCK_BATTERY_ADC_PIN -1
+#endif
+#ifndef CONFIG_FORGEKEY_LOCK_BATTERY_DIVIDER_NUM
+#define CONFIG_FORGEKEY_LOCK_BATTERY_DIVIDER_NUM 2
+#endif
+#ifndef CONFIG_FORGEKEY_LOCK_BATTERY_DIVIDER_DEN
+#define CONFIG_FORGEKEY_LOCK_BATTERY_DIVIDER_DEN 1
+#endif
+#ifndef CONFIG_FORGEKEY_LOCK_BATTERY_EMPTY_MV
+#define CONFIG_FORGEKEY_LOCK_BATTERY_EMPTY_MV 3300
+#endif
+#ifndef CONFIG_FORGEKEY_LOCK_BATTERY_FULL_MV
+#define CONFIG_FORGEKEY_LOCK_BATTERY_FULL_MV 4200
+#endif
+#ifndef CONFIG_FORGEKEY_LOCK_BATTERY_LOW_MV
+#define CONFIG_FORGEKEY_LOCK_BATTERY_LOW_MV 3450
+#endif
+
 static const lock_board_manifest_t BOARD = {
     .id = "esp32c6-lock",
     .name = "ESP32-C6 cabinet lock",
@@ -25,6 +45,15 @@ static const lock_board_manifest_t BOARD = {
     .boot_strap_pin_count = sizeof(BOOT_STRAP_PINS) / sizeof(BOOT_STRAP_PINS[0]),
     .adc_pins = ADC_PINS,
     .adc_pin_count = sizeof(ADC_PINS) / sizeof(ADC_PINS[0]),
+    .battery = {
+        .adc_pin = CONFIG_FORGEKEY_LOCK_BATTERY_ADC_PIN,
+        .divider_numerator = CONFIG_FORGEKEY_LOCK_BATTERY_DIVIDER_NUM,
+        .divider_denominator = CONFIG_FORGEKEY_LOCK_BATTERY_DIVIDER_DEN,
+        .empty_mv = CONFIG_FORGEKEY_LOCK_BATTERY_EMPTY_MV,
+        .full_mv = CONFIG_FORGEKEY_LOCK_BATTERY_FULL_MV,
+        .low_mv = CONFIG_FORGEKEY_LOCK_BATTERY_LOW_MV,
+        .unavailable_reason = "battery_adc_not_configured"
+    },
 };
 
 static bool pin_in_list(int gpio, const int* pins, unsigned count) {
@@ -36,6 +65,10 @@ static bool pin_in_list(int gpio, const int* pins, unsigned count) {
 
 const lock_board_manifest_t* lock_board_manifest_current(void) {
     return &BOARD;
+}
+
+const forgekey_power_battery_config_t* lock_board_manifest_battery_config(void) {
+    return &BOARD.battery;
 }
 
 bool lock_board_manifest_check(void) {
@@ -83,6 +116,16 @@ void lock_board_manifest_add_health_json(cJSON* root) {
         cJSON_AddItemToArray(pins, pin);
     }
     cJSON_AddItemToObject(hw, "pins", pins);
+
+    cJSON* battery_sense = cJSON_CreateObject();
+    cJSON_AddNumberToObject(battery_sense, "adc_pin", BOARD.battery.adc_pin);
+    char ratio[24];
+    snprintf(ratio, sizeof(ratio), "%u/%u", (unsigned)BOARD.battery.divider_numerator,
+             (unsigned)BOARD.battery.divider_denominator);
+    cJSON_AddStringToObject(battery_sense, "divider_ratio", ratio);
+    cJSON_AddNumberToObject(battery_sense, "low_mv", BOARD.battery.low_mv);
+    cJSON_AddBoolToObject(battery_sense, "configured", BOARD.battery.adc_pin >= 0);
+    cJSON_AddItemToObject(hw, "battery_sense", battery_sense);
 
     cJSON* active = cJSON_CreateArray();
     cJSON_AddItemToArray(active, cJSON_CreateString("cabinet_lock"));

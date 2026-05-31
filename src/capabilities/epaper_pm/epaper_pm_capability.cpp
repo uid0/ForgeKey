@@ -38,8 +38,8 @@
 // Battery telemetry note: the panel does NOT route a battery ADC line
 // to the XIAO socket (verified against the Seeed driver-board schematic
 // PDF). The default firmware therefore reports an explicit
-// battery.available=false health object. If a hardware spin or field mod
-// wires BAT_4V2 through a divider, define FORGEKEY_EPAPER_BATTERY_ADC_PIN
+// power.battery.available=false health object. If a hardware spin or field mod
+// wires BAT_4V2 through a divider, define FORGEKEY_BATTERY_ADC_PIN
 // plus divider calibration build flags to enable voltage telemetry.
 //
 // OTA note: ePaper skips MQTT but still participates in fleet OTA by
@@ -153,27 +153,10 @@ bool g_ranThisBoot = false;
 // straight into the namespace-global panel above.
 PNG g_png;
 
-// Optional battery ADC hardware. The stock SKU 6416 has no battery sense
-// route to the XIAO socket, so these compile-time flags are intentionally
-// absent by default and health reports battery.available=false. A field mod
-// may wire BAT_4V2 through a divider to an ADC-capable XIAO pin and define:
-//   FORGEKEY_EPAPER_BATTERY_ADC_PIN=<gpio>
-//   FORGEKEY_EPAPER_BATTERY_DIVIDER_NUM=<top+bottom ohms>
-//   FORGEKEY_EPAPER_BATTERY_DIVIDER_DEN=<bottom ohms>
-//   FORGEKEY_EPAPER_BATTERY_EMPTY_MV=<default 3300>
-//   FORGEKEY_EPAPER_BATTERY_FULL_MV=<default 4200>
-#ifndef FORGEKEY_EPAPER_BATTERY_EMPTY_MV
-#define FORGEKEY_EPAPER_BATTERY_EMPTY_MV 3300
-#endif
-#ifndef FORGEKEY_EPAPER_BATTERY_FULL_MV
-#define FORGEKEY_EPAPER_BATTERY_FULL_MV 4200
-#endif
-#ifndef FORGEKEY_EPAPER_BATTERY_DIVIDER_NUM
-#define FORGEKEY_EPAPER_BATTERY_DIVIDER_NUM 2
-#endif
-#ifndef FORGEKEY_EPAPER_BATTERY_DIVIDER_DEN
-#define FORGEKEY_EPAPER_BATTERY_DIVIDER_DEN 1
-#endif
+// Battery sensing is handled by the shared power module and board manifest.
+// The stock SKU 6416 has no battery sense route to the XIAO socket, so its
+// manifest reports an unsupported ADC path until a hardware revision or field
+// divider configures FORGEKEY_BATTERY_ADC_PIN and divider calibration macros.
 
 // ---- URL helpers ---------------------------------------------------
 
@@ -754,24 +737,6 @@ const char *fetchImage() {
     return painted ? "ok" : "error";
 }
 
-int readBatteryVoltageMv() {
-#if defined(FORGEKEY_EPAPER_BATTERY_ADC_PIN)
-    const int sensedMv = analogReadMilliVolts(FORGEKEY_EPAPER_BATTERY_ADC_PIN);
-    return (sensedMv * FORGEKEY_EPAPER_BATTERY_DIVIDER_NUM) /
-           FORGEKEY_EPAPER_BATTERY_DIVIDER_DEN;
-#else
-    return -1;
-#endif
-}
-
-int batteryPercentFromMv(int mv) {
-    if (mv < 0) return -1;
-    if (mv <= FORGEKEY_EPAPER_BATTERY_EMPTY_MV) return 0;
-    if (mv >= FORGEKEY_EPAPER_BATTERY_FULL_MV) return 100;
-    return ((mv - FORGEKEY_EPAPER_BATTERY_EMPTY_MV) * 100) /
-           (FORGEKEY_EPAPER_BATTERY_FULL_MV - FORGEKEY_EPAPER_BATTERY_EMPTY_MV);
-}
-
 bool postHealth(const char *cycleResult) {
     if (WiFi.status() != WL_CONNECTED || g_displayId.length() == 0) {
         return false;
@@ -808,21 +773,9 @@ bool postHealth(const char *cycleResult) {
     payload += ",\"last_http_status\":" + String(g_lastHttpStatus);
     payload += ",\"retired\":" + String(g_retiredByCommand ? "true" : "false");
 
-    const int batteryMv = readBatteryVoltageMv();
-    payload += ",\"battery\":{";
-    if (batteryMv >= 0) {
-        payload += "\"available\":true";
-        payload += ",\"voltage_mv\":" + String(batteryMv);
-        payload += ",\"percent\":" + String(batteryPercentFromMv(batteryMv));
-        payload += ",\"source\":\"adc\"";
-    } else {
-        payload += "\"available\":false";
-        payload += ",\"source\":\"unavailable\"";
-        payload += ",\"reason\":\"sku_6416_no_battery_adc_to_xiao_socket\"";
-    }
-    payload += "}";
     OtaUpdater::appendHealthJson(payload);
     BoardManifest::appendHealthJson(payload, CapabilityRegistry::head());
+    PowerManager::appendHealthJson(payload, BoardManifest::batteryConfig());
     payload += "}";
 
     const int code = http.POST(payload);
@@ -920,6 +873,7 @@ void requestDeepSleep(uint32_t minutes) {
     minutes = clampWakeInterval(minutes);
     const uint64_t microseconds = static_cast<uint64_t>(minutes) * 60ULL * 1000000ULL;
     Serial.printf("[epaper] deep-sleeping for %u minute(s)\n", minutes);
+    PowerManager::setSleepPolicy("deep_sleep_adaptive");
     esp_sleep_enable_timer_wakeup(microseconds);
     esp_deep_sleep_start();
 }
@@ -937,6 +891,8 @@ bool detectFn() {
 }
 
 void setupFn() {
+    PowerManager::begin();
+    PowerManager::setSleepPolicy("deep_sleep_adaptive");
     g_panel.begin();
     loadFromNvs();
     Serial.printf("[epaper] booted; mac=%s\n", WiFi.macAddress().c_str());

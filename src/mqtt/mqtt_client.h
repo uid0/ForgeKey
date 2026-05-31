@@ -111,6 +111,7 @@ public:
 
     bool isConnected();
     void loop();
+    bool restart();
     void end();
 
     // Diagnostic accessors. lastSuccessfulPublishMs() returns 0 if nothing

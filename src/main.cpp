@@ -9,15 +9,18 @@
 #include "provisioning/register.h"
 #include "ota/ota_updater.h"
 #include "config/credential_rotation.h"
+#include "config/device_lifecycle.h"
 #include "config/wifi_desired_state.h"
 #include "config/ble_desired_state.h"
 #include "security/command_validation.h"
 #include "time/time_sync.h"
 #include "wifi_setup/captive.h"
+#include "watchdog/watchdog_manager.h"
 
 #include "capabilities/registry.h"
 #include "capabilities/status_led/status_led.h"
 #include "boards/board_manifest.h"
+#include "power/power_manager.h"
 
 #ifndef FORGEKEY_DISABLE_BLE_SCANNER
 #include "capabilities/ble_scanner/ble_scanner.h"
@@ -236,6 +239,7 @@ static void publishStatusSnapshot(const char* requestedCmd, const char* commandI
     payload += String(WiFi.RSSI());
     WifiSetup::appendHealthJson(payload);
     BoardManifest::appendHealthJson(payload, CapabilityRegistry::head());
+    PowerManager::appendHealthJson(payload, BoardManifest::batteryConfig());
     payload += ",\"ble_config\":";
     ble_desired_state::appendConfigJson(payload);
     payload += ",\"capability_health\":{\"ble\":{";
@@ -270,6 +274,7 @@ static void publishStatusSnapshot(const char* requestedCmd, const char* commandI
     payload += macAddress;
     payload += "\"";
     OtaUpdater::appendHealthJson(payload);
+    ForgeKeyWatchdog::appendHealthJson(payload);
     payload += "}";
     mqttClient.publishStatus(payload.c_str());
     StatusLed::triggerMessageFlash();
@@ -387,6 +392,18 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
     if (strcmp(cmd, "status") == 0 || strcmp(cmd, "ping") == 0) {
         publishStatusSnapshot(cmd, commandId);
         debugPrintf("INFO", "CMD", "%s -> status snapshot", cmd);
+        return;
+    }
+    if (strcmp(cmd, "retire") == 0 || strcmp(cmd, "factory_reset") == 0 ||
+        strcmp(cmd, "reprovision") == 0) {
+        device_lifecycle::Action action = device_lifecycle::Action::Retire;
+        if (strcmp(cmd, "factory_reset") == 0) {
+            action = device_lifecycle::Action::FactoryReset;
+        } else if (strcmp(cmd, "reprovision") == 0) {
+            action = device_lifecycle::Action::Reprovision;
+        }
+        debugPrintf("WARN", "LIFE", "accepted signed lifecycle command %s", cmd);
+        device_lifecycle::handleSignedCommand(action, commandId, validation.actor.c_str());
         return;
     }
     if (strcmp(cmd, "capture") == 0 || strcmp(cmd, "capture_photo") == 0) {
@@ -521,6 +538,7 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
 #endif
     if (strcmp(cmd, "forget_ble") == 0) {
         // Clear BLE peers and equipment tags from NVS.
+        ForgeKeyWatchdog::CriticalSection watchdogSafeFlash("forget_ble_nvs");
         nvs_handle handle;
         if (nvs_open("forgekey_ble", NVS_READWRITE, &handle) == ESP_OK) {
             nvs_erase_key(handle, "peers");
@@ -741,13 +759,41 @@ static void onFirmwareDispatch(const char* topic, const uint8_t* payload, unsign
     }
 #endif
 #endif
+    ForgeKeyWatchdog::markBusy(ForgeKeyWatchdog::Subsystem::OTA);
     otaUpdater.apply(spec);  // does not return on success
+    ForgeKeyWatchdog::markIdle(ForgeKeyWatchdog::Subsystem::OTA);
 }
 
 // First-boot: capture an artifact (people-counter photo if camera detected,
 // otherwise empty body) and POST to OMS, submitting a CSR and getting back
 // our signed device identity plus broker policy.
 // Returns true on success (credentials persisted).
+
+static bool recoverSubsystem(ForgeKeyWatchdog::Subsystem subsystem, const char* reason) {
+    debugPrintf("WARN", "WDT", "recovering %s: %s",
+                ForgeKeyWatchdog::subsystemName(subsystem), reason ? reason : "timeout");
+    switch (subsystem) {
+        case ForgeKeyWatchdog::Subsystem::WiFi:
+            WiFi.disconnect(false, false);
+            WiFi.reconnect();
+            return true;
+        case ForgeKeyWatchdog::Subsystem::MQTT:
+            return mqttClient.restart();
+        case ForgeKeyWatchdog::Subsystem::BLE:
+            // BLE desired-state is applied on config changes; mark the subsystem
+            // healthy so individual BLE capabilities get another scan interval
+            // before the device escalates to a full reboot.
+            return true;
+        case ForgeKeyWatchdog::Subsystem::Camera:
+        case ForgeKeyWatchdog::Subsystem::Sensors:
+        case ForgeKeyWatchdog::Subsystem::LockStateMachine:
+        case ForgeKeyWatchdog::Subsystem::OTA:
+        case ForgeKeyWatchdog::Subsystem::Count:
+        default:
+            return false;
+    }
+}
+
 static bool runProvisioning() {
     uint8_t* jpeg = nullptr;
     size_t jpegLen = 0;
@@ -781,8 +827,11 @@ static bool runProvisioning() {
 }
 
 void setup() {
+    PowerManager::begin();
     Serial.begin(115200);
     delay(1000);
+    ForgeKeyWatchdog::begin();
+    ForgeKeyWatchdog::setRecoveryCallback(recoverSubsystem);
 
     debugPrint("INFO", "MAIN", "ForgeKey Starting...");
     debugPrintf("INFO", "MAIN", "Firmware version: %s", FORGEKEY_FIRMWARE_VERSION);
@@ -1037,7 +1086,9 @@ void loop() {
     // fetch + battery POST + deep sleep) on its own. Skip the rest of
     // the loop body so we don't dereference mqttClient/photoUploader
     // members that the ePaper setup() never initialised.
+    ForgeKeyWatchdog::markHealthy(ForgeKeyWatchdog::Subsystem::Sensors);
     CapabilityRegistry::tickAll();
+    ForgeKeyWatchdog::tick(false);
     return;
 #endif
 
@@ -1082,10 +1133,18 @@ void loop() {
     tickOtaRapidChecking(mqttConnected);
 
     CapabilityRegistry::tickAll();
+#if !defined(FORGEKEY_TEMPERATURE_SENSOR) && !defined(FORGEKEY_EPAPER)
+    ForgeKeyWatchdog::markHealthy(ForgeKeyWatchdog::Subsystem::Camera);
+#endif
+    ForgeKeyWatchdog::markHealthy(ForgeKeyWatchdog::Subsystem::Sensors);
+#ifndef FORGEKEY_DISABLE_BLE_SCANNER
+    ForgeKeyWatchdog::markHealthy(ForgeKeyWatchdog::Subsystem::BLE);
+#endif
 
 #ifdef FORGEKEY_LOCK
     // Tick the embedded web server (handles client connections)
     LockWeb::tick();
+    ForgeKeyWatchdog::markHealthy(ForgeKeyWatchdog::Subsystem::LockStateMachine);
 #endif
 
     // Identify-blink auto-expiry echo. status_led's tick() flips this when a
@@ -1100,5 +1159,6 @@ void loop() {
     WifiSetup::tickHealth();
 
     mqttClient.loop();
+    ForgeKeyWatchdog::tick(mqttClient.isConnected());
     delay(10);
 }

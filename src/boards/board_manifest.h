@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include "capabilities/capability.h"
+#include "power/power_manager.h"
 
 namespace BoardManifest {
 
@@ -46,6 +47,7 @@ struct Board {
     size_t adcPinCount;
     const BusManifest* buses;
     size_t busCount;
+    PowerManager::BatteryConfig battery;
 };
 
 const Board& current();
@@ -57,6 +59,7 @@ bool mmwaveConfigured();
 int mmwaveRxPin();
 int mmwaveTxPin();
 uint32_t mmwaveBaud();
+const PowerManager::BatteryConfig& batteryConfig();
 
 // Deactivates active capabilities whose manifest claims conflict, use unsafe
 // pins without explicit ownership, or are not allowed for this target. Must run

@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include "cJSON.h"
+#include "power/power_manager.h"
 
 typedef struct {
     int gpio;
@@ -22,10 +23,12 @@ typedef struct {
     unsigned boot_strap_pin_count;
     const int* adc_pins;
     unsigned adc_pin_count;
+    forgekey_power_battery_config_t battery;
 } lock_board_manifest_t;
 
 const lock_board_manifest_t* lock_board_manifest_current(void);
 bool lock_board_manifest_check(void);
 void lock_board_manifest_add_health_json(cJSON* root);
+const forgekey_power_battery_config_t* lock_board_manifest_battery_config(void);
 
 #endif

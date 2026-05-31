@@ -9,33 +9,149 @@
     "lock_power": "External 12V supply sized for solenoid inrush"
   },
   "connectors": [
-    {"id": "J1", "name": "Solenoid output", "type": "2-pin locking pluggable terminal", "pinout": ["+12V_SOL", "SOLENOID_LOW_SIDE_DRAIN"]},
-    {"id": "J2", "name": "Door reed", "type": "2-pin JST-XH", "pinout": ["GPIO1_REED", "GND"]},
-    {"id": "J3", "name": "IR beam receiver", "type": "3-pin JST-XH", "pinout": ["3V3", "GPIO4_IR", "GND"]},
-    {"id": "J4", "name": "Mortise/latch switch", "type": "2-pin JST-XH", "pinout": ["GPIO5_MORTISE", "GND"]},
-    {"id": "J5", "name": "Latch supervisor", "type": "2-pin JST-XH", "pinout": ["GPIO6_LATCH", "GND"]},
-    {"id": "J6", "name": "Power input", "type": "2-pin pluggable terminal", "pinout": ["+12V", "GND"]}
+    {
+      "id": "J1",
+      "name": "Solenoid output",
+      "type": "2-pin locking pluggable terminal",
+      "pinout": [
+        "+12V_SOL",
+        "SOLENOID_LOW_SIDE_DRAIN"
+      ]
+    },
+    {
+      "id": "J2",
+      "name": "Door reed",
+      "type": "2-pin JST-XH",
+      "pinout": [
+        "GPIO1_REED",
+        "GND"
+      ]
+    },
+    {
+      "id": "J3",
+      "name": "IR beam receiver",
+      "type": "3-pin JST-XH",
+      "pinout": [
+        "3V3",
+        "GPIO4_IR",
+        "GND"
+      ]
+    },
+    {
+      "id": "J4",
+      "name": "Mortise/latch switch",
+      "type": "2-pin JST-XH",
+      "pinout": [
+        "GPIO5_MORTISE",
+        "GND"
+      ]
+    },
+    {
+      "id": "J5",
+      "name": "Latch supervisor",
+      "type": "2-pin JST-XH",
+      "pinout": [
+        "GPIO6_LATCH",
+        "GND"
+      ]
+    },
+    {
+      "id": "J6",
+      "name": "Power input",
+      "type": "2-pin pluggable terminal",
+      "pinout": [
+        "+12V",
+        "GND"
+      ]
+    }
   ],
   "pins": [
-    {"gpio": 0, "signal": "solenoid_gate", "direction": "output", "active": "high", "pull": "none", "connector": "J1", "driver": "logic-level N-MOSFET low-side switch"},
-    {"gpio": 1, "signal": "reed_switch", "direction": "input", "active": "low/closed", "pull": "internal pull-up", "connector": "J2"},
-    {"gpio": 4, "signal": "ir_beam", "direction": "input", "active": "low/broken", "pull": "internal pull-up", "connector": "J3"},
-    {"gpio": 5, "signal": "mortise", "direction": "input", "active": "low/active", "pull": "internal pull-up", "connector": "J4"},
-    {"gpio": 6, "signal": "latch_supervisor", "direction": "input", "active": "low/locked", "pull": "internal pull-up", "connector": "J5"}
+    {
+      "gpio": 0,
+      "signal": "solenoid_gate",
+      "direction": "output",
+      "active": "high",
+      "pull": "none",
+      "connector": "J1",
+      "driver": "logic-level N-MOSFET low-side switch"
+    },
+    {
+      "gpio": 1,
+      "signal": "reed_switch",
+      "direction": "input",
+      "active": "low/closed",
+      "pull": "internal pull-up",
+      "connector": "J2"
+    },
+    {
+      "gpio": 4,
+      "signal": "ir_beam",
+      "direction": "input",
+      "active": "low/broken",
+      "pull": "internal pull-up",
+      "connector": "J3"
+    },
+    {
+      "gpio": 5,
+      "signal": "mortise",
+      "direction": "input",
+      "active": "low/active",
+      "pull": "internal pull-up",
+      "connector": "J4"
+    },
+    {
+      "gpio": 6,
+      "signal": "latch_supervisor",
+      "direction": "input",
+      "active": "low/locked",
+      "pull": "internal pull-up",
+      "connector": "J5"
+    }
   ],
   "power": [
-    {"net": "+12V", "source": "external lock PSU", "load": "solenoid coil and 5V/3V3 regulator input if fitted"},
-    {"net": "3V3", "source": "ESP32-C6 regulator", "load": "reed, IR receiver, latch/mortise inputs"},
-    {"net": "GND", "source": "common", "load": "MCU, MOSFET source, sensors, lock PSU negative"}
+    {
+      "net": "+12V",
+      "source": "external lock PSU",
+      "load": "solenoid coil and 5V/3V3 regulator input if fitted"
+    },
+    {
+      "net": "3V3",
+      "source": "ESP32-C6 regulator",
+      "load": "reed, IR receiver, latch/mortise inputs"
+    },
+    {
+      "net": "GND",
+      "source": "common",
+      "load": "MCU, MOSFET source, sensors, lock PSU negative"
+    }
   ],
   "protection": [
-    {"part": "flyback_diode", "connection": "cathode to +12V_SOL, anode to MOSFET drain/solenoid low side", "requirement": "current rating >= solenoid hold current; reverse voltage >= supply"},
-    {"part": "gate_resistor", "connection": "GPIO0 to MOSFET gate", "value": "100-220 ohm"},
-    {"part": "gate_pulldown", "connection": "MOSFET gate to GND", "value": "100k"}
+    {
+      "part": "flyback_diode",
+      "connection": "cathode to +12V_SOL, anode to MOSFET drain/solenoid low side",
+      "requirement": "current rating >= solenoid hold current; reverse voltage >= supply"
+    },
+    {
+      "part": "gate_resistor",
+      "connection": "GPIO0 to MOSFET gate",
+      "value": "100-220 ohm"
+    },
+    {
+      "part": "gate_pulldown",
+      "connection": "MOSFET gate to GND",
+      "value": "100k"
+    }
   ],
   "simulation": {
     "wokwi": "supported-for-logic",
     "project": "wokwi/diagram.json",
     "limitations": "Solenoid is represented by an LED/load indicator; coil inductance, inrush, heating, and flyback stress require bench validation."
+  },
+  "battery_sense": {
+    "adc_pin": null,
+    "divider_ratio": null,
+    "low_mv": 3450,
+    "battery_supported": false,
+    "reason": "Reference lock controller is external-PSU powered; battery backup sensing requires an added divider to an ADC GPIO."
   }
 }
