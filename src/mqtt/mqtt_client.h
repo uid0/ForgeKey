@@ -69,6 +69,9 @@ public:
     // Publish an arbitrary JSON payload on statusTopic. Used for command
     // acks and operator-visible state echoes. Best-effort.
     bool publishStatus(const char* jsonPayload);
+    // Queue a status payload for retry with exponential backoff. Critical
+    // entries are persisted to NVS until PubSubClient accepts the publish.
+    bool enqueueStatus(const char* jsonPayload, bool critical = true);
     // Publish the retained device state JSON on stateTopic so subscribers can
     // immediately see the device's last known online/offline state.
     bool publishStateJson(const char* jsonPayload);
@@ -137,8 +140,25 @@ private:
     MessageHandler configHandler;
     MessageHandler commandHandler;
 
+    struct OutboundMessage {
+        String topic;
+        String payload;
+        bool retain = false;
+        bool critical = false;
+        unsigned long nextAttemptMs = 0;
+        uint8_t attempts = 0;
+    };
+    static constexpr size_t kOutboundQueueSize = 8;
+    OutboundMessage outboundQueue[kOutboundQueueSize];
+    size_t outboundQueueCount = 0;
+
     bool connect();
     void resubscribeAll();
+    bool publishImmediate(const char* topic, const char* payload, bool retain);
+    bool enqueueOutbound(const char* topic, const char* payload, bool retain, bool critical);
+    void serviceOutboundQueue();
+    void persistCriticalQueue();
+    void loadCriticalQueue();
     static void staticCallback(char* topic, uint8_t* payload, unsigned int length);
 };
 
