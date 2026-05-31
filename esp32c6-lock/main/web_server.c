@@ -7,6 +7,7 @@
 #include "lock_state.h"
 #include "lock_config.h"
 #include "device_config.h"
+#include "forgekey_time.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -224,11 +225,13 @@ const char* lock_web_server_get_json_status(void) {
     lock_telemetry_t tel = lock_state_get_telemetry();
     lock_state_t state = lock_state_get_state();
     const char* state_name = lock_state_state_name(state);
+    forgekey_time_status_t time_status = forgekey_time_status();
 
     s_json_len = snprintf(s_json_cache, sizeof(s_json_cache),
         "{\"mac\":\"%s\",\"secure\":%s,\"item_present\":%s,"
-        "\"uptime\":%lu,\"firmware_version\":\"%s\","
-        "\"build_target\":\"%s\",\"framework\":\"%s\","
+        "\"uptime\":%lu,\"clock_valid\":%s,\"ntp_synced\":%s,"
+        "\"epoch_time\":%ld,\"last_ntp_sync_age_s\":%lu,"
+        "\"firmware_version\":\"%s\",\"build_target\":\"%s\",\"framework\":\"%s\","
         "\"state\":\"%s\",\"reed_closed\":%s,"
         "\"latch_locked\":%s,\"ir_broken\":%s,\"mortise_active\":%s,"
         "\"asset_id\":\"%s\"}",
@@ -236,6 +239,10 @@ const char* lock_web_server_get_json_status(void) {
         tel.secure ? "true" : "false",
         !tel.ir_broken ? "true" : "false",
         (unsigned long)tel.uptime_ms,
+        time_status.clock_valid ? "true" : "false",
+        time_status.ntp_synced ? "true" : "false",
+        (long)time_status.epoch_time,
+        (unsigned long)time_status.last_sync_age_s,
         FORGEKEY_FIRMWARE_VERSION,
         FORGEKEY_BUILD_TARGET,
         FORGEKEY_BUILD_FRAMEWORK,

@@ -270,6 +270,37 @@ When eligible:
 Photos are JPEG-encoded from the same QVGA grayscale frame the detector uses,
 which keeps memory pressure low (one camera config, one PSRAM frame buffer).
 
+## Time requirements and clock health
+
+ForgeKey devices have no trusted battery-backed wall clock. After WiFi is up,
+firmware starts SNTP in UTC (`pool.ntp.org`, then `time.nist.gov`) through the
+shared time module:
+
+- Arduino/PlatformIO builds use `src/time/time_sync.{h,cpp}`.
+- The ESP32-C6 lock build uses `esp32c6-lock/main/forgekey_time.{h,c}`.
+
+The module exposes separate wall-clock and monotonic values so callers do not mix clock domains:
+
+| Field | Meaning | Use |
+|-------|---------|-----|
+| `clock_valid` | `true` only when the epoch is plausible and the last NTP sync is within the allowed age window (default 24h) | Gate wall-clock security decisions |
+| `ntp_synced` | SNTP has set the system clock at least once this boot | Diagnose network/NTP reachability |
+| `epoch_time` | Timezone-neutral Unix epoch seconds from `time()` | Timestamps, JWT `exp`/`iat`, TLS validity |
+| `last_ntp_sync_age_s` | Monotonic age of the last SNTP sync | Detect stale wall-clock state |
+| `uptime_ms` | Monotonic uptime from `millis()`/`esp_timer_get_time()` | Durations, backoff, debounce, local scheduling |
+
+Status, health, diagnostics, OTA status, device state, telemetry, and command
+ack payloads include these clock fields. Operators should treat `timestamp` or
+`epoch_time` as UTC epoch seconds only when `clock_valid` is `true`; `uptime_ms`
+remains valid for elapsed-time math regardless of wall-clock sync.
+
+Signed command envelopes that require wall-clock checks (`issued_at`,
+`expires_at`, or JWT `exp`) are rejected with `clock_invalid` until the clock is
+valid. The only exception is a server-provided challenge/nonce flow (`auth_flow:
+"challenge"`/`"nonce"`, `challenge`, or `server_nonce` present), where freshness
+comes from the signed one-time challenge plus the device replay cache instead
+of the device wall clock.
+
 ## OTA firmware updates
 
 OTA is dispatched over MQTT, not pulled. After enrollment the device
@@ -323,10 +354,20 @@ OMS can render an OTA progress UI in real time. The status topic defaults to
 the dispatch topic plus `/status` (e.g. `forgekey/<mac>/people_counter/firmware/status`)
 and can be overridden via `MqttClient::setFirmwareStatusTopic()`.
 
-Payload shape:
+Payload shape (clock fields are included on every OTA status):
 
 ```json
-{"state": "downloading", "version": "0.2.0", "progress": 60, "ts": 12345678}
+{
+  "state": "downloading",
+  "version": "0.2.0",
+  "progress": 60,
+  "clock_valid": true,
+  "ntp_synced": true,
+  "epoch_time": 1715150000,
+  "last_ntp_sync_age_s": 12,
+  "uptime_ms": 12345678,
+  "ts": 1715150000
+}
 ```
 
 Lifecycle states, in order:
@@ -547,7 +588,7 @@ pipeline is compiled out and a DHT 21 (AM2301) is sampled instead.
 | Sensor kind sent at enrollment | `people-counter` | `temperature-sensor` |
 | MQTT topic kind segment | `people_counter` | `temperature_sensor` |
 | Publish topic leaf | `/occupancy` | `/reading` |
-| Publish payload | `{count, timestamp}` | `{tempC, humidity, timestamp}` |
+| Publish payload | `{count, timestamp, clock_valid, ntp_synced, epoch_time, uptime_ms, last_ntp_sync_age_s}` | `{tempC, humidity, timestamp, clock_valid, ntp_synced, epoch_time, uptime_ms, last_ntp_sync_age_s}` |
 | Publish cadence | on-change + ≤10s | every 30s (`TEMPERATURE_SAMPLE_INTERVAL_MS`) |
 | Hardware | XIAO ESP32-S3 Sense (camera) | XIAO ESP32-S3 + DHT21 on GPIO 2 |
 | Photo upload | yes | n/a |

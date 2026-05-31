@@ -9,6 +9,7 @@ idf_component_register(
          "web_server.c"
          "ota_update.c"
          "credential_rotation.c"
+         "forgekey_time.c"
          "command_validation.c"
          "firmware_verify.c"
     INCLUDE_DIRS "."
@@ -30,6 +31,7 @@ idf_component_register(
         esp_timer
         esp_system
         esp_timer
+        lwip
         mbedtls
 )
 
