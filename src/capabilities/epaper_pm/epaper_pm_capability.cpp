@@ -71,6 +71,8 @@
 #include "../capability.h"
 #include "../../provisioning/device_config.h"
 #include "../../ota/ota_updater.h"
+#include "../../boards/board_manifest.h"
+#include "../registry.h"
 
 namespace EPaperPmCapability {
 
@@ -348,6 +350,7 @@ void postOtaStatus(const char *state, const char *version, int progress, const c
         payload += "\"";
     }
     OtaUpdater::appendHealthJson(payload);
+    BoardManifest::appendHealthJson(payload, CapabilityRegistry::head());
     payload += "}";
     const int code = http.POST(payload);
     http.end();

@@ -16,6 +16,7 @@
 
 #include "capabilities/registry.h"
 #include "capabilities/status_led/status_led.h"
+#include "boards/board_manifest.h"
 
 #ifndef FORGEKEY_DISABLE_BLE_SCANNER
 #include "capabilities/ble_scanner/ble_scanner.h"
@@ -227,6 +228,9 @@ static void publishStatusSnapshot(const char* requestedCmd, const char* commandI
     payload += ",\"rssi\":";
     payload += String(WiFi.RSSI());
     WifiSetup::appendHealthJson(payload);
+    BoardManifest::appendHealthJson(payload, CapabilityRegistry::head());
+    payload += ",\"uptime_ms\":";
+    payload += String(millis());
     ForgeKeyTime::appendJson(payload);
     payload += ",\"mac\":\"";
     payload += macAddress;
@@ -732,6 +736,7 @@ void setup() {
     // afterwards. From this point on the LED state machine is live.
     debugPrint("INFO", "MAIN", "Detecting capabilities...");
     CapabilityRegistry::detectAll();
+    BoardManifest::checkActiveCapabilityPins(CapabilityRegistry::head());
     CapabilityRegistry::setupAll();
     debugPrintf("INFO", "MAIN", "Capabilities: %d/%d active",
                 CapabilityRegistry::activeCount(), CapabilityRegistry::count());

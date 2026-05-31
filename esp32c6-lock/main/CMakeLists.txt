@@ -12,6 +12,7 @@ idf_component_register(
          "forgekey_time.c"
          "command_validation.c"
          "firmware_verify.c"
+         "boards/lock_board_manifest.c"
     INCLUDE_DIRS "."
     REQUIRES 
         esp_wifi

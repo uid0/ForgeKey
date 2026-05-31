@@ -50,6 +50,7 @@
 #include "ota_update.h"
 #include "credential_rotation.h"
 #include "command_validation.h"
+#include "boards/lock_board_manifest.h"
 #include "forgekey_time.h"
 
 static const char* TAG = "LOCK";
@@ -86,7 +87,12 @@ void app_main(void) {
     }
     ESP_ERROR_CHECK(ret);
 
-    /* ===== 2. GPIO init (lock sensors) ===== */
+    /* ===== 2. GPIO manifest check + init (lock sensors) ===== */
+    if (!lock_board_manifest_check()) {
+        LOCK_LOGE("Unsafe lock GPIO manifest; refusing to activate hardware");
+        vTaskDelay(2000 / portTICK_PERIOD_MS);
+        esp_restart();
+    }
     lock_state_gpio_init();
     lock_state_begin();
 
@@ -245,6 +251,7 @@ void app_main(void) {
                 cJSON_AddStringToObject(root, "firmware_version", FORGEKEY_FIRMWARE_VERSION);
                 cJSON_AddStringToObject(root, "build_target", FORGEKEY_BUILD_TARGET);
                 cJSON_AddStringToObject(root, "framework", FORGEKEY_BUILD_FRAMEWORK);
+                lock_board_manifest_add_health_json(root);
                 char* json_str = cJSON_PrintUnformatted(root);
                 cJSON_Delete(root);
 
@@ -288,6 +295,7 @@ void app_main(void) {
             cJSON_AddStringToObject(root, "firmware_version", FORGEKEY_FIRMWARE_VERSION);
             cJSON_AddStringToObject(root, "build_target", FORGEKEY_BUILD_TARGET);
             cJSON_AddStringToObject(root, "framework", FORGEKEY_BUILD_FRAMEWORK);
+            lock_board_manifest_add_health_json(root);
             ota_add_health_json(root);
             cJSON_AddStringToObject(root, "last_trigger", trigger_str);
             cJSON_AddStringToObject(root, "state", lock_state_state_name(lock_state_get_state()));
@@ -437,6 +445,7 @@ static void publish_status_snapshot(const char* mac_str, const char* requested_c
     cJSON_AddStringToObject(root, "firmware_version", FORGEKEY_FIRMWARE_VERSION);
     cJSON_AddStringToObject(root, "build_target", FORGEKEY_BUILD_TARGET);
     cJSON_AddStringToObject(root, "framework", FORGEKEY_BUILD_FRAMEWORK);
+    lock_board_manifest_add_health_json(root);
     ota_add_health_json(root);
     forgekey_time_add_json(root);
     cJSON_AddNumberToObject(root, "free_heap", esp_get_free_heap_size());
@@ -545,6 +554,7 @@ static void ota_status_callback(const char* state, const char* version, int prog
     if (version && version[0]) cJSON_AddStringToObject(root, "version", version);
     if (progress >= 0 && progress <= 100) cJSON_AddNumberToObject(root, "progress", progress);
     if (error && error[0]) cJSON_AddStringToObject(root, "error", error);
+    lock_board_manifest_add_health_json(root);
     ota_add_health_json(root);
     forgekey_time_add_json(root);
     char* json_str = cJSON_PrintUnformatted(root);
