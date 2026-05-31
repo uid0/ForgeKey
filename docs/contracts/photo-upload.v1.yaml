@@ -1,0 +1,67 @@
+openapi: 3.1.0
+info:
+  title: ForgeKey Photo Upload API
+  version: 1.0.0
+  description: People-counter photo capture upload contract.
+servers:
+  - url: https://oms.example.com/api/forgekey/v1
+security:
+  - DeviceMutualTLS: []
+paths:
+  /devices/{device_id}/photos:
+    post:
+      operationId: uploadPhotoCapture
+      summary: Upload a captured image with schema-versioned metadata.
+      tags: [Photos]
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [metadata, image]
+              properties:
+                metadata:
+                  $ref: ../schemas/photo_upload_metadata.v1.schema.json
+                image:
+                  type: string
+                  format: binary
+                  description: JPEG or PNG bytes whose SHA-256 matches metadata.sha256.
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+            encoding:
+              metadata:
+                contentType: application/json
+      responses:
+        '202':
+          description: Capture accepted for processing.
+          content:
+            application/json:
+              schema:
+                $ref: ../schemas/photo_upload_result.v1.schema.json
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '413': { $ref: '#/components/responses/Error' }
+        '415': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+components:
+  parameters:
+    DeviceId:
+      name: device_id
+      in: path
+      required: true
+      schema: { type: string }
+  responses:
+    Error:
+      description: Canonical ForgeKey error. See error-codes.md.
+      content:
+        application/json:
+          schema:
+            $ref: ../schemas/error.v1.schema.json
+  securitySchemes:
+    DeviceMutualTLS:
+      type: mutualTLS

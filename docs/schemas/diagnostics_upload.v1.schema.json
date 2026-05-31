@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgekey.local/schemas/diagnostics_upload.v1.schema.json",
+  "title": "Diagnostics upload bundle",
+  "description": "Device diagnostics bundle uploaded to OMS over HTTPS.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {
+      "const": "forgekey.diagnostics_upload.v1",
+      "description": "Immutable contract identifier for this payload shape."
+    },
+    "device_id": {
+      "type": "string"
+    },
+    "bundle_id": {
+      "type": "string"
+    },
+    "timestamp": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "reason": {
+      "type": "string",
+      "enum": [
+        "scheduled",
+        "command",
+        "fault",
+        "pre_ota",
+        "post_ota",
+        "factory"
+      ]
+    },
+    "records": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "compressed": {
+      "type": "boolean"
+    },
+    "encoding": {
+      "type": "string",
+      "enum": [
+        "json",
+        "jsonl",
+        "cbor",
+        "gzip+jsonl"
+      ]
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    }
+  },
+  "required": [
+    "schema_version",
+    "device_id",
+    "bundle_id",
+    "timestamp",
+    "reason",
+    "records"
+  ],
+  "x-compatibility-notes": [
+    "OMS consumers must accept unknown additional properties for additive firmware releases.",
+    "OMS consumers should route by schema_version before applying payload-specific validation.",
+    "A missing schema_version means a pre-contract firmware payload; accept only during the migration window and treat it as v0 legacy."
+  ]
+}

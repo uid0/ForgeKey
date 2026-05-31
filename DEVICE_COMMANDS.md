@@ -8,6 +8,15 @@ separately on `forgekey/<mac>/state`.
 `<mac>` is the bare lowercase 12-hex MAC (no separators), e.g.
 `aabbcc112233`.
 
+## Canonical contracts
+
+This document keeps operational examples for existing firmware. The canonical,
+self-describing integration surface is indexed from
+[`docs/contracts/README.md`](docs/contracts/README.md): MQTT topics and payload
+schemas live in [`docs/contracts/mqtt.md`](docs/contracts/mqtt.md), canonical
+error codes live in [`docs/contracts/error-codes.md`](docs/contracts/error-codes.md),
+and all referenced JSON Schemas live under [`docs/schemas/`](docs/schemas/README.md).
+
 ## Topic shape
 
 | Direction | Topic | Producer | Consumer |

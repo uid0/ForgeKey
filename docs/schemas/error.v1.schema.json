@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgekey.local/schemas/error.v1.schema.json",
+  "title": "Canonical ForgeKey error",
+  "description": "Machine-readable error body shared by HTTP contracts and MQTT acknowledgements.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {
+      "const": "forgekey.error.v1",
+      "description": "Immutable contract identifier for this payload shape."
+    },
+    "code": {
+      "type": "string",
+      "enum": [
+        "provisioning_token_missing",
+        "provisioning_token_invalid",
+        "provisioning_token_expired",
+        "provisioning_device_unknown",
+        "provisioning_device_revoked",
+        "provisioning_csr_invalid",
+        "provisioning_policy_denied",
+        "provisioning_rate_limited",
+        "mqtt_not_configured",
+        "mqtt_auth_failed",
+        "mqtt_acl_denied",
+        "mqtt_publish_failed",
+        "mqtt_payload_invalid",
+        "command_parse_error",
+        "command_missing_field",
+        "command_expired",
+        "command_replay",
+        "command_signature_invalid",
+        "command_unauthorized",
+        "command_unsupported",
+        "command_busy",
+        "ota_manifest_invalid",
+        "ota_artifact_not_found",
+        "ota_version_incompatible",
+        "ota_signature_invalid",
+        "ota_sha256_mismatch",
+        "ota_download_failed",
+        "ota_flash_write_failed",
+        "ota_rollback",
+        "diagnostics_buffer_overflow",
+        "diagnostics_upload_failed",
+        "diagnostics_payload_too_large",
+        "lock_invalid_token",
+        "lock_forced_open",
+        "lock_jammed",
+        "lock_sensor_conflict",
+        "lock_lockout_active",
+        "sensor_unavailable",
+        "sensor_read_timeout",
+        "sensor_calibration_required",
+        "sensor_value_out_of_range"
+      ]
+    },
+    "message": {
+      "type": "string"
+    },
+    "correlation_id": {
+      "type": "string"
+    },
+    "command_id": {
+      "type": "string"
+    },
+    "details": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "required": [
+    "schema_version",
+    "code"
+  ],
+  "x-compatibility-notes": [
+    "OMS consumers must accept unknown additional properties for additive firmware releases.",
+    "OMS consumers should route by schema_version before applying payload-specific validation.",
+    "A missing schema_version means a pre-contract firmware payload; accept only during the migration window and treat it as v0 legacy."
+  ]
+}

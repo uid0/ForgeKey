@@ -1,0 +1,57 @@
+openapi: 3.1.0
+info:
+  title: ForgeKey Diagnostics Upload API
+  version: 1.0.0
+  description: HTTPS diagnostics bundle upload contract for logs, health snapshots, and fault evidence.
+servers:
+  - url: https://oms.example.com/api/forgekey/v1
+security:
+  - DeviceMutualTLS: []
+paths:
+  /devices/{device_id}/diagnostics:
+    post:
+      operationId: uploadDiagnosticsBundle
+      summary: Upload diagnostics records and metrics from a device.
+      tags: [Diagnostics]
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../schemas/diagnostics_upload.v1.schema.json
+          application/gzip:
+            schema:
+              type: string
+              format: binary
+              description: Gzipped JSON/JSONL bundle whose envelope matches diagnostics_upload.v1.
+      responses:
+        '202':
+          description: Diagnostics accepted for processing.
+          content:
+            application/json:
+              schema:
+                $ref: ../schemas/diagnostics_upload_result.v1.schema.json
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '413': { $ref: '#/components/responses/Error' }
+        '415': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+components:
+  parameters:
+    DeviceId:
+      name: device_id
+      in: path
+      required: true
+      schema: { type: string }
+  responses:
+    Error:
+      description: Canonical ForgeKey error. See error-codes.md.
+      content:
+        application/json:
+          schema:
+            $ref: ../schemas/error.v1.schema.json
+  securitySchemes:
+    DeviceMutualTLS:
+      type: mutualTLS

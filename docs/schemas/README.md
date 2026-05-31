@@ -20,6 +20,22 @@ inferring payload shape only from MQTT topic names or HTTP endpoints.
 | `forgekey.epaper.v1` | `epaper.v1.schema.json` | Device | OMS |
 | `forgekey.ble.v1` | `ble.v1.schema.json` | Device | OMS |
 | `forgekey.diagnostics.v1` | `diagnostics.v1.schema.json` | Device | OMS |
+| `forgekey.error.v1` | `error.v1.schema.json` | Device/OMS | Device/OMS |
+| `forgekey.provisioning_enroll_request.v1` | `provisioning_enroll_request.v1.schema.json` | Device | OMS |
+| `forgekey.provisioning_enroll_response.v1` | `provisioning_enroll_response.v1.schema.json` | OMS | Device |
+| `forgekey.photo_upload_metadata.v1` | `photo_upload_metadata.v1.schema.json` | Device | OMS |
+| `forgekey.photo_upload_result.v1` | `photo_upload_result.v1.schema.json` | OMS | Device |
+| `forgekey.epaper_image_manifest.v1` | `epaper_image_manifest.v1.schema.json` | OMS | Device |
+| `forgekey.epaper_battery.v1` | `epaper_battery.v1.schema.json` | Device | OMS |
+| `forgekey.ota_artifact_manifest.v1` | `ota_artifact_manifest.v1.schema.json` | OMS | Device |
+| `forgekey.diagnostics_upload.v1` | `diagnostics_upload.v1.schema.json` | Device | OMS |
+| `forgekey.diagnostics_upload_result.v1` | `diagnostics_upload_result.v1.schema.json` | OMS | Device |
+
+## Contract documents
+
+- [`../contracts/README.md`](../contracts/README.md) indexes the HTTP OpenAPI, MQTT, and error-code contracts that reference these schemas.
+- [`../contracts/mqtt.md`](../contracts/mqtt.md) maps each device class topic to the schema used on that topic.
+- [`../contracts/error-codes.md`](../contracts/error-codes.md) defines the canonical error-code enum used by `error.v1.schema.json` and acknowledgement payloads.
 
 ## Compatibility rules
 

@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgekey.local/schemas/provisioning_enroll_response.v1.schema.json",
+  "title": "Provisioning enrollment response",
+  "description": "OMS enrollment response containing device identity, credentials, MQTT policy, and upload endpoints.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {
+      "const": "forgekey.provisioning_enroll_response.v1",
+      "description": "Immutable contract identifier for this payload shape."
+    },
+    "device_id": {
+      "type": "string"
+    },
+    "tenant_id": {
+      "type": "string"
+    },
+    "site_id": {
+      "type": "string"
+    },
+    "client_certificate": {
+      "type": "string"
+    },
+    "ca_bundle": {
+      "type": "string"
+    },
+    "mqtt": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer"
+        },
+        "tls": {
+          "type": "boolean"
+        },
+        "username": {
+          "type": "string"
+        },
+        "topics": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "http": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "command_public_keys": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "ota": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "issued_at": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "expires_at": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "schema_version",
+    "device_id",
+    "client_certificate",
+    "mqtt",
+    "issued_at"
+  ],
+  "x-compatibility-notes": [
+    "OMS consumers must accept unknown additional properties for additive firmware releases.",
+    "OMS consumers should route by schema_version before applying payload-specific validation.",
+    "A missing schema_version means a pre-contract firmware payload; accept only during the migration window and treat it as v0 legacy."
+  ]
+}

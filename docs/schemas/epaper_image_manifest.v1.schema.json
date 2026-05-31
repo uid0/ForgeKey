@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgekey.local/schemas/epaper_image_manifest.v1.schema.json",
+  "title": "ePaper image manifest",
+  "description": "OMS manifest describing the current ePaper image artifact for a device.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {
+      "const": "forgekey.epaper_image_manifest.v1",
+      "description": "Immutable contract identifier for this payload shape."
+    },
+    "device_id": {
+      "type": "string"
+    },
+    "image_id": {
+      "type": "string"
+    },
+    "format": {
+      "type": "string",
+      "enum": [
+        "png",
+        "bmp",
+        "raw_1bpp",
+        "raw_2bpp",
+        "raw_4bpp"
+      ]
+    },
+    "width": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "height": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "rotation": {
+      "type": "integer",
+      "enum": [
+        0,
+        90,
+        180,
+        270
+      ]
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "byte_length": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "download_url": {
+      "type": "string"
+    },
+    "expires_at": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "refresh_reason": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "device_id",
+    "image_id",
+    "format",
+    "width",
+    "height",
+    "sha256",
+    "byte_length"
+  ],
+  "x-compatibility-notes": [
+    "OMS consumers must accept unknown additional properties for additive firmware releases.",
+    "OMS consumers should route by schema_version before applying payload-specific validation.",
+    "A missing schema_version means a pre-contract firmware payload; accept only during the migration window and treat it as v0 legacy."
+  ]
+}

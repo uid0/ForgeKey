@@ -1,0 +1,74 @@
+openapi: 3.1.0
+info:
+  title: ForgeKey OTA Artifact Delivery API
+  version: 1.0.0
+  description: Signed firmware artifact manifest and binary download contract.
+servers:
+  - url: https://oms.example.com/api/forgekey/v1
+security:
+  - DeviceMutualTLS: []
+paths:
+  /devices/{device_id}/ota/artifacts/{artifact_id}:
+    get:
+      operationId: getOtaArtifactManifest
+      summary: Return signed artifact metadata before a device downloads firmware bytes.
+      tags: [OTA]
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+        - $ref: '#/components/parameters/ArtifactId'
+      responses:
+        '200':
+          description: Signed artifact manifest.
+          content:
+            application/json:
+              schema:
+                $ref: ../schemas/ota_artifact_manifest.v1.schema.json
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /devices/{device_id}/ota/artifacts/{artifact_id}/bytes:
+    get:
+      operationId: downloadOtaArtifactBytes
+      summary: Download firmware artifact bytes referenced by a manifest.
+      tags: [OTA]
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+        - $ref: '#/components/parameters/ArtifactId'
+      responses:
+        '200':
+          description: Binary firmware artifact. Device verifies sha256 and signature before applying.
+          headers:
+            X-ForgeKey-Schema-Version:
+              schema: { const: forgekey.ota_artifact_manifest.v1 }
+            X-ForgeKey-SHA256:
+              schema: { type: string }
+            X-ForgeKey-Signature:
+              schema: { type: string }
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+components:
+  parameters:
+    DeviceId:
+      name: device_id
+      in: path
+      required: true
+      schema: { type: string }
+    ArtifactId:
+      name: artifact_id
+      in: path
+      required: true
+      schema: { type: string }
+  responses:
+    Error:
+      description: Canonical ForgeKey error. See error-codes.md.
+      content:
+        application/json:
+          schema:
+            $ref: ../schemas/error.v1.schema.json
+  securitySchemes:
+    DeviceMutualTLS:
+      type: mutualTLS

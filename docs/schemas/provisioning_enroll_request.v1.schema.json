@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgekey.local/schemas/provisioning_enroll_request.v1.schema.json",
+  "title": "Provisioning enrollment request",
+  "description": "Device enrollment request sent by unprovisioned firmware to OMS.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {
+      "const": "forgekey.provisioning_enroll_request.v1",
+      "description": "Immutable contract identifier for this payload shape."
+    },
+    "device_class": {
+      "type": "string",
+      "enum": [
+        "people_counter",
+        "temperature_sensor",
+        "cabinet_lock",
+        "epaper_display",
+        "status_light",
+        "tool_controller",
+        "accessory_controller"
+      ]
+    },
+    "hardware_id": {
+      "type": "string"
+    },
+    "mac": {
+      "type": "string"
+    },
+    "serial": {
+      "type": "string"
+    },
+    "firmware_version": {
+      "type": "string"
+    },
+    "build_id": {
+      "type": "string"
+    },
+    "csr": {
+      "type": "string",
+      "description": "PEM or base64 DER certificate signing request."
+    },
+    "bootstrap_token": {
+      "type": "string"
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "site_claim": {
+      "type": "string"
+    },
+    "nonce": {
+      "type": "string"
+    },
+    "timestamp": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "schema_version",
+    "device_class",
+    "hardware_id",
+    "mac",
+    "csr",
+    "bootstrap_token",
+    "nonce"
+  ],
+  "x-compatibility-notes": [
+    "OMS consumers must accept unknown additional properties for additive firmware releases.",
+    "OMS consumers should route by schema_version before applying payload-specific validation.",
+    "A missing schema_version means a pre-contract firmware payload; accept only during the migration window and treat it as v0 legacy."
+  ]
+}
