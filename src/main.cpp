@@ -228,7 +228,9 @@ static void publishStatusSnapshot(const char* requestedCmd, const char* commandI
     payload += String(millis());
     payload += ",\"mac\":\"";
     payload += macAddress;
-    payload += "\"}";
+    payload += "\"";
+    OtaUpdater::appendHealthJson(payload);
+    payload += "}";
     mqttClient.publishStatus(payload.c_str());
     StatusLed::triggerMessageFlash();
 }
@@ -607,6 +609,15 @@ static void onFirmwareDispatch(const char* topic, const uint8_t* payload, unsign
         return;
     }
 
+    String policyRejectReason;
+    if (!otaUpdater.isPolicyAllowed(spec, policyRejectReason)) {
+        debugPrintf("INFO", "OTA", "Policy rejected %s: %s",
+                    spec.version.c_str(), policyRejectReason.c_str());
+        mqttClient.publishFirmwareStatus("rejected", spec.version.c_str(), -1,
+                                         policyRejectReason.c_str());
+        return;
+    }
+
     String rapidDispatchKey = spec.version + ":" + spec.sha256;
     if (rapidDispatchKey != lastRapidDispatchKey) {
         lastRapidDispatchKey = rapidDispatchKey;
@@ -760,8 +771,9 @@ void setup() {
     // EPaperPmCapability::setupFn() earlier in setup() which is all
     // this device class needs.
     debugPrint("INFO", "MAIN",
-               "ePaper build: skipping provisioning/MQTT/OTA setup "
-               "(HTTPS-only device class; no remote reflashing yet)");
+               "ePaper build: skipping provisioning/MQTT setup "
+               "(display-id HTTPS OTA polling enabled)");
+    otaUpdater.begin();
     debugPrint("INFO", "MAIN", "Setup complete. Starting main loop...");
     return;
 #endif

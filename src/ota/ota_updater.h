@@ -12,6 +12,16 @@ public:
         String signature;    // base64-encoded ECDSA(P-256) DER over the raw image
         String version;
         bool mandatory = false;
+
+        // Fleet policy fields. OMS may send these either at the top level or
+        // nested under {"policy":{...}}; parse() normalizes both shapes here.
+        String minimumVersion;
+        String maximumVersion;
+        String hardwareTarget;
+        String capabilityTarget;
+        String rolloutCohort;
+        String deadline;
+        uint32_t deadlineEpoch = 0;
     };
 
     // Status callback fired at each OTA lifecycle transition. `progress` is
@@ -27,9 +37,14 @@ public:
     void begin();
     void setStatusCallback(StatusCallback cb) { statusCb = cb; }
 
-    // Parse a JSON payload (the MQTT firmware-dispatch message) into a Spec.
-    // Returns false if any required field is missing/malformed.
+    // Parse a JSON payload (the MQTT firmware-dispatch message or display-id
+    // HTTPS OTA policy) into a Spec. Returns false if any required field is
+    // missing/malformed.
     bool parse(const uint8_t* payload, unsigned int length, Spec& out);
+
+    // Evaluate normalized policy fields against this device. On rejection,
+    // returns false and fills `reason` with an OMS-visible error token.
+    bool isPolicyAllowed(const Spec& spec, String& reason) const;
 
     // Download from spec.url, stream-write to the OTA partition, verify
     // SHA-256, mark the new partition pending and reboot. Does not return
@@ -40,6 +55,12 @@ public:
     // bootloader booted into a pending partition, marks it valid so the
     // next reboot won't roll back. Idempotent / cheap.
     void markStableIfPending();
+
+    // Append OTA slot health fields into an existing JSON object String. The
+    // caller must have already opened the object and should add a comma first
+    // when needed. Emits ota_partition, ota_running_slot,
+    // ota_pending_verify, ota_previous_version, and anti_rollback fields.
+    static void appendHealthJson(String& payload);
 
     // True if we're currently inside apply(); the main loop should defer
     // non-essential work like photo uploads while this is set.

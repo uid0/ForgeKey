@@ -69,6 +69,7 @@ static void publish_unsupported_command_ack(const char* cmd, const char* command
 static void publish_lock_cmd_ack(const char* cmd, const char* command_id,
                                   const char* state, const char* error);
 static int current_wifi_rssi(void);
+static void ota_status_callback(const char* state, const char* version, int progress, const char* error);
 
 /* Application entry point */
 void app_main(void) {
@@ -228,6 +229,7 @@ void app_main(void) {
         if (mqtt_connected && !mqtt_was_connected) {
             LOCK_LOGI("MQTT connected");
             mqtt_was_connected = true;
+            ota_mark_stable();
 
             /* One-time capability announcement */
             if (!capabilities_announced) {
@@ -280,6 +282,7 @@ void app_main(void) {
             cJSON_AddStringToObject(root, "firmware_version", FORGEKEY_FIRMWARE_VERSION);
             cJSON_AddStringToObject(root, "build_target", FORGEKEY_BUILD_TARGET);
             cJSON_AddStringToObject(root, "framework", FORGEKEY_BUILD_FRAMEWORK);
+            ota_add_health_json(root);
             cJSON_AddStringToObject(root, "last_trigger", trigger_str);
             cJSON_AddStringToObject(root, "state", lock_state_state_name(lock_state_get_state()));
             cJSON_AddBoolToObject(root, "reed_closed", tel.reed_closed);
@@ -425,6 +428,7 @@ static void publish_status_snapshot(const char* mac_str, const char* requested_c
     cJSON_AddStringToObject(root, "firmware_version", FORGEKEY_FIRMWARE_VERSION);
     cJSON_AddStringToObject(root, "build_target", FORGEKEY_BUILD_TARGET);
     cJSON_AddStringToObject(root, "framework", FORGEKEY_BUILD_FRAMEWORK);
+    ota_add_health_json(root);
     cJSON_AddNumberToObject(root, "free_heap", esp_get_free_heap_size());
     cJSON_AddNumberToObject(root, "rssi", current_wifi_rssi());
     cJSON_AddNumberToObject(root, "uptime_ms", tel.uptime_ms);
@@ -520,6 +524,24 @@ static void on_config_message(const char* topic, const uint8_t* payload, uint32_
     LOCK_LOGW("Config message: unhandled command");
 }
 
+
+static void ota_status_callback(const char* state, const char* version, int progress, const char* error) {
+    const char* status_topic = mqtt_handler_get_firmware_status_topic();
+    if (!status_topic[0]) return;
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "state", state ? state : "");
+    if (version && version[0]) cJSON_AddStringToObject(root, "version", version);
+    if (progress >= 0 && progress <= 100) cJSON_AddNumberToObject(root, "progress", progress);
+    if (error && error[0]) cJSON_AddStringToObject(root, "error", error);
+    ota_add_health_json(root);
+    char* json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (json_str) {
+        mqtt_handler_publish_queued(status_topic, json_str, strlen(json_str), 0, 0, true);
+        cJSON_free(json_str);
+    }
+}
+
 static void on_firmware_dispatch(const char* topic, const uint8_t* payload, uint32_t length) {
     LOCK_LOGI("Firmware dispatch on %.*s (%u bytes)",
               (int)strlen(topic), topic, (unsigned)length);
@@ -547,6 +569,20 @@ static void on_firmware_dispatch(const char* topic, const uint8_t* payload, uint
 
     LOCK_LOGI("Firmware dispatch: version=%s mandatory=%d", version, (int)mandatory);
 
+    char policy_reason[48] = {0};
+    if (!ota_policy_allows_payload(payload, length, policy_reason, sizeof(policy_reason))) {
+        const char* status_topic = mqtt_handler_get_firmware_status_topic();
+        if (status_topic[0]) {
+            char buf[192];
+            snprintf(buf, sizeof(buf),
+                     "{\"state\":\"rejected\",\"version\":\"%s\",\"error\":\"%s\"}",
+                     version, policy_reason);
+            mqtt_handler_publish_queued(status_topic, buf, -1, 0, 0, true);
+        }
+        LOCK_LOGI("Firmware dispatch rejected by policy: %s", policy_reason);
+        return;
+    }
+
     const char* status_topic = mqtt_handler_get_firmware_status_topic();
     if (status_topic[0]) {
         char buf[128];
@@ -555,7 +591,7 @@ static void on_firmware_dispatch(const char* topic, const uint8_t* payload, uint
     }
 
     LOCK_LOGI("Firmware dispatch: applying update");
-    ota_apply(url, sha256, signature, version, mandatory, NULL);
+    ota_apply(url, sha256, signature, version, mandatory, ota_status_callback);
     /* unreachable on success */
     LOCK_LOGW("Firmware dispatch: apply returned (failed)");
 }
