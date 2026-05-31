@@ -88,9 +88,43 @@ OTA start, OTA completion, rollback, lock tamper, and capability failure.
 | `retired` | Device intentionally stopped normal service. |
 
 
+
+## Power health fields
+
+Firmware appends a shared `power` object to status, firmware-status, and health
+payloads across Arduino and ESP-IDF device families:
+
+```json
+{
+  "power": {
+    "wake_reason": "timer",
+    "reset_reason": "deep_sleep",
+    "brownout_count": 0,
+    "source": "external_or_unknown",
+    "sleep_policy": "deep_sleep_adaptive",
+    "battery": {
+      "available": false,
+      "source": "unsupported",
+      "reason": "battery_adc_not_configured"
+    },
+    "alarms": {
+      "low_battery": false,
+      "brownout": false
+    }
+  }
+}
+```
+
+When a board manifest configures an ADC battery divider, `power.battery` also
+includes `voltage_mv` and `percent`, and `power.source` becomes `battery_adc`.
+The same alarm booleans are mirrored under `diagnostics.power_alarms` for
+consumers that index diagnostics separately. OMS should raise diagnostics for
+`power.alarms.low_battery=true` and for any non-zero brownout trend, especially when the current `reset_reason` is
+`brownout`.
+
 ## Hardware manifest health fields
 
-Firmware includes a `hardware` object in status, firmware-status, and telemetry health payloads. The object reports the selected board manifest (`board_id`, `board_name`), GPIO ownership records, `active_capabilities`, and `skipped_capabilities`. Capability setup is manifest-gated at boot: firmware runs detection, validates GPIO ownership and unsafe/strap-pin constraints, then calls capability setup only for the remaining active capabilities.
+Firmware includes a `hardware` object in status, firmware-status, and telemetry health payloads. The object reports the selected board manifest (`board_id`, `board_name`), GPIO ownership records, `battery_sense` ADC/divider metadata, `active_capabilities`, and `skipped_capabilities`. Capability setup is manifest-gated at boot: firmware runs detection, validates GPIO ownership and unsafe/strap-pin constraints, then calls capability setup only for the remaining active capabilities.
 
 ## Capability health requirements
 

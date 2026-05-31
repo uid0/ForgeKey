@@ -13,6 +13,7 @@ idf_component_register(
          "command_validation.c"
          "firmware_verify.c"
          "boards/lock_board_manifest.c"
+         "power/power_manager.c"
     INCLUDE_DIRS "."
     REQUIRES 
         esp_wifi
@@ -31,6 +32,7 @@ idf_component_register(
         driver
         esp_timer
         esp_system
+        esp_adc
         esp_timer
         lwip
         mbedtls

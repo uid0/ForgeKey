@@ -52,6 +52,7 @@
 #include "command_validation.h"
 #include "boards/lock_board_manifest.h"
 #include "forgekey_time.h"
+#include "power/power_manager.h"
 
 static const char* TAG = "LOCK";
 
@@ -91,6 +92,8 @@ void app_main(void) {
         ESP_ERROR_CHECK(nvs_flash_init());
     }
     ESP_ERROR_CHECK(ret);
+    forgekey_power_init();
+    forgekey_power_set_sleep_policy("always_awake");
 
     /* ===== 2. GPIO manifest check + init (lock sensors) ===== */
     if (!lock_board_manifest_check()) {
@@ -259,6 +262,7 @@ void app_main(void) {
                 cJSON_AddStringToObject(root, "build_target", FORGEKEY_BUILD_TARGET);
                 cJSON_AddStringToObject(root, "framework", FORGEKEY_BUILD_FRAMEWORK);
                 lock_board_manifest_add_health_json(root);
+                forgekey_power_add_health_json(root, lock_board_manifest_battery_config());
                 char* json_str = cJSON_PrintUnformatted(root);
                 cJSON_Delete(root);
 
@@ -331,6 +335,7 @@ void app_main(void) {
             cJSON_AddStringToObject(root, "build_target", FORGEKEY_BUILD_TARGET);
             cJSON_AddStringToObject(root, "framework", FORGEKEY_BUILD_FRAMEWORK);
             lock_board_manifest_add_health_json(root);
+            forgekey_power_add_health_json(root, lock_board_manifest_battery_config());
             ota_add_health_json(root);
             cJSON_AddStringToObject(root, "last_trigger", trigger_str);
             cJSON_AddStringToObject(root, "state", lock_state_state_name(lock_state_get_state()));
@@ -637,6 +642,7 @@ static void publish_status_snapshot(const char* mac_str, const char* requested_c
     cJSON_AddStringToObject(root, "build_target", FORGEKEY_BUILD_TARGET);
     cJSON_AddStringToObject(root, "framework", FORGEKEY_BUILD_FRAMEWORK);
     lock_board_manifest_add_health_json(root);
+    forgekey_power_add_health_json(root, lock_board_manifest_battery_config());
     ota_add_health_json(root);
     forgekey_time_add_json(root);
     cJSON_AddNumberToObject(root, "free_heap", esp_get_free_heap_size());
@@ -753,6 +759,7 @@ static void ota_status_callback(const char* state, const char* version, int prog
     if (progress >= 0 && progress <= 100) cJSON_AddNumberToObject(root, "progress", progress);
     if (error && error[0]) cJSON_AddStringToObject(root, "error", error);
     lock_board_manifest_add_health_json(root);
+    forgekey_power_add_health_json(root, lock_board_manifest_battery_config());
     ota_add_health_json(root);
     forgekey_time_add_json(root);
     char* json_str = cJSON_PrintUnformatted(root);

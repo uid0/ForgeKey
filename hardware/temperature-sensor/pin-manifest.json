@@ -13,23 +13,68 @@
       "id": "J1",
       "name": "DHT21 harness",
       "type": "3-pin JST-XH or keyed equivalent",
-      "pinout": ["3V3", "DATA", "GND"],
+      "pinout": [
+        "3V3",
+        "DATA",
+        "GND"
+      ],
       "notes": "Place a 4.7k-10k pull-up from DATA to 3V3 at the controller end for long leads."
     },
-    {"id": "J2", "name": "Power", "type": "USB-C", "pinout": ["5V", "GND"]}
+    {
+      "id": "J2",
+      "name": "Power",
+      "type": "USB-C",
+      "pinout": [
+        "5V",
+        "GND"
+      ]
+    }
   ],
   "pins": [
-    {"gpio": 2, "xiao_label": "D1", "signal": "dht21_data", "direction": "bidirectional", "pull": "external 4.7k-10k to 3V3", "connector": "J1", "override_macro": "FORGEKEY_DHT_PIN"},
-    {"gpio": 21, "signal": "onboard_status_led", "direction": "output", "active": "low", "connector": "on-board"}
+    {
+      "gpio": 2,
+      "xiao_label": "D1",
+      "signal": "dht21_data",
+      "direction": "bidirectional",
+      "pull": "external 4.7k-10k to 3V3",
+      "connector": "J1",
+      "override_macro": "FORGEKEY_DHT_PIN"
+    },
+    {
+      "gpio": 21,
+      "signal": "onboard_status_led",
+      "direction": "output",
+      "active": "low",
+      "connector": "on-board"
+    }
   ],
   "power": [
-    {"net": "5V", "source": "USB-C", "load": "XIAO regulator"},
-    {"net": "3V3", "source": "XIAO regulator", "load": "DHT21 VCC and DATA pull-up"},
-    {"net": "GND", "source": "common", "load": "MCU and DHT21"}
+    {
+      "net": "5V",
+      "source": "USB-C",
+      "load": "XIAO regulator"
+    },
+    {
+      "net": "3V3",
+      "source": "XIAO regulator",
+      "load": "DHT21 VCC and DATA pull-up"
+    },
+    {
+      "net": "GND",
+      "source": "common",
+      "load": "MCU and DHT21"
+    }
   ],
   "simulation": {
     "wokwi": "supported-with-stand-in",
     "project": "wokwi/diagram.json",
     "stand_in": "DHT22 model used for DHT21/AM2301-compatible single-wire protocol."
+  },
+  "battery_sense": {
+    "adc_pin": null,
+    "divider_ratio": null,
+    "low_mv": 3450,
+    "battery_supported": false,
+    "reason": "Reference DHT harness is USB-C powered and does not route battery voltage to an ADC pin."
   }
 }

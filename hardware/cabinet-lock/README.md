@@ -22,3 +22,15 @@ with reed, IR beam, mortise, and latch-supervisor inputs.
   active-low semantics in firmware.
 - The 12 V lock supply negative and ESP32 ground must be common so the MOSFET
   gate drive has a valid reference.
+
+
+## Power and battery options
+
+The reference lock controller uses an external 12 V lock PSU for the solenoid
+and a regulated 3.3 V logic rail for the ESP32-C6 and sensors. Battery backup is
+optional and must not be wired directly to any GPIO. To report battery health,
+add a resistor divider from the protected backup/logic battery rail to an
+ADC-capable ESP32-C6 GPIO, keep the ADC node below 3.3 V at the highest charge
+voltage, and set `battery_sense.adc_pin` plus `divider_ratio` in
+`pin-manifest.json` and the matching ESP-IDF Kconfig values. Without that
+divider, health telemetry explicitly reports battery sensing as unsupported.

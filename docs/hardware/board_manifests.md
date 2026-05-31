@@ -45,3 +45,21 @@ These manifests are the hardware contract used by firmware capability activation
 - **ADC availability**: ADC1 GPIO0-7 are physically available on ESP32-C6, but GPIO0/1/4/5/6 are lock-owned by this manifest.
 - **Buses**: no I2C, SPI, or UART expansion bus is assigned by default; future buses must be added to the manifest before their capability can activate.
 - **Unsafe pins**: lock-owned pins above, strapping pins GPIO8/9/15, flash pins, and USB/JTAG pins when used for service/debug.
+
+## Battery-sense manifest fields
+
+Every active manifest should carry a `battery_sense` object alongside board,
+connector, pin, and power metadata:
+
+- `adc_pin`: ADC-capable GPIO used for battery/backup-rail sensing, or `null`
+  when the reference hardware does not support voltage telemetry.
+- `divider_ratio`: string form of `R_total/R_low` for the resistor divider, or
+  `null` when no divider is fitted.
+- `low_mv`: low-battery alarm threshold in millivolts after divider correction.
+- `battery_supported`: whether production firmware should expect voltage and
+  percent telemetry for this board by default.
+- `reason`: stable explanation reported when sensing is unsupported.
+
+Firmware mirrors these fields in health under `hardware.battery_sense` and uses
+them to populate `power.battery`, `power.alarms.low_battery`, and
+`diagnostics.power_alarms.low_battery`.
