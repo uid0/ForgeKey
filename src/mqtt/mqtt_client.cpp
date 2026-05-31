@@ -86,6 +86,51 @@ String escapeJsonString(const char* value) {
     return out;
 }
 
+
+const char* schemaForStatusPayload(JsonObjectConst obj) {
+    if (!obj["schema_version"].isNull()) return nullptr;
+    if (!obj["cmd_ack"].isNull()) return FORGEKEY_SCHEMA_COMMAND_ACK_V1;
+    if (!obj["relay"].isNull() || (!obj["src"].isNull() && !obj["payload"].isNull())) {
+        return FORGEKEY_SCHEMA_BLE_V1;
+    }
+    if (!obj["secure"].isNull() || !obj["latch_locked"].isNull() || !obj["reed_closed"].isNull()) {
+        return FORGEKEY_SCHEMA_LOCK_STATUS_V1;
+    }
+    return FORGEKEY_SCHEMA_STATUS_V1;
+}
+
+bool enrichJsonPayload(const char* jsonPayload, const char* schemaVersion, String& enriched) {
+    StaticJsonDocument<4096> doc;
+    DeserializationError err = deserializeJson(doc, jsonPayload ? jsonPayload : "{}");
+    if (err || !doc.is<JsonObject>()) return false;
+
+    JsonObject obj = doc.as<JsonObject>();
+    const char* schema = schemaVersion ? schemaVersion : schemaForStatusPayload(obj);
+    if (schema && obj["schema_version"].isNull()) {
+        obj["schema_version"] = schema;
+    }
+    serializeJson(doc, enriched);
+    return true;
+}
+
+bool publishJsonWithSchema(PubSubClient* client,
+                           const String& topic,
+                           const char* jsonPayload,
+                           const char* schemaVersion,
+                           bool retain,
+                           unsigned long& lastPublishMs) {
+    if (!client || !client->connected() || topic.length() == 0) return false;
+    if (!jsonPayload) jsonPayload = "{}";
+    String enriched;
+    const char* outbound = jsonPayload;
+    if (enrichJsonPayload(jsonPayload, schemaVersion, enriched)) {
+        outbound = enriched.c_str();
+    }
+    bool ok = client->publish(topic.c_str(), outbound, retain);
+    if (ok) lastPublishMs = millis();
+    return ok;
+}
+
 String defaultStateTopic() {
     uint64_t chipMac = ESP.getEfuseMac();
     char macBuf[13];
@@ -97,7 +142,7 @@ String defaultStateTopic() {
 String buildStatePayload(bool online, const char* ip, const char* reason) {
     String payload;
     payload.reserve(96);
-    payload += "{\"online\":";
+    payload += "{\"schema_version\":\"" FORGEKEY_SCHEMA_STATUS_V1 "\",\"online\":";
     payload += online ? "true" : "false";
     if (ip && *ip) {
         payload += ",\"ip\":\"";
@@ -514,7 +559,7 @@ bool MqttClient::publishOccupancy(int count) {
             lastReconnectAttempt = millis();
         }
         if (occupancyTopic.length() == 0) return false;
-        String payload = "{\"count\":" + String(count) +
+        String payload = "{\"schema_version\":\"" FORGEKEY_SCHEMA_OCCUPANCY_V1 "\",\"count\":" + String(count) +
                          ",\"timestamp\":" + String(ForgeKeyTime::epochNow());
         ForgeKeyTime::appendJson(payload);
         payload += "}";
@@ -527,7 +572,7 @@ bool MqttClient::publishOccupancy(int count) {
         return false;
     }
 
-    String payload = "{\"count\":" + String(count) +
+    String payload = "{\"schema_version\":\"" FORGEKEY_SCHEMA_OCCUPANCY_V1 "\",\"count\":" + String(count) +
                     ",\"timestamp\":" + String(ForgeKeyTime::epochNow());
     ForgeKeyTime::appendJson(payload);
     payload += "}";
@@ -570,7 +615,7 @@ bool MqttClient::publishTemperature(float tempC, float humidity) {
         char tBuf[16], hBuf[16];
         dtostrf(tempC, 0, 2, tBuf);
         dtostrf(humidity, 0, 2, hBuf);
-        String payload = "{\"tempC\":";
+        String payload = "{\"schema_version\":\"" FORGEKEY_SCHEMA_TEMPERATURE_V1 "\",\"tempC\":";
         payload += tBuf;
         payload += ",\"humidity\":";
         payload += hBuf;
@@ -590,7 +635,7 @@ bool MqttClient::publishTemperature(float tempC, float humidity) {
     char tBuf[16], hBuf[16];
     dtostrf(tempC, 0, 2, tBuf);
     dtostrf(humidity, 0, 2, hBuf);
-    String payload = "{\"tempC\":";
+    String payload = "{\"schema_version\":\"" FORGEKEY_SCHEMA_TEMPERATURE_V1 "\",\"tempC\":";
     payload += tBuf;
     payload += ",\"humidity\":";
     payload += hBuf;
@@ -624,7 +669,7 @@ bool MqttClient::publishFirmwareStatus(const char* state,
         return false;
     }
 
-    String payload = "{\"state\":\"";
+    String payload = "{\"schema_version\":\"" FORGEKEY_SCHEMA_OTA_STATUS_V1 "\",\"state\":\"";
     payload += (state ? state : "");
     payload += "\"";
     if (version && *version) {
@@ -719,7 +764,7 @@ bool MqttClient::subscribeCommand(MessageHandler handler) {
 }
 
 bool MqttClient::publishBlinkStatus(bool on) {
-    return publishStatus(on ? "{\"blink\":\"on\"}" : "{\"blink\":\"off\"}");
+    return publishStatus(on ? "{\"schema_version\":\"" FORGEKEY_SCHEMA_STATUS_V1 "\",\"blink\":\"on\"}" : "{\"schema_version\":\"" FORGEKEY_SCHEMA_STATUS_V1 "\",\"blink\":\"off\"}");
 }
 
 bool MqttClient::publishStatus(const char* jsonPayload) {
@@ -730,10 +775,13 @@ bool MqttClient::publishStatus(const char* jsonPayload) {
     if (!jsonPayload) jsonPayload = "{}";
 
     String enriched;
-    StaticJsonDocument<1024> doc;
+    StaticJsonDocument<4096> doc;
     DeserializationError err = deserializeJson(doc, jsonPayload);
     if (!err && doc.is<JsonObject>()) {
-        ForgeKeyTime::addJson(doc.as<JsonObject>());
+        JsonObject obj = doc.as<JsonObject>();
+        const char* schema = schemaForStatusPayload(obj);
+        if (schema) obj["schema_version"] = schema;
+        ForgeKeyTime::addJson(obj);
         serializeJson(doc, enriched);
         jsonPayload = enriched.c_str();
     }
@@ -749,7 +797,12 @@ bool MqttClient::publishStatus(const char* jsonPayload) {
 
 bool MqttClient::enqueueStatus(const char* jsonPayload, bool critical) {
     if (statusTopic.length() == 0) return false;
-    return enqueueOutbound(statusTopic.c_str(), jsonPayload ? jsonPayload : "{}", false, critical);
+    if (!jsonPayload) jsonPayload = "{}";
+    String enriched;
+    if (enrichJsonPayload(jsonPayload, nullptr, enriched)) {
+        jsonPayload = enriched.c_str();
+    }
+    return enqueueOutbound(statusTopic.c_str(), jsonPayload, false, critical);
 }
 
 bool MqttClient::publishStateJson(const char* jsonPayload) {
@@ -759,7 +812,12 @@ bool MqttClient::publishStateJson(const char* jsonPayload) {
         return false;
     }
     if (!jsonPayload) jsonPayload = "{}";
-    bool ok = client->publish(stateTopic.c_str(), jsonPayload, true);
+    String enriched;
+    const char* outbound = jsonPayload;
+    if (enrichJsonPayload(jsonPayload, FORGEKEY_SCHEMA_STATUS_V1, enriched)) {
+        outbound = enriched.c_str();
+    }
+    bool ok = client->publish(stateTopic.c_str(), outbound, true);
     if (ok) lastPublishMs = millis();
     Serial.printf("[MQTT] publishStateJson: topic=%s retained=true payload=%s ok=%d\n",
                   stateTopic.c_str(), jsonPayload, (int)ok);
@@ -775,7 +833,7 @@ bool MqttClient::publishLog(unsigned long timestampMs,
 
     String payload;
     payload.reserve(256);
-    payload += "{\"timestamp\":";
+    payload += "{\"schema_version\":\"" FORGEKEY_SCHEMA_DIAGNOSTICS_V1 "\",\"timestamp\":";
     payload += String(timestampMs);
     payload += ",\"level\":\"";
     payload += escapeJsonString(level ? level : "");
@@ -794,36 +852,32 @@ bool MqttClient::publishBleDevices(const char* jsonPayload) {
     if (!client || !client->connected()) return false;
     if (bleDevicesTopic.length() == 0) return false;
     if (!jsonPayload) jsonPayload = "{}";
-    bool ok = client->publish(bleDevicesTopic.c_str(), jsonPayload);
-    if (ok) lastPublishMs = millis();
-    return ok;
+    return publishJsonWithSchema(client, bleDevicesTopic, jsonPayload,
+                                 FORGEKEY_SCHEMA_BLE_V1, false, lastPublishMs);
 }
 
 bool MqttClient::publishBleBeacons(const char* jsonPayload) {
     if (!client || !client->connected()) return false;
     if (bleBeaconsTopic.length() == 0) return false;
     if (!jsonPayload) jsonPayload = "{}";
-    bool ok = client->publish(bleBeaconsTopic.c_str(), jsonPayload);
-    if (ok) lastPublishMs = millis();
-    return ok;
+    return publishJsonWithSchema(client, bleBeaconsTopic, jsonPayload,
+                                 FORGEKEY_SCHEMA_BLE_V1, false, lastPublishMs);
 }
 
 bool MqttClient::publishBlePeers(const char* jsonPayload) {
     if (!client || !client->connected()) return false;
     if (blePeersTopic.length() == 0) return false;
     if (!jsonPayload) jsonPayload = "{}";
-    bool ok = client->publish(blePeersTopic.c_str(), jsonPayload);
-    if (ok) lastPublishMs = millis();
-    return ok;
+    return publishJsonWithSchema(client, blePeersTopic, jsonPayload,
+                                 FORGEKEY_SCHEMA_BLE_V1, false, lastPublishMs);
 }
 
 bool MqttClient::publishEquipmentEvent(const char* jsonPayload) {
     if (!client || !client->connected()) return false;
     if (bleEquipmentTopic.length() == 0) return false;
     if (!jsonPayload) jsonPayload = "{}";
-    bool ok = client->publish(bleEquipmentTopic.c_str(), jsonPayload);
-    if (ok) lastPublishMs = millis();
-    return ok;
+    return publishJsonWithSchema(client, bleEquipmentTopic, jsonPayload,
+                                 FORGEKEY_SCHEMA_BLE_V1, false, lastPublishMs);
 }
 
 bool MqttClient::publishImmediate(const char* topic, const char* payload, bool retain) {

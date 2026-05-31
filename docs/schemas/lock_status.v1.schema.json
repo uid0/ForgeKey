@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgekey.local/schemas/lock_status.v1.schema.json",
+  "title": "Cabinet lock status",
+  "description": "Schema contract for Cabinet lock status payloads produced by ForgeKey firmware and consumed by OMS.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {
+      "const": "forgekey.lock_status.v1",
+      "description": "Immutable contract identifier for this payload shape."
+    },
+    "mac": {
+      "type": "string"
+    },
+    "secure": {
+      "type": "boolean"
+    },
+    "item_present": {
+      "type": "boolean"
+    },
+    "uptime": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "last_trigger": {
+      "type": "string"
+    },
+    "state": {
+      "type": "string"
+    },
+    "event": {
+      "type": "string"
+    },
+    "active": {
+      "type": "boolean"
+    },
+    "command_id": {
+      "type": "string"
+    },
+    "reed_closed": {
+      "type": "boolean"
+    },
+    "latch_locked": {
+      "type": "boolean"
+    },
+    "ir_broken": {
+      "type": "boolean"
+    },
+    "mortise_active": {
+      "type": "boolean"
+    },
+    "tamper_active": {
+      "type": "boolean"
+    },
+    "lockout_active": {
+      "type": "boolean"
+    },
+    "commissioning_active": {
+      "type": "boolean"
+    },
+    "hardware": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "ota": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "clock_valid": {
+      "type": "boolean"
+    },
+    "ntp_synced": {
+      "type": "boolean"
+    },
+    "epoch_time": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "uptime_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "last_ntp_sync_age_s": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    }
+  },
+  "required": [
+    "schema_version",
+    "state"
+  ],
+  "x-compatibility-notes": [
+    "OMS consumers must accept unknown additional properties for additive firmware releases.",
+    "OMS consumers should route by schema_version before applying payload-specific validation.",
+    "A missing schema_version means a pre-contract firmware payload; accept only during the migration window and treat it as v0 legacy.",
+    "OMS must preserve both periodic telemetry and edge-triggered event payloads; event is optional on periodic samples."
+  ]
+}

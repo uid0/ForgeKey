@@ -52,6 +52,7 @@
 #include "command_validation.h"
 #include "boards/lock_board_manifest.h"
 #include "forgekey_time.h"
+#include "schema_contract.h"
 #include "power/power_manager.h"
 #include "watchdog_manager.h"
 
@@ -285,6 +286,7 @@ void app_main(void) {
                 cJSON* caps = cJSON_CreateArray();
                 cJSON_AddItemToArray(caps, cJSON_CreateString("cabinet_lock"));
                 cJSON* root = cJSON_CreateObject();
+                cJSON_AddStringToObject(root, "schema_version", FORGEKEY_SCHEMA_STATUS_V1);
                 cJSON_AddItemToObject(root, "capabilities", caps);
                 cJSON_AddStringToObject(root, "firmware_version", FORGEKEY_FIRMWARE_VERSION);
                 cJSON_AddStringToObject(root, "build_target", FORGEKEY_BUILD_TARGET);
@@ -354,6 +356,7 @@ void app_main(void) {
             }
 
             cJSON* root = cJSON_CreateObject();
+            cJSON_AddStringToObject(root, "schema_version", FORGEKEY_SCHEMA_LOCK_STATUS_V1);
             cJSON_AddStringToObject(root, "mac", mac_str);
             cJSON_AddBoolToObject(root, "secure", tel.secure);
             cJSON_AddBoolToObject(root, "item_present", !tel.ir_broken);
@@ -407,6 +410,7 @@ static void publish_lock_cmd_ack(const char* cmd, const char* command_id,
         return;
     }
     cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "schema_version", FORGEKEY_SCHEMA_COMMAND_ACK_V1);
     cJSON_AddStringToObject(root, "cmd_ack", cmd ? cmd : "");
     cJSON_AddStringToObject(root, "command_id", command_id ? command_id : "");
     if (state && state[0]) {
@@ -445,6 +449,7 @@ static void publish_lock_event(const char* event_type, bool active, const char* 
         return;
     }
     cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "schema_version", FORGEKEY_SCHEMA_LOCK_STATUS_V1);
     cJSON_AddStringToObject(root, "event", event_type ? event_type : "lock_event");
     cJSON_AddBoolToObject(root, "active", active);
     cJSON_AddStringToObject(root, "command_id", command_id ? command_id : "");
@@ -526,6 +531,7 @@ static void on_command_message(const char* topic, const uint8_t* payload, uint32
         return;
     } else if (strcmp(cmd_str, "restart") == 0) {
         cJSON* ack = cJSON_CreateObject();
+        cJSON_AddStringToObject(ack, "schema_version", FORGEKEY_SCHEMA_COMMAND_ACK_V1);
         cJSON_AddStringToObject(ack, "cmd_ack", "restart");
         cJSON_AddStringToObject(ack, "command_id", command_id ? command_id : "");
         cJSON_AddNumberToObject(ack, "in_ms", 1000);
@@ -664,6 +670,7 @@ static void publish_status_snapshot(const char* mac_str, const char* requested_c
     cJSON_AddItemToArray(caps, cJSON_CreateString("cabinet_lock"));
 
     cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "schema_version", FORGEKEY_SCHEMA_COMMAND_ACK_V1);
     cJSON_AddStringToObject(root, "cmd_ack", "status");
     cJSON_AddStringToObject(root, "command_id", command_id ? command_id : "");
     cJSON_AddStringToObject(root, "requested_cmd", requested_cmd ? requested_cmd : "status");
@@ -699,6 +706,7 @@ static void publish_status_snapshot(const char* mac_str, const char* requested_c
 
 static void publish_unsupported_command_ack(const char* cmd, const char* command_id) {
     cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "schema_version", FORGEKEY_SCHEMA_COMMAND_ACK_V1);
     cJSON_AddStringToObject(root, "cmd_ack", cmd ? cmd : "");
     cJSON_AddStringToObject(root, "command_id", command_id ? command_id : "");
     forgekey_time_add_json(root);
@@ -713,6 +721,7 @@ static void publish_unsupported_command_ack(const char* cmd, const char* command
 
 static void publish_unknown_command_ack(const char* cmd, const char* command_id) {
     cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "schema_version", FORGEKEY_SCHEMA_COMMAND_ACK_V1);
     cJSON_AddStringToObject(root, "cmd_ack", cmd ? cmd : "");
     cJSON_AddStringToObject(root, "command_id", command_id ? command_id : "");
     forgekey_time_add_json(root);
@@ -727,6 +736,7 @@ static void publish_unknown_command_ack(const char* cmd, const char* command_id)
 
 static void publish_command_reject_ack(const char* cmd, const char* command_id, const char* error) {
     cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "schema_version", FORGEKEY_SCHEMA_COMMAND_ACK_V1);
     cJSON_AddStringToObject(root, "cmd_ack", cmd ? cmd : "");
     cJSON_AddStringToObject(root, "command_id", command_id ? command_id : "");
     cJSON_AddBoolToObject(root, "ok", false);
@@ -785,6 +795,7 @@ static void ota_status_callback(const char* state, const char* version, int prog
     const char* status_topic = mqtt_handler_get_firmware_status_topic();
     if (!status_topic[0]) return;
     cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "schema_version", FORGEKEY_SCHEMA_OTA_STATUS_V1);
     cJSON_AddStringToObject(root, "state", state ? state : "");
     if (version && version[0]) cJSON_AddStringToObject(root, "version", version);
     if (progress >= 0 && progress <= 100) cJSON_AddNumberToObject(root, "progress", progress);
@@ -821,7 +832,7 @@ static void on_firmware_dispatch(const char* topic, const uint8_t* payload, uint
         const char* status_topic = mqtt_handler_get_firmware_status_topic();
         if (status_topic[0]) {
             mqtt_handler_publish_queued(status_topic,
-                "{\"state\":\"failed\",\"error\":\"parse_error\"}", -1, 0, 0, true);
+                "{\"schema_version\":\"" FORGEKEY_SCHEMA_OTA_STATUS_V1 "\",\"state\":\"failed\",\"error\":\"parse_error\"}", -1, 0, 0, true);
         }
         LOCK_LOGW("Firmware dispatch: parse error");
         return;
@@ -835,7 +846,7 @@ static void on_firmware_dispatch(const char* topic, const uint8_t* payload, uint
         if (status_topic[0]) {
             char buf[192];
             snprintf(buf, sizeof(buf),
-                     "{\"state\":\"rejected\",\"version\":\"%s\",\"error\":\"%s\"}",
+                     "{\"schema_version\":\"" FORGEKEY_SCHEMA_OTA_STATUS_V1 "\",\"state\":\"rejected\",\"version\":\"%s\",\"error\":\"%s\"}",
                      version, policy_reason);
             mqtt_handler_publish_queued(status_topic, buf, -1, 0, 0, true);
         }
@@ -846,7 +857,7 @@ static void on_firmware_dispatch(const char* topic, const uint8_t* payload, uint
     const char* status_topic = mqtt_handler_get_firmware_status_topic();
     if (status_topic[0]) {
         char buf[128];
-        snprintf(buf, sizeof(buf), "{\"state\":\"received\",\"version\":\"%s\"}", version);
+        snprintf(buf, sizeof(buf), "{\"schema_version\":\"" FORGEKEY_SCHEMA_OTA_STATUS_V1 "\",\"state\":\"received\",\"version\":\"%s\"}", version);
         mqtt_handler_publish_queued(status_topic, buf, -1, 0, 0, true);
     }
 
