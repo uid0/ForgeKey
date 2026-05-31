@@ -56,7 +56,10 @@ the PlatformIO registry.
 ## First-boot flow (flash once, walk away)
 
 No manual NVS provisioning. The intended bring-up is "flash the
-firmware, mount the panel, do the rest from OMS."
+firmware, mount the panel, do the rest from OMS." This does **not**
+yet include remote firmware reflashing for the ePaper SKU: the current
+ePaper build skips the MAC/MQTT provisioning and OTA stack used by the
+people-counter and temperature-sensor firmware.
 
 1. **No display_id in NVS** (fresh board) → firmware generates a
    v4 UUID from `esp_random()`, persists it to NVS at namespace
@@ -75,7 +78,8 @@ firmware, mount the panel, do the rest from OMS."
    Firmware decodes via PNGdec (per-scanline thresholding of the
    RGB565 conversion's green channel) and full-paints the panel.
 6. Subsequent wakes that hit a matching ETag return 304; panel
-   keeps its current paint and goes back to deep sleep.
+   keeps its current paint and uses adaptive deep-sleep backoff so
+   repeatedly quiet displays poll less often.
 
 Other responses:
 - **304** → keep current paint.
@@ -84,11 +88,14 @@ Other responses:
 - Other (transport / decode failure) → keep current paint, retry
   next wake.
 
-After each cycle the firmware also POSTs
+After a wake cycle, the firmware persists its ETag/backoff state and
+deep-sleeps. The active cadence starts from `DEFAULT_WAKE_INTERVAL_MIN`
+minutes (default 60), repeated 304/no-change wakes double toward a
+12-hour quiet cap, and HTTP/transport failures retry on a shorter
+15→30→60→120→240 minute ladder. The firmware only occasionally POSTs
 `/api/forgekey/epaper/<did>/battery/` with the placeholder 100%
 (SKU 6416 has no battery sense exposed to the XIAO socket — see
-above) and deep-sleeps for `DEFAULT_WAKE_INTERVAL_MIN` minutes
-(default 60).
+above), avoiding a second HTTP request on most wakes.
 
 ## OMS contract
 
@@ -104,8 +111,13 @@ mounted to the asset, so the exposure surface is narrow.
 
 ## Open TODOs
 
-- **NVS-driven cadence** — read `FORGEKEY_EPAPER_WAKE_INTERVAL_MINUTES`
-  from NVS so the OMS dashboard can tune per-panel without a reflash.
+- **OMS-managed cadence UI** — firmware reads a `wake_min` NVS override,
+  but OMS still needs a dashboard/control path to tune it per panel.
+- **Remote ePaper OTA** — adaptive wake backoff only changes how often
+  the panel checks display content. It does not re-enable the skipped
+  MQTT OTA path. Remote reflashing needs a display_id-keyed HTTPS OTA
+  polling endpoint (or a deliberately short MQTT awake window) plus OMS
+  support to publish signed firmware specs for this device class.
 - **Battery sense path** if a future board revision adds an ADC
   line, or if operators hand-solder a divider onto `BAT_4V2`.
 - **MQTT command pathway** (force-refresh, etc.) — the ePaper
