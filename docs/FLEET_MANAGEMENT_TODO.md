@@ -82,15 +82,16 @@ so we can build, review, and test one layer at a time before moving on.
 
 ## Phase 7 — Verification ladder
 
-- [ ] Add host-side unit tests for JSON parsing, command validation, OTA payload
-      validation, schema examples, NVS config migration, and telemetry builders.
-- [ ] Add simulator smoke tests for supported device variants.
-- [ ] Add hardware-in-the-loop smoke tests for WiFi provisioning, MQTT, OTA,
-      DHT21, camera, ePaper, lock sensors, and solenoid actuation.
-- [ ] Add CI jobs for PlatformIO builds, ESP-IDF lock builds, schema validation,
-      documentation link checks, and formatting checks.
-- [ ] Replace placeholder testing commands in project instructions with the real
-      command set once the test ladder exists.
+- [x] Add host-side unit tests for JSON parsing, command validation, OTA payload
+      validation, signature verification, config reconciliation, schema registry
+      checks, and telemetry serialization.
+- [x] Add simulator smoke tests for supported Wokwi-compatible device variants.
+- [x] Add hardware-in-the-loop smoke tests for WiFi provisioning, MQTT, OTA,
+      DHT21, camera, ePaper, lock sensors, and schema-valid telemetry evidence.
+- [x] Add CI jobs for PlatformIO builds, ESP-IDF lock builds, schema validation,
+      and documentation link checks.
+- [x] Replace placeholder testing commands in project instructions with the real
+      command set and document what must pass before committing to `main`.
 
 ## Working rule for each phase
 
