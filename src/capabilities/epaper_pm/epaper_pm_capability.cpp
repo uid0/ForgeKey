@@ -119,13 +119,23 @@ constexpr size_t kMaxDesiredStateBytes = 4096;
 // Health is the only per-wake POST. Battery fields ride in that payload,
 // so the old placeholder battery-only heartbeat is retired.
 
-// QR code parameters. Version 5 (37x37 modules) at ECC level M holds
-// up to 106 bytes — fits our typical bind URL of ~90 chars with
-// room for longer OMS_HOST values. Six-pixel modules render to a
-// 222x222 QR which sits comfortably on the 800x480 panel.
-constexpr uint8_t kQrVersion = 5;
-constexpr uint8_t kQrModulePx = 6;
+// QR code parameters. The bind URL is encoded in byte mode because it includes
+// lowercase URL/query characters. Version 9 with quartile error correction
+// holds 130 bytes in byte mode, leaving headroom over the default 92-byte URL
+// while keeping modules large enough for camera phones on the 7.5" panel.
+constexpr uint8_t kQrVersion = 9;
+constexpr uint8_t kQrEcc = ECC_QUARTILE;
+constexpr size_t kQrMaxPayloadBytes = 130;
+constexpr uint8_t kQrModulePx = 5;
 constexpr uint8_t kQrQuietModules = 4;
+constexpr int kQrOriginY = 108;
+constexpr int kQrFooterGapPx = 22;
+constexpr int kQrPixels = (4 * kQrVersion + 17) * kQrModulePx;
+constexpr int kQrQuietPx = kQrQuietModules * kQrModulePx;
+
+static_assert(kQrOriginY >= kQrQuietPx, "QR quiet zone must remain on panel");
+static_assert(kQrOriginY + kQrPixels + kQrQuietPx < kPanelHeight,
+              "QR quiet zone must fit on panel");
 
 // Single global display instance — Seeed_GFX's `EPaper` class drives
 // the UC8179 panel via the same overall API as `TFT_eSPI` (fillScreen,
@@ -235,9 +245,13 @@ void paintRetiredCard() {
 
 void drawQrAt(QRCode *qr, int originX, int originY) {
     // Quiet zone (white border around the QR) is required for reliable
-    // scanning. We've already filled the screen with white in the
-    // caller, so we only need to leave kQrQuietModules worth of pixels
-    // around the modules below.
+    // scanning. Clear it explicitly so future layout edits cannot bleed text
+    // or stale panel state into the scanner's required border.
+    const int quietPx = kQrQuietModules * kQrModulePx;
+    g_panel.fillRect(originX - quietPx, originY - quietPx,
+                     qr->size * kQrModulePx + quietPx * 2,
+                     qr->size * kQrModulePx + quietPx * 2,
+                     TFT_WHITE);
     for (uint8_t y = 0; y < qr->size; y++) {
         for (uint8_t x = 0; x < qr->size; x++) {
             if (qrcode_getModule(qr, x, y)) {
@@ -266,20 +280,34 @@ void paintBindQrCard(const String &displayId) {
     QRCode qr;
     uint8_t qrData[qrcode_getBufferSize(kQrVersion)];
     const String url = bindUrl(displayId);
-    qrcode_initText(&qr, qrData, kQrVersion, ECC_MEDIUM, url.c_str());
+    if (url.length() > kQrMaxPayloadBytes) {
+        paintMessageCard(
+            "Bind this panel",
+            "QR URL is too long for this firmware.",
+            ("display_id: " + displayId).c_str());
+        return;
+    }
+    if (qrcode_initText(&qr, qrData, kQrVersion, kQrEcc, url.c_str()) != 0) {
+        paintMessageCard(
+            "Bind this panel",
+            "QR generation failed.",
+            ("display_id: " + displayId).c_str());
+        return;
+    }
 
     // Center the QR horizontally; sit it below the heading.
     const int qrPixels = qr.size * kQrModulePx;
     const int originX = (kPanelWidth - qrPixels) / 2;
-    const int originY = 130;
+    const int originY = kQrOriginY;
     drawQrAt(&qr, originX, originY);
 
     // Footer: full URL + display_id so staff have a fallback if the
     // scan doesn't take. The URL also helps them spot a wrong host
     // config at a glance.
-    const int footerY = originY + qrPixels + 30;
-    g_panel.setTextSize(2);
+    const int footerY = originY + qrPixels + kQrFooterGapPx;
+    g_panel.setTextSize(1);
     g_panel.drawString(url, 40, footerY);
+    g_panel.setTextSize(2);
     g_panel.drawString("display_id: " + displayId, 40, footerY + 30);
     g_panel.drawString("MAC: " + WiFi.macAddress(), 40, footerY + 60);
 
