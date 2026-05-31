@@ -361,7 +361,7 @@ void ota_add_health_json(cJSON* root) {
     char previous_version[32] = {0};
     ota_load_previous_version(previous_version, sizeof(previous_version));
     cJSON_AddStringToObject(root, "ota_previous_version", previous_version);
-    const esp_app_desc_t* app = esp_app_get_description();
+    const esp_app_desc_t* app = esp_ota_get_app_description();
     uint32_t secure_version = app ? app->secure_version : 0;
     cJSON_AddNumberToObject(root, "ota_secure_version", secure_version);
 #if __has_include("esp_efuse.h")

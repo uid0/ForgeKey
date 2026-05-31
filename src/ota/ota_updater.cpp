@@ -559,7 +559,7 @@ void OtaUpdater::appendHealthJson(String& payload) {
     prefs.end();
     jsonStringField(payload, "ota_previous_version", previousVersion);
 
-    const esp_app_desc_t* app = esp_app_get_description();
+    const esp_app_desc_t* app = esp_ota_get_app_description();
     payload += ",\"ota_secure_version\":";
     payload += String((unsigned long)(app ? app->secure_version : 0));
 #if __has_include(<esp_efuse.h>)
