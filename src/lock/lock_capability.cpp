@@ -3,6 +3,7 @@
 #include "lock_config.h"
 #include "../capabilities/capability.h"
 #include "../mqtt/mqtt_client.h"
+#include "../time/time_sync.h"
 #include <WiFi.h>
 #include <ArduinoJson.h>
 
@@ -57,7 +58,7 @@ bool publishTelemetry() {
         default: triggerStr = "unknown"; break;
     }
 
-    StaticJsonDocument<256> doc;
+    StaticJsonDocument<384> doc;
     doc["mac"] = g_macAddress;
     doc["secure"] = tel.secure;
     doc["item_present"] = !tel.ir_broken;
@@ -68,6 +69,7 @@ bool publishTelemetry() {
     doc["latch_locked"] = tel.latch_locked;
     doc["ir_broken"] = tel.ir_broken;
     doc["mortise_active"] = tel.mortise_active;
+    ForgeKeyTime::addJson(doc.as<JsonObject>());
 
     String json;
     serializeJson(doc, json);

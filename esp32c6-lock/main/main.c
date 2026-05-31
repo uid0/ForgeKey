@@ -51,6 +51,7 @@
 #include "credential_rotation.h"
 #include "command_validation.h"
 #include "boards/lock_board_manifest.h"
+#include "forgekey_time.h"
 
 static const char* TAG = "LOCK";
 
@@ -119,14 +120,18 @@ void app_main(void) {
 
     /* ===== 4. NTP sync ===== */
     LOCK_LOGI("Syncing NTP time...");
-    configTzTime("UTC", "pool.ntp.org", "time.nist.gov");
-    struct tm timeinfo;
-    if (!getLocalTime(&timeinfo)) {
-        LOCK_LOGW("NTP sync failed - TLS may fail");
+    forgekey_time_begin(FORGEKEY_TIME_DEFAULT_MAX_SYNC_AGE_S);
+    for (int i = 0; i < 50 && !forgekey_time_clock_valid(); ++i) {
+        vTaskDelay(100 / portTICK_PERIOD_MS);
+        forgekey_time_tick();
+    }
+    forgekey_time_status_t time_status = forgekey_time_status();
+    if (!time_status.clock_valid) {
+        LOCK_LOGW("NTP sync pending - TLS and wall-clock signed commands may fail");
     } else {
-        LOCK_LOGI("NTP synced: %04d-%02d-%02d %02d:%02d:%02d",
-                  timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
-                  timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+        LOCK_LOGI("NTP synced: epoch=%ld age=%lus",
+                  (long)time_status.epoch_time,
+                  (unsigned long)time_status.last_sync_age_s);
     }
 
     /* ===== 5. Provisioning ===== */
@@ -286,6 +291,7 @@ void app_main(void) {
             cJSON_AddBoolToObject(root, "secure", tel.secure);
             cJSON_AddBoolToObject(root, "item_present", !tel.ir_broken);
             cJSON_AddNumberToObject(root, "uptime", tel.uptime_ms);
+            forgekey_time_add_json(root);
             cJSON_AddStringToObject(root, "firmware_version", FORGEKEY_FIRMWARE_VERSION);
             cJSON_AddStringToObject(root, "build_target", FORGEKEY_BUILD_TARGET);
             cJSON_AddStringToObject(root, "framework", FORGEKEY_BUILD_FRAMEWORK);
@@ -313,6 +319,7 @@ void app_main(void) {
             last_telemetry_ms = now_ms;
         }
 
+        forgekey_time_tick();
         mqtt_handler_tick();
         vTaskDelay(10 / portTICK_PERIOD_MS);
     }
@@ -335,6 +342,7 @@ static void publish_lock_cmd_ack(const char* cmd, const char* command_id,
     if (error && error[0]) {
         cJSON_AddStringToObject(root, "error", error);
     }
+    forgekey_time_add_json(root);
     char* json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     if (json_str) {
@@ -379,6 +387,7 @@ static void on_command_message(const char* topic, const uint8_t* payload, uint32
         cJSON_AddStringToObject(ack, "cmd_ack", "restart");
         cJSON_AddStringToObject(ack, "command_id", command_id ? command_id : "");
         cJSON_AddNumberToObject(ack, "in_ms", 1000);
+        forgekey_time_add_json(ack);
         char* ack_json = cJSON_PrintUnformatted(ack);
         cJSON_Delete(ack);
         if (ack_json) {
@@ -438,9 +447,9 @@ static void publish_status_snapshot(const char* mac_str, const char* requested_c
     cJSON_AddStringToObject(root, "framework", FORGEKEY_BUILD_FRAMEWORK);
     lock_board_manifest_add_health_json(root);
     ota_add_health_json(root);
+    forgekey_time_add_json(root);
     cJSON_AddNumberToObject(root, "free_heap", esp_get_free_heap_size());
     cJSON_AddNumberToObject(root, "rssi", current_wifi_rssi());
-    cJSON_AddNumberToObject(root, "uptime_ms", tel.uptime_ms);
     cJSON_AddStringToObject(root, "mac", mac_str ? mac_str : "");
     cJSON_AddStringToObject(root, "state", lock_state_state_name(lock_state_get_state()));
     cJSON_AddBoolToObject(root, "secure", tel.secure);
@@ -457,6 +466,7 @@ static void publish_unsupported_command_ack(const char* cmd, const char* command
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "cmd_ack", cmd ? cmd : "");
     cJSON_AddStringToObject(root, "command_id", command_id ? command_id : "");
+    forgekey_time_add_json(root);
     cJSON_AddStringToObject(root, "error", "unsupported");
     char* json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -470,6 +480,7 @@ static void publish_unknown_command_ack(const char* cmd, const char* command_id)
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "cmd_ack", cmd ? cmd : "");
     cJSON_AddStringToObject(root, "command_id", command_id ? command_id : "");
+    forgekey_time_add_json(root);
     cJSON_AddStringToObject(root, "error", "unknown_command");
     char* json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -484,6 +495,7 @@ static void publish_command_reject_ack(const char* cmd, const char* command_id, 
     cJSON_AddStringToObject(root, "cmd_ack", cmd ? cmd : "");
     cJSON_AddStringToObject(root, "command_id", command_id ? command_id : "");
     cJSON_AddBoolToObject(root, "ok", false);
+    forgekey_time_add_json(root);
     cJSON_AddStringToObject(root, "error", error ? error : "invalid_command");
     char* json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -544,6 +556,7 @@ static void ota_status_callback(const char* state, const char* version, int prog
     if (error && error[0]) cJSON_AddStringToObject(root, "error", error);
     lock_board_manifest_add_health_json(root);
     ota_add_health_json(root);
+    forgekey_time_add_json(root);
     char* json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     if (json_str) {

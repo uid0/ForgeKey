@@ -11,6 +11,7 @@
 #include "config/credential_rotation.h"
 #include "config/wifi_desired_state.h"
 #include "security/command_validation.h"
+#include "time/time_sync.h"
 #include "wifi_setup/captive.h"
 
 #include "capabilities/registry.h"
@@ -230,6 +231,7 @@ static void publishStatusSnapshot(const char* requestedCmd, const char* commandI
     BoardManifest::appendHealthJson(payload, CapabilityRegistry::head());
     payload += ",\"uptime_ms\":";
     payload += String(millis());
+    ForgeKeyTime::appendJson(payload);
     payload += ",\"mac\":\"";
     payload += macAddress;
     payload += "\"";
@@ -765,14 +767,15 @@ void setup() {
     macAddress.toLowerCase();
     debugPrintf("INFO", "MAIN", "MAC Address: %s", macAddress.c_str());
 
-    // NTP sync: ESP32 has no RTC, so time starts at epoch 0 without it.
-    // TLS certificate verification fails if the device clock is wrong.
+    // NTP sync: ESP32 has no RTC, so wall-clock security decisions remain
+    // disabled until ForgeKeyTime marks the UTC epoch as valid.
     debugPrint("INFO", "MAIN", "Syncing NTP time...");
-    configTzTime("UTC", "pool.ntp.org", "time.nist.gov");
+    ForgeKeyTime::begin();
     struct tm timeinfo;
     if (!getLocalTime(&timeinfo)) {
-        debugPrint("WARN", "MAIN", "NTP sync failed — TLS may fail");
+        debugPrint("WARN", "MAIN", "NTP sync failed — TLS and wall-clock signed commands may fail");
     } else {
+        ForgeKeyTime::tick();
         debugPrintf("INFO", "MAIN", "NTP synced: %04d-%02d-%02d %02d:%02d:%02d",
                     timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
                     timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
@@ -1012,6 +1015,7 @@ void loop() {
         debugPrint("INFO", "CMD", "identify expired -> blink off");
     }
 
+    ForgeKeyTime::tick();
     WifiSetup::tickHealth();
 
     mqttClient.loop();

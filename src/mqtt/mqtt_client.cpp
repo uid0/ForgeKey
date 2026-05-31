@@ -1,6 +1,8 @@
 #include "mqtt_client.h"
+#include "../time/time_sync.h"
 #include "Arduino.h"
 
+#include <ArduinoJson.h>
 #include <WiFi.h>
 #include "ota/ota_updater.h"
 #include "wifi_setup/captive.h"
@@ -105,6 +107,7 @@ String buildStatePayload(bool online, const char* ip, const char* reason) {
         payload += escapeJsonString(reason);
         payload += "\"";
     }
+    ForgeKeyTime::appendJson(payload);
     payload += "}";
     return payload;
 }
@@ -510,7 +513,9 @@ bool MqttClient::publishOccupancy(int count) {
         }
         if (occupancyTopic.length() == 0) return false;
         String payload = "{\"count\":" + String(count) +
-                         ",\"timestamp\":" + String(millis()) + "}";
+                         ",\"timestamp\":" + String(ForgeKeyTime::epochNow());
+        ForgeKeyTime::appendJson(payload);
+        payload += "}";
         return enqueueOutbound(occupancyTopic.c_str(), payload.c_str(), false, false);
     }
 
@@ -521,7 +526,9 @@ bool MqttClient::publishOccupancy(int count) {
     }
 
     String payload = "{\"count\":" + String(count) +
-                    ",\"timestamp\":" + String(millis()) + "}";
+                    ",\"timestamp\":" + String(ForgeKeyTime::epochNow());
+    ForgeKeyTime::appendJson(payload);
+    payload += "}";
 
     // PubSubClient::publish() with the (topic, payload) signature defaults to
     // QoS 0 / retain=false. There is no PUBACK at QoS 0; "ok" only means
@@ -566,7 +573,8 @@ bool MqttClient::publishTemperature(float tempC, float humidity) {
         payload += ",\"humidity\":";
         payload += hBuf;
         payload += ",\"timestamp\":";
-        payload += String(millis());
+        payload += String(ForgeKeyTime::epochNow());
+        ForgeKeyTime::appendJson(payload);
         payload += "}";
         return enqueueOutbound(readingTopic.c_str(), payload.c_str(), false, false);
     }
@@ -585,7 +593,8 @@ bool MqttClient::publishTemperature(float tempC, float humidity) {
     payload += ",\"humidity\":";
     payload += hBuf;
     payload += ",\"timestamp\":";
-    payload += String(millis());
+    payload += String(ForgeKeyTime::epochNow());
+    ForgeKeyTime::appendJson(payload);
     payload += "}";
 
     bool result = publishImmediate(readingTopic.c_str(), payload.c_str(), false);
@@ -633,8 +642,9 @@ bool MqttClient::publishFirmwareStatus(const char* state,
     OtaUpdater::appendHealthJson(payload);
     WifiSetup::appendHealthJson(payload);
     BoardManifest::appendHealthJson(payload, CapabilityRegistry::head());
+    ForgeKeyTime::appendJson(payload);
     payload += ",\"ts\":";
-    payload += String(millis());
+    payload += String(ForgeKeyTime::epochNow());
     payload += "}";
 
     bool ok = publishImmediate(firmwareStatusTopic.c_str(), payload.c_str(), false);
@@ -715,6 +725,16 @@ bool MqttClient::publishStatus(const char* jsonPayload) {
         return false;
     }
     if (!jsonPayload) jsonPayload = "{}";
+
+    String enriched;
+    StaticJsonDocument<1024> doc;
+    DeserializationError err = deserializeJson(doc, jsonPayload);
+    if (!err && doc.is<JsonObject>()) {
+        ForgeKeyTime::addJson(doc.as<JsonObject>());
+        serializeJson(doc, enriched);
+        jsonPayload = enriched.c_str();
+    }
+
     bool ok = publishImmediate(statusTopic.c_str(), jsonPayload, false);
     if (!ok) {
         ok = enqueueOutbound(statusTopic.c_str(), jsonPayload, false, true);
