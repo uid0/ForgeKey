@@ -3,6 +3,7 @@
 
 #include <WiFi.h>
 #include "ota/ota_updater.h"
+#include "wifi_setup/captive.h"
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
 #include <nvs.h>
@@ -444,6 +445,20 @@ bool MqttClient::connect() {
     return false;
 }
 
+bool MqttClient::probeReachability(unsigned long timeoutMs) {
+    if (!client) return false;
+    if (client->connected()) return true;
+    unsigned long previousAttempt = lastReconnectAttempt;
+    lastReconnectAttempt = 0;
+    unsigned long start = millis();
+    while (millis() - start < timeoutMs) {
+        if (connect()) return true;
+        delay(250);
+    }
+    lastReconnectAttempt = previousAttempt;
+    return false;
+}
+
 void MqttClient::resubscribeAll() {
     // PubSubClient's subscribe() returns true iff the SUBSCRIBE packet was
     // written to the socket — it does NOT confirm a SUBACK from the broker.
@@ -614,6 +629,7 @@ bool MqttClient::publishFirmwareStatus(const char* state,
         payload += "\"";
     }
     OtaUpdater::appendHealthJson(payload);
+    WifiSetup::appendHealthJson(payload);
     payload += ",\"ts\":";
     payload += String(millis());
     payload += "}";

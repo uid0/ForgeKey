@@ -104,6 +104,7 @@ public:
     // "never" instead of a misleading age).
     unsigned long lastSuccessfulPublishMs() const { return lastPublishMs; }
     int lastConnectRc() const { return lastConnectState; }
+    bool probeReachability(unsigned long timeoutMs = 5000);
 
 private:
     // Net transport: either a plain WiFiClient or a WiFiClientSecure depending
