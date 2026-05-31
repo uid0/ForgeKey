@@ -75,8 +75,8 @@ so we can build, review, and test one layer at a time before moving on.
       model metadata, and redacted calibration-frame capture.
 - [ ] Add BLE privacy controls, hashed identifiers, allow/deny lists, scan-duty
       policy, RSSI calibration, and retention guidance.
-- [ ] Complete ePaper force-refresh, retirement, wake-cadence, battery-sensing,
-      and OTA management.
+- [ ] Add OMS UI/API plumbing around the completed ePaper firmware lifecycle:
+      desired-state publishing, command status visibility, and health dashboards.
 - [ ] Normalize temperature and environmental sensor schemas for future sensor
       variants.
 
