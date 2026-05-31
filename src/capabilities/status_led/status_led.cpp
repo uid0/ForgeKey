@@ -32,11 +32,13 @@ struct BlinkPattern {
     const int* phases;
 };
 
-constexpr BlinkPattern PATTERN_BOOT            = {100, 100, 5};
-constexpr BlinkPattern PATTERN_WIFI_CONNECTING = {500, 500, 0};
-constexpr BlinkPattern PATTERN_NORMAL          = { 50, 2950, 0};
-constexpr BlinkPattern PATTERN_ERROR           = {200, 200, 0};
-constexpr BlinkPattern PATTERN_MQTT_CONNECTED  = { 50,  50, 3};
+constexpr BlinkPattern PATTERN_BOOTING       = {100, 100, 5};
+constexpr BlinkPattern PATTERN_CONNECTED     = { 50, 2950, 0};
+constexpr BlinkPattern PATTERN_DEGRADED      = {120, 880, 0};
+constexpr BlinkPattern PATTERN_OTA           = {100, 100, 0};
+constexpr BlinkPattern PATTERN_ERROR         = {200, 200, 0};
+constexpr BlinkPattern PATTERN_RETIRED       = {1000, 0, 0};
+constexpr BlinkPattern PATTERN_FACTORY_RESET = {100, 100, 10};
 
 // Provisioning: "long, long, short, long" morse-style pattern (repeat forever)
 // Each "long" = 300ms on + 100ms off; "short" = 100ms on + 100ms off;
@@ -58,11 +60,11 @@ constexpr BlinkPattern PATTERN_PROVISIONING = {0, 0, 0, 11, PROVISIONING_PHASES}
 #endif
 constexpr BlinkPattern PATTERN_BLINK_OVERRIDE = {BLINK_PERIOD_MS, BLINK_PERIOD_MS, 0};
 
-State g_state = State::Boot;
-State g_pendingTransition = State::Boot;
+State g_state = State::Booting;
+State g_pendingTransition = State::Booting;
 bool  g_haveTransition = false;
-BlinkPattern g_currentPattern = PATTERN_BOOT;
-BlinkPattern g_followupPattern = PATTERN_NORMAL;  // resumes after finite-count pattern
+BlinkPattern g_currentPattern = PATTERN_BOOTING;
+BlinkPattern g_followupPattern = PATTERN_CONNECTED;  // resumes after finite-count pattern
 bool g_haveFollowup = false;
 unsigned long g_lastToggle = 0;
 bool g_ledOnNow = false;
@@ -77,14 +79,17 @@ int  g_cycleCount = 0;
 
 const BlinkPattern& patternFor(State s) {
     switch (s) {
-        case State::Boot:           return PATTERN_BOOT;
-        case State::WifiConnecting: return PATTERN_WIFI_CONNECTING;
-        case State::Provisioning:   return PATTERN_PROVISIONING;
-        case State::Normal:         return PATTERN_NORMAL;
-        case State::Error:          return PATTERN_ERROR;
-        case State::MqttConnected:  return PATTERN_MQTT_CONNECTED;
+        case State::Booting:      return PATTERN_BOOTING;
+        case State::Provisioning: return PATTERN_PROVISIONING;
+        case State::Connected:    return PATTERN_CONNECTED;
+        case State::Degraded:     return PATTERN_DEGRADED;
+        case State::Ota:          return PATTERN_OTA;
+        case State::Error:        return PATTERN_ERROR;
+        case State::Identify:     return PATTERN_BLINK_OVERRIDE;
+        case State::Retired:      return PATTERN_RETIRED;
+        case State::FactoryReset: return PATTERN_FACTORY_RESET;
     }
-    return PATTERN_NORMAL;
+    return PATTERN_CONNECTED;
 }
 
 void applyPattern(const BlinkPattern& p) {
@@ -153,7 +158,7 @@ bool setBlinkOverride(bool on) {
         // while the override was active, tickFn() will pick it up. Default to
         // Normal so we don't get stuck mid-Boot if the override outlasted the
         // boot phase.
-        applyPattern(patternFor(g_state == State::Boot ? State::Normal : g_state));
+        applyPattern(patternFor(g_state == State::Booting ? State::Connected : g_state));
     }
     return true;
 }
@@ -189,8 +194,8 @@ bool detectFn() {
 void setupFn() {
     pinMode(ledPin(), OUTPUT);
     digitalWrite(ledPin(), ledOffLevel());
-    g_state = State::Boot;
-    applyPattern(PATTERN_BOOT);
+    g_state = State::Booting;
+    applyPattern(PATTERN_BOOTING);
 }
 
 void tickFn() {
@@ -201,19 +206,13 @@ void tickFn() {
         g_blinkOverride = false;
         g_blinkOverrideExpiresMs = 0;
         g_blinkOverrideExpiredFlag = true;
-        applyPattern(patternFor(g_state == State::Boot ? State::Normal : g_state));
+        applyPattern(patternFor(g_state == State::Booting ? State::Connected : g_state));
     }
 
     if (g_haveTransition) {
         g_haveTransition = false;
         g_state = g_pendingTransition;
-        if (g_state == State::MqttConnected) {
-            // brief flurry, then resume Normal
-            g_haveFollowup = true;
-            g_followupPattern = PATTERN_NORMAL;
-        } else {
-            g_haveFollowup = false;
-        }
+        g_haveFollowup = false;
         // Operator blink override beats MQTT-connected/normal transitions —
         // a reconnect during identify shouldn't silently stop the blink.
         if (!g_blinkOverride) {

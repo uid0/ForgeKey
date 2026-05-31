@@ -8,6 +8,7 @@
 #include "../mqtt/mqtt_client.h"
 #include "../provisioning/register.h"
 #include "../time/time_sync.h"
+#include "../capabilities/status_led/status_led.h"
 
 namespace device_lifecycle {
 namespace {
@@ -97,6 +98,9 @@ bool handleSignedCommand(Action action, const char* commandId, const char* actor
     }
 
     persistLifecycleState(state);
+    StatusLed::requestState(action == Action::FactoryReset ?
+                            StatusLed::State::FactoryReset :
+                            StatusLed::State::Retired);
     publishFinalState(state, actionName(action), commandId, actor);
     publishAck(actionName(action), commandId, true, detail);
     delay(250);

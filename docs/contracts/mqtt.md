@@ -51,7 +51,7 @@ and include it inside payloads when the schema allows additive fields.
 
 | Class | Required verbs | Optional verbs |
 |---|---|---|
-| All classes | `status`, `restart`, `identify`, `reprovision`, `retire` | `set_config`, `rotate_credentials`, `run_diagnostics` |
+| All classes | `status`, `restart`, `identify`, `reprovision`, `retire` | `set_config`, `rotate_credentials`, `support_mode`, `run_diagnostics` |
 | `people_counter` | `capture` | `set_privacy_mode`, `calibrate_counting_zone` |
 | `temperature_sensor` | `sample` | `set_sample_interval`, `calibrate_sensor` |
 | `cabinet_lock` | `unlock`, `lockout`, `clear_lockout`, `emergency_unlock` | `commission`, `init_ack` |

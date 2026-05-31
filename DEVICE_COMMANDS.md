@@ -224,6 +224,41 @@ publishes.
 `cmd_ack` is always `"status"` for both commands. `requested_cmd` shows
 whether the caller sent `status` or `ping`.
 
+
+### `support_mode` / `run_diagnostics`
+
+Temporarily increases local diagnostics and includes support fields in status
+payloads. Support mode enables ESP debug output, emits periodic `DEBUG/SUPPORT`
+logs, and surfaces `support_mode` plus local web status availability in the
+`status` snapshot. It auto-expires and is capped by firmware (default cap: 60
+minutes).
+
+```json
+{ "cmd": "support_mode", "action": "start", "duration_s": 300 }
+{ "cmd": "support_mode", "action": "status" }
+{ "cmd": "support_mode", "action": "stop" }
+{ "cmd": "run_diagnostics", "duration_s": 300 }
+```
+
+Ack:
+
+```json
+{
+  "cmd_ack": "support_mode",
+  "command_id": "01JZ...",
+  "ok": true,
+  "active": true,
+  "remaining_s": 300,
+  "free_heap": 187344,
+  "rssi": -57,
+  "local_status_web": true
+}
+```
+
+Powered Arduino classes also expose a read-only local status page at
+`http://<device-ip>/` and JSON at `http://<device-ip>/status.json`; ePaper
+classes disable this to preserve battery.
+
 ### `identify`
 
 Operator wants to physically locate the device. Same as `blink:start` but
