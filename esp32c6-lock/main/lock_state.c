@@ -58,6 +58,8 @@ static bool g_solenoid_active = false;
 /* State transition tracking */
 static uint32_t g_state_start_ms = 0;
 static uint32_t g_last_telemetry_ms = 0;
+static bool g_led_level = false;
+static uint32_t g_led_last_toggle_ms = 0;
 
 /* Telemetry change detection */
 static bool g_last_secure = false;
@@ -105,6 +107,16 @@ void lock_state_gpio_init(void) {
     io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
     gpio_config(&io_conf);
     ESP_LOGI(TAG, "IR beam on GPIO %d", FORGEKEY_LOCK_IR_BEAM_PIN);
+
+#if FORGEKEY_LOCK_STATUS_LED_PIN >= 0
+    io_conf.pin_bit_mask = (1ULL << FORGEKEY_LOCK_STATUS_LED_PIN);
+    io_conf.mode = GPIO_MODE_OUTPUT;
+    io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    gpio_config(&io_conf);
+    gpio_set_level(FORGEKEY_LOCK_STATUS_LED_PIN, !FORGEKEY_LOCK_STATUS_LED_ACTIVE);
+    ESP_LOGI(TAG, "Status LED on GPIO %d", FORGEKEY_LOCK_STATUS_LED_PIN);
+#endif
 }
 
 void lock_state_begin(void) {
@@ -115,6 +127,8 @@ void lock_state_begin(void) {
     g_last_telemetry_ms = 0;
     g_last_secure = false;
     g_last_item_present = false;
+    g_led_level = false;
+    g_led_last_toggle_ms = 0;
     g_reed_closed = false;
     g_latch_locked = false;
     g_ir_broken = true;
@@ -429,6 +443,50 @@ bool lock_state_validate_command_signature(const char* signing_input,
                                   signature, signature_decoded_len);
 }
 
+static void set_status_led(bool on) {
+#if FORGEKEY_LOCK_STATUS_LED_PIN >= 0
+    gpio_set_level(FORGEKEY_LOCK_STATUS_LED_PIN,
+                   on ? FORGEKEY_LOCK_STATUS_LED_ACTIVE : !FORGEKEY_LOCK_STATUS_LED_ACTIVE);
+#else
+    (void)on;
+#endif
+}
+
+static void update_local_status_led(uint32_t now) {
+    uint32_t interval_ms = 0;
+    bool steady_on = false;
+
+    switch (g_state) {
+        case LOCK_STATE_LOCKOUT:
+            interval_ms = FORGEKEY_LOCK_LOCKOUT_FLASH_MS;
+            break;
+        case LOCK_STATE_ALARM:
+            interval_ms = FORGEKEY_LOCK_ALARM_FLASH_MS;
+            break;
+        case LOCK_STATE_COMMISSIONING:
+            interval_ms = FORGEKEY_LOCK_COMMISSION_FLASH_MS;
+            break;
+        case LOCK_STATE_UNLOCKED:
+        case LOCK_STATE_ACCESSING:
+            steady_on = true;
+            break;
+        default:
+            break;
+    }
+
+    if (interval_ms > 0) {
+        if (now - g_led_last_toggle_ms >= interval_ms) {
+            g_led_level = !g_led_level;
+            g_led_last_toggle_ms = now;
+            set_status_led(g_led_level);
+        }
+    } else {
+        g_led_level = steady_on;
+        g_led_last_toggle_ms = now;
+        set_status_led(steady_on);
+    }
+}
+
 /* ===== State machine ===== */
 
 void lock_state_tick(void) {
@@ -512,12 +570,22 @@ void lock_state_tick(void) {
             }
             break;
 
+        case LOCK_STATE_LOCKOUT:
+            /* Operator lockout is sticky until clear_lockout or emergency_unlock. */
+            break;
+
+        case LOCK_STATE_COMMISSIONING:
+            /* Commissioning is sticky until init_ack completes the handoff. */
+            break;
+
         default:
             ESP_LOGE(TAG, "Unknown state %d, resetting to SECURE", g_state);
             g_state = LOCK_STATE_SECURE;
             g_state_start_ms = now;
             break;
     }
+
+    update_local_status_led(now);
 }
 
 /* ===== Public API ===== */
@@ -533,6 +601,8 @@ const char* lock_state_state_name(lock_state_t state) {
         case LOCK_STATE_UNLOCKED: return "UNLOCKED";
         case LOCK_STATE_ACCESSING: return "ACCESSING";
         case LOCK_STATE_ALARM: return "ALARM";
+        case LOCK_STATE_LOCKOUT: return "LOCKOUT";
+        case LOCK_STATE_COMMISSIONING: return "COMMISSIONING";
         default: return "UNKNOWN";
     }
 }
@@ -549,12 +619,20 @@ lock_telemetry_t lock_state_get_telemetry(void) {
     tel.ir_broken = g_ir_broken;
     tel.mortise_active = g_mortise_active;
     tel.uptime_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    tel.lockout_active = (g_state == LOCK_STATE_LOCKOUT);
+    tel.commissioning_active = (g_state == LOCK_STATE_COMMISSIONING);
+    tel.tamper_active = (g_state == LOCK_STATE_ALARM);
     return tel;
 }
 
 bool lock_state_handle_unlock(const char* token, long timestamp) {
     if (!token || token[0] == '\0') {
         ESP_LOGW(TAG, "Unlock: null or empty token");
+        return false;
+    }
+
+    if (g_state == LOCK_STATE_LOCKOUT) {
+        ESP_LOGW(TAG, "Unlock rejected: lockout active");
         return false;
     }
 
@@ -570,9 +648,62 @@ bool lock_state_handle_unlock(const char* token, long timestamp) {
 
     /* Transition to UNLOCKED */
     g_state = LOCK_STATE_UNLOCKED;
+    g_state_start_ms = g_solenoid_start_ms;
     g_last_trigger = LOCK_TRIGGER_SIGNED_COMMAND;
 
     ESP_LOGI(TAG, "Unlocked via signed command (timestamp=%ld)", timestamp);
+    return true;
+}
+
+bool lock_state_set_lockout(bool enabled) {
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    if (enabled) {
+        if (g_solenoid_active) {
+            gpio_set_level(FORGEKEY_LOCK_SOLENOID_PIN, 0);
+            g_solenoid_active = false;
+        }
+        g_state = LOCK_STATE_LOCKOUT;
+        g_last_trigger = LOCK_TRIGGER_LOCKOUT;
+    } else {
+        bool secure = g_reed_closed && g_latch_locked;
+        g_state = secure ? LOCK_STATE_SECURE : LOCK_STATE_ALARM;
+        g_last_trigger = LOCK_TRIGGER_CLEAR_LOCKOUT;
+    }
+    g_state_start_ms = now;
+    return true;
+}
+
+bool lock_state_start_commissioning(void) {
+    if (g_state == LOCK_STATE_LOCKOUT) {
+        ESP_LOGW(TAG, "Commissioning rejected: lockout active");
+        return false;
+    }
+    g_state = LOCK_STATE_COMMISSIONING;
+    g_state_start_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    g_last_trigger = LOCK_TRIGGER_COMMISSION;
+    return true;
+}
+
+bool lock_state_ack_initialization(void) {
+    if (g_state == LOCK_STATE_LOCKOUT) {
+        ESP_LOGW(TAG, "Init ack rejected: lockout active");
+        return false;
+    }
+    bool secure = g_reed_closed && g_latch_locked;
+    g_state = secure ? LOCK_STATE_SECURE : LOCK_STATE_ALARM;
+    g_state_start_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    g_last_trigger = LOCK_TRIGGER_INIT_ACK;
+    return true;
+}
+
+bool lock_state_handle_emergency_unlock(void) {
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    g_solenoid_start_ms = now;
+    g_solenoid_active = true;
+    gpio_set_level(FORGEKEY_LOCK_SOLENOID_PIN, FORGEKEY_LOCK_SOLENOID_ACTIVE);
+    g_state = LOCK_STATE_UNLOCKED;
+    g_state_start_ms = now;
+    g_last_trigger = LOCK_TRIGGER_EMERGENCY_UNLOCK;
     return true;
 }
 

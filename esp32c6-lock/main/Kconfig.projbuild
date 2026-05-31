@@ -36,6 +36,26 @@ config FORGEKEY_LOCK_SOLENOID_PULSE_MS
     help
         Duration of solenoid unlock pulse in milliseconds.
 
+config FORGEKEY_LOCK_STATUS_LED_PIN
+    int "Optional status LED pin"
+    default -1
+    help
+        Optional GPIO pin for lockout/tamper/commissioning local status LED.
+        Set to -1 to disable LED output.
+
+config FORGEKEY_LOCK_LOCKOUT_FLASH_MS
+    int "Lockout LED flash interval (ms)"
+    default 100
+    help
+        Fast blink interval used while operator lockout is active.
+
+config FORGEKEY_LOCK_COMMISSION_FLASH_MS
+    int "Commissioning LED flash interval (ms)"
+    default 700
+    help
+        Slow blink interval used while commissioning mode is active.
+
+
 config FORGEKEY_LOCK_TELEMETRY_INTERVAL_MS
     int "Telemetry publish interval (ms)"
     default 10000

@@ -28,6 +28,24 @@
 #define FORGEKEY_LOCK_IR_BEAM_PIN 4
 #endif
 
+
+/* Optional local status LED. Set to -1 to disable. */
+#ifndef FORGEKEY_LOCK_STATUS_LED_PIN
+#define FORGEKEY_LOCK_STATUS_LED_PIN -1
+#endif
+
+#ifndef FORGEKEY_LOCK_STATUS_LED_ACTIVE
+#define FORGEKEY_LOCK_STATUS_LED_ACTIVE 1
+#endif
+
+#ifndef FORGEKEY_LOCK_LOCKOUT_FLASH_MS
+#define FORGEKEY_LOCK_LOCKOUT_FLASH_MS 100
+#endif
+
+#ifndef FORGEKEY_LOCK_COMMISSION_FLASH_MS
+#define FORGEKEY_LOCK_COMMISSION_FLASH_MS 700
+#endif
+
 /* Solenoid active level */
 #define FORGEKEY_LOCK_SOLENOID_ACTIVE 1
 

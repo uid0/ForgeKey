@@ -16,8 +16,9 @@ flash → boot → wifi → ntp → mqtt connected → SECURE state
                     ┌─────────────────┼──────────────────┐
                     │                 │                  │
               Django publishes    Door opens →        Door opens
-              unlock cmd on       ACCESSING state     without valid
-              cabinets/{mac}/cmd  monitoring IR beam   JWT → ALARM state
+              signed unlock on    ACCESSING state     without valid
+              forgekey/{mac}/     monitoring IR beam   command → ALARM
+              command
                     │
               Device pulses solenoid
               → UNLOCKED state
@@ -167,30 +168,142 @@ supervisor shows locked but door is ajar).
 
 ### From Django to XIAO (Unlock Command)
 
-**Topic:** `cabinets/{mac}/cmd`
+**Topic:** `forgekey/{mac}/command`
 
-**Payload:**
+Every operational command uses the signed command envelope below. Safety-sensitive
+commands (`unlock`, `lockout`, `clear_lockout`, `init_ack`,
+`emergency_unlock`, `commission`, and `restart`) require both a valid OMS
+authenticator and an operator identity (`actor`; `operator_id` or
+`operator.id` may also be included for OMS correlation).
+
+**Common envelope:**
 ```json
 {
-  "token": "header.payload.signature",
-  "timestamp": 1715150000
+  "cmd": "<verb>",
+  "command_id": "cmd_01HV7J5H2G4R3M9K8N7P6Q5S4T",
+  "issued_at": 1715150000,
+  "expires_at": 1715150030,
+  "nonce": "base64url-128-bit-random",
+  "actor": "operator:ian",
+  "jwt": "header.payload.signature"
 }
 ```
 
-- `token`: HS256 JWT (30s expiry)
-- `timestamp`: Server epoch seconds at JWT issue time
+Detached-signature envelopes are also accepted when `jwt` is omitted. The
+signature is base64url raw ES256 `r||s` over this canonical string:
+`cmd + "\n" + command_id + "\n" + issued_at + "\n" + expires_at + "\n" + nonce + "\n" + actor`.
+
+```json
+{
+  "cmd": "lockout",
+  "command_id": "cmd_01HV7J5H2G4R3M9K8N7P6Q5S4T",
+  "issued_at": "1715150000",
+  "expires_at": "1715150030",
+  "nonce": "base64url-128-bit-random",
+  "actor": "operator:ian",
+  "signature": "base64url-es256-raw-rs"
+}
+```
 
 The device validates:
-1. JWT/signature authenticator matches the active OMS command public key (or the legacy lock token validator for older unlock payloads).
+1. JWT/detached-signature authenticator matches the active OMS command public key.
 2. The UTC wall clock is valid before evaluating `issued_at`, `expires_at`, `timestamp`, or JWT `exp`.
 3. `timestamp`/`issued_at` is within the configured skew window and any expiry has not passed.
 4. `command_id` and `nonce` have not already been accepted by the replay cache.
+5. Safety-sensitive commands include operator identity before local actuation.
 
 If `clock_valid` is false, wall-clock signed commands are rejected with
 `clock_invalid`. A server-provided challenge/nonce flow may bypass wall-clock
 freshness only when the signed envelope includes `auth_flow: "challenge"` (or
 `"nonce"`), `challenge`, or `server_nonce`; in that case the signed one-time
 challenge and replay cache provide freshness.
+
+### Operational command schemas
+
+#### `lockout`
+Enter sticky operator lockout; normal `unlock` commands are rejected and the
+status LED fast-flashes until `clear_lockout` or `emergency_unlock`.
+
+```json
+{
+  "cmd": "lockout",
+  "command_id": "cmd_lockout_001",
+  "issued_at": 1715150000,
+  "expires_at": 1715150030,
+  "nonce": "n-lockout-001",
+  "actor": "operator:ian",
+  "reason": "maintenance",
+  "jwt": "header.payload.signature"
+}
+```
+
+Ack: `{"cmd_ack":"lockout","command_id":"cmd_lockout_001","state":"LOCKOUT",...}`
+
+#### `clear_lockout`
+Clear sticky operator lockout and return to `SECURE` when reed and latch both
+report secure, otherwise to `ALARM`.
+
+```json
+{
+  "cmd": "clear_lockout",
+  "command_id": "cmd_clear_lockout_001",
+  "issued_at": 1715150100,
+  "expires_at": 1715150130,
+  "nonce": "n-clear-lockout-001",
+  "actor": "operator:ian",
+  "jwt": "header.payload.signature"
+}
+```
+
+#### `init_ack`
+OMS acknowledges provisioning/boot handoff. The device leaves `INITIALIZING` or
+`COMMISSIONING` and evaluates physical security (`SECURE` vs `ALARM`).
+
+```json
+{
+  "cmd": "init_ack",
+  "command_id": "cmd_init_ack_001",
+  "issued_at": 1715150200,
+  "expires_at": 1715150230,
+  "nonce": "n-init-ack-001",
+  "actor": "operator:ian",
+  "jwt": "header.payload.signature"
+}
+```
+
+#### `emergency_unlock`
+Pulses the solenoid immediately, including while `LOCKOUT` is active. This is
+audited with an `emergency_unlock` event carrying the command ID.
+
+```json
+{
+  "cmd": "emergency_unlock",
+  "command_id": "cmd_emergency_001",
+  "issued_at": 1715150300,
+  "expires_at": 1715150330,
+  "nonce": "n-emergency-001",
+  "actor": "operator:ian",
+  "incident_id": "inc_123",
+  "jwt": "header.payload.signature"
+}
+```
+
+#### `commission`
+Enter commissioning mode for installation or service. The status LED slow-flashes
+and telemetry reports `commissioning_active: true` until `init_ack`.
+
+```json
+{
+  "cmd": "commission",
+  "command_id": "cmd_commission_001",
+  "issued_at": 1715150400,
+  "expires_at": 1715150430,
+  "nonce": "n-commission-001",
+  "actor": "operator:ian",
+  "asset_id": "fk_asset_123",
+  "jwt": "header.payload.signature"
+}
+```
 
 ### From XIAO to Django (Telemetry)
 
@@ -216,19 +329,58 @@ challenge and replay cache provide freshness.
   "reed_closed": true,
   "latch_locked": true,
   "ir_broken": false,
-  "mortise_active": false
+  "mortise_active": false,
+  "lockout_active": false,
+  "commissioning_active": false,
+  "tamper_active": false
 }
 ```
 
 **`last_trigger` values:**
 | Value | Meaning |
 |-------|---------|
-| `"jwt"` | Unlock via valid MQTT command |
+| `"signed_command"` | Unlock via valid signed MQTT command |
 | `"mortise"` | Physical key (mortise switch) triggered |
 | `"auto_unlock"` | Auto-unlock (if `AUTO_RELOCK_MS` > 0) |
 | `"door_close"` | Door closed and latch engaged |
 | `"alarm_timeout"` | Alarm condition cleared |
+| `"lockout"` | Operator lockout entered |
+| `"clear_lockout"` | Operator lockout cleared |
+| `"commission"` | Commissioning mode entered |
+| `"init_ack"` | OMS/operator initialization acknowledgement |
+| `"emergency_unlock"` | Emergency unlock pulse |
 | `"unknown"` | Default / initial |
+
+
+### Event messages
+
+Sensor and safety events are published on `forgekey/{mac}/status` as soon as the
+debounced value changes. Every event includes `clock_valid`/`epoch_time` from
+`forgekey_time_add_json(...)`, monotonic `uptime`, current sensor values, and the
+most recent accepted `command_id` (or the initiating command ID for command-
+driven mode events).
+
+```json
+{
+  "event": "reed",
+  "active": false,
+  "command_id": "cmd_unlock_001",
+  "state": "UNLOCKED",
+  "uptime": 3601000,
+  "reed_closed": false,
+  "latch_locked": false,
+  "ir_broken": false,
+  "mortise_active": false,
+  "tamper_active": false,
+  "lockout_active": false,
+  "commissioning_active": false,
+  "clock_valid": true,
+  "epoch_time": 1715150001
+}
+```
+
+Event names: `tamper`, `mortise_key`, `latch`, `reed`, `ir_beam`, `lockout`,
+`commissioning`, and `emergency_unlock`.
 
 ## Time requirements and clock health
 
@@ -290,9 +442,11 @@ for native `idf.py` workflows.
 | `FORGEKEY_LOCK_SOLENOID_PULSE_MS` | `1500` | Solenoid pulse duration |
 | `FORGEKEY_LOCK_AUTO_RELOCK_MS` | `0` | Auto-relock delay (0 = disabled) |
 | `FORGEKEY_LOCK_TELEMETRY_INTERVAL_MS` | `10000` | Telemetry publish interval |
-| `FORGEKEY_LOCK_CMD_TIMESTAMP_TOLERANCE_S` | `60` | JWT timestamp tolerance |
+| `FORGEKEY_LOCK_CMD_TIMESTAMP_TOLERANCE_S` | `60` | Signed-command timestamp tolerance |
 | `FORGEKEY_LOCK_JWT_EXPIRY_S` | `30` | JWT max expiry window |
-| `FORGEKEY_LOCK_JWT_SECRET` | `...` | HMAC-SHA256 shared secret (change in production!) |
+| `FORGEKEY_LOCK_STATUS_LED_PIN` | `-1` | Optional status LED pin (-1 disables) |
+| `FORGEKEY_LOCK_LOCKOUT_FLASH_MS` | `100` | Lockout LED flash rate |
+| `FORGEKEY_LOCK_COMMISSION_FLASH_MS` | `700` | Commissioning LED flash rate |
 | `FORGEKEY_LOCK_ALARM_FLASH_MS` | `200` | Alarm LED flash rate |
 | `FORGEKEY_LOCK_REED_DEBOUNCE_MS` | `200` | Reed switch debounce time |
 | `FORGEKEY_LOCK_LATCH_DEBOUNCE_MS` | `200` | Latch supervisor debounce time |
@@ -315,8 +469,9 @@ pio run
 
 ## Security Notes
 
-1. **JWT Secret:** `FORGEKEY_LOCK_JWT_SECRET` must be changed before any
-   production deployment. The default value is intentionally unsafe.
+1. **OMS command public key:** Provision the OMS ES256 command public key before
+   production deployment and rotate it through the provisioning/configuration
+   channel when operators change.
 
 2. **Signed command verification:** The ESP32-C6 lock firmware validates signed
    command envelopes, rejects replayed `command_id`/`nonce` values, and refuses
