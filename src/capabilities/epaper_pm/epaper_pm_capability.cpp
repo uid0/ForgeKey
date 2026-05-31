@@ -41,11 +41,10 @@
 // `BAT_4V2` net by hand. Operators rely on the on-board charger LEDs
 // for visual "swap me" signalling.
 //
-// OTA note: unlike the MAC/MQTT device classes documented in
-// FORGEKEY_DEVICE.md, this ePaper build currently skips provisioning,
-// MQTT, and OTA setup in main.cpp. Adaptive wake backoff does not add
-// remote reflashing support; ePaper OTA needs a future display_id-keyed
-// HTTPS polling contract or a bounded-awake MQTT path.
+// OTA note: ePaper skips MQTT but still participates in fleet OTA by
+// polling a display_id-keyed HTTPS policy endpoint once per wake before
+// fetching display content. The policy schema is the same JSON accepted on
+// MQTT firmware dispatch for the other Arduino targets.
 
 #if defined(FORGEKEY_EPAPER) && !defined(FORGEKEY_DISABLE_EPAPER)
 
@@ -71,6 +70,7 @@
 
 #include "../capability.h"
 #include "../../provisioning/device_config.h"
+#include "../../ota/ota_updater.h"
 
 namespace EPaperPmCapability {
 
@@ -108,6 +108,7 @@ constexpr uint32_t kErrorBaseWakeIntervalMin = 15;
 constexpr uint32_t kMaxErrorWakeIntervalMin = 4 * 60;
 constexpr uint32_t kSetupRetryWakeIntervalMin = 5;
 constexpr uint32_t kRetiredWakeIntervalMin = 12 * 60;
+constexpr size_t kMaxOtaPolicyBytes = 4096;
 
 // The SKU 6416 board cannot report real battery voltage, so the battery
 // endpoint is a low-value heartbeat for this hardware. Send it occasionally
@@ -320,6 +321,86 @@ bool paintFromPng(const uint8_t *buf, size_t len) {
     }
     g_panel.update();
     return true;
+}
+
+
+void postOtaStatus(const char *state, const char *version, int progress, const char *error) {
+    if (WiFi.status() != WL_CONNECTED || g_displayId.length() == 0) return;
+    HTTPClient http;
+    const String url = absUrl(String("/api/forgekey/epaper/" + g_displayId + "/firmware/status/").c_str());
+    http.begin(url);
+    http.addHeader("Content-Type", "application/json");
+    String payload = "{\"state\":\"";
+    payload += state ? state : "";
+    payload += "\"";
+    if (version && *version) {
+        payload += ",\"version\":\"";
+        payload += version;
+        payload += "\"";
+    }
+    if (progress >= 0 && progress <= 100) {
+        payload += ",\"progress\":";
+        payload += String(progress);
+    }
+    if (error && *error) {
+        payload += ",\"error\":\"";
+        payload += error;
+        payload += "\"";
+    }
+    OtaUpdater::appendHealthJson(payload);
+    payload += "}";
+    const int code = http.POST(payload);
+    http.end();
+    if (code < 200 || code >= 300) {
+        Serial.printf("[epaper] OTA status POST failed (code=%d)\n", code);
+    }
+}
+
+void pollOtaPolicy() {
+    if (WiFi.status() != WL_CONNECTED || g_displayId.length() == 0) return;
+    otaUpdater.setStatusCallback(postOtaStatus);
+
+    HTTPClient http;
+    const String url = absUrl(String("/api/forgekey/epaper/" + g_displayId + "/firmware.json").c_str());
+    http.begin(url);
+    http.addHeader("Accept", "application/json");
+    const int code = http.GET();
+    if (code == 204 || code == 404) {
+        http.end();
+        Serial.printf("[epaper] no OTA policy (code=%d)\n", code);
+        return;
+    }
+    if (code != 200) {
+        http.end();
+        Serial.printf("[epaper] OTA policy fetch failed (code=%d)\n", code);
+        return;
+    }
+    const int contentLength = http.getSize();
+    if (contentLength <= 0 || contentLength > static_cast<int>(kMaxOtaPolicyBytes)) {
+        http.end();
+        Serial.printf("[epaper] OTA policy length unusable (len=%d)\n", contentLength);
+        return;
+    }
+    String body = http.getString();
+    http.end();
+
+    OtaUpdater::Spec spec;
+    if (!otaUpdater.parse(reinterpret_cast<const uint8_t *>(body.c_str()), body.length(), spec)) {
+        postOtaStatus("failed", "", -1, "parse_error");
+        return;
+    }
+    if (spec.version == FORGEKEY_FIRMWARE_VERSION) {
+        Serial.printf("[epaper] OTA policy already on version %s\n", spec.version.c_str());
+        return;
+    }
+    String rejectReason;
+    if (!otaUpdater.isPolicyAllowed(spec, rejectReason)) {
+        Serial.printf("[epaper] OTA policy rejected: %s\n", rejectReason.c_str());
+        postOtaStatus("rejected", spec.version.c_str(), -1, rejectReason.c_str());
+        return;
+    }
+    postOtaStatus("received", spec.version.c_str(), -1, nullptr);
+    otaUpdater.apply(spec);  // restarts on success
 }
 
 // ---- HTTP wake-cycle stages ----------------------------------------
@@ -591,6 +672,7 @@ void tickFn() {
     g_ranThisBoot = true;
 
     Serial.println("[epaper] starting wake cycle");
+    pollOtaPolicy();
     const char *result = fetchImage();
     if (strcmp(result, "bind") == 0) {
         paintBindQrCard(g_displayId);
@@ -599,7 +681,12 @@ void tickFn() {
     }
     // "ok", "unchanged", and "error" all leave the panel in its
     // current state (paintFromPng already flushed on success; 304 and
-    // transport errors keep the prior render).
+    // transport errors keep the prior render). Any non-transport response
+    // proves the post-OTA image can boot, join WiFi, and talk to OMS, so it
+    // is safe to mark a pending OTA slot valid before deep sleep.
+    if (strcmp(result, "error") != 0) {
+        otaUpdater.markStableIfPending();
+    }
 
     const uint32_t nextWakeMinutes = nextWakeIntervalForResult(result);
 

@@ -6,13 +6,14 @@ type, in what order, and where the bytes go. For the device-side OTA
 internals (apply flow, rollback, status payloads, signature verification),
 see [FORGEKEY_DEVICE.md "OTA firmware updates"](../FORGEKEY_DEVICE.md#ota-firmware-updates).
 
-The four sections below are cumulative: do (1) once per fleet, then (2)–(4)
+The sections below are cumulative: do (1) once per fleet, then (2)–(5)
 each release.
 
 - [1. One-time signing-key setup](#1-one-time-signing-key-setup)
 - [2. Build a deployable binary](#2-build-a-deployable-binary)
 - [3. Upload and dispatch via OMS](#3-upload-and-dispatch-via-oms)
-- [4. Troubleshooting](#4-troubleshooting)
+- [4. Fleet rollout controls](#4-fleet-rollout-controls)
+- [5. Troubleshooting](#5-troubleshooting)
 
 ---
 
@@ -158,6 +159,7 @@ ForgeKey ships three device variants from one tree:
 | `seeed_xiao_esp32s3` | `people-counter` | Camera-based occupancy counting |
 | `seeed_xiao_esp32s3_temperature` | `temperature-sensor` | DHT 21 temperature/humidity |
 | `esp32c6-lock/` (`idf.py build`) | `cabinet-lock` | Cabinet lock on ESP32-C6 / ESP-IDF |
+| `seeed_xiao_epaper` | `epaper-display` | Preventive-maintenance e-paper display on XIAO ESP32-C3 |
 
 These binaries are **not interchangeable**. Dispatch the right image for the
 target hardware and firmware family.
@@ -182,6 +184,9 @@ git commit -m "chore(release): bump firmware to <version>"
 
 # Temperature-sensor variant:
 ~/.platformio/penv/bin/platformio run -e seeed_xiao_esp32s3_temperature
+
+# E-paper display variant:
+~/.platformio/penv/bin/platformio run -e seeed_xiao_epaper
 
 # Cabinet-lock variant:
 cd esp32c6-lock
@@ -212,6 +217,11 @@ artifacts/
   forgekey-temperature-sensor-<version>-<commit>.bin.sha256
   forgekey-temperature-sensor-latest.bin
   forgekey-temperature-sensor-latest.bin.sha256
+
+  forgekey-epaper-display-<version>-<commit>.bin
+  forgekey-epaper-display-<version>-<commit>.bin.sha256
+  forgekey-epaper-display-latest.bin
+  forgekey-epaper-display-latest.bin.sha256
 ```
 
 The `.sha256` file holds the lowercase hex digest with no filename suffix
@@ -275,19 +285,20 @@ From the firmware-update detail page:
   hardware revision. OMS fans the dispatch out via Celery — one publish
   per device.
 
-The backend Celery task publishes the dispatch JSON to:
+For MQTT-managed devices, the backend Celery task publishes the dispatch JSON to:
 
 ```
 forgekey/<mac>/<kind>/firmware
 ```
 
-where `<kind>` is `people_counter` or `temperature_sensor` depending on
-the device's registered sensor kind. The exact topic was returned to the
+where `<kind>` is `people_counter`, `temperature_sensor`, or another
+MQTT-managed device kind depending on the registered sensor kind. The exact topic was returned to the
 device at registration in the `mqtt_topic_for_firmware` field of the
 register response, persisted to NVS as `fw_topic`, and is the topic the
 device subscribes to on every boot.
 
-The dispatch payload shape:
+The dispatch payload shape is shared by Arduino MQTT devices,
+`seeed_xiao_epaper` HTTPS polling, and the ESP-IDF cabinet-lock firmware:
 
 ```json
 {
@@ -295,13 +306,39 @@ The dispatch payload shape:
   "sha256": "f3b5...64hex",
   "signature": "MEUCIQ...base64-DER-ECDSA(P-256)",
   "version": "0.2.0",
-  "mandatory": false
+  "mandatory": false,
+  "policy": {
+    "minimum_version": "0.1.0",
+    "maximum_version": "0.1.99",
+    "hardware_target": "seeed_xiao_epaper",
+    "capability_target": "epaper_pm",
+    "rollout_cohort": "pct:10",
+    "deadline": "1767225600"
+  }
 }
 ```
 
-`mandatory=true` makes the device apply immediately even if a photo
-upload is in flight. `mandatory=false` defers the apply if the device
-uploaded a photo in the last 5 seconds.
+`policy` may be omitted, and policy fields may also be sent at the top
+level for older OMS serializers. Devices reject a dispatch before download
+when their current version, hardware target, active capability, or rollout
+cohort does not match. `minimum_version` and `maximum_version` describe the
+source-version compatibility window for devices that may safely apply this
+image; they are not the target image version. `mandatory=true` makes the
+device apply immediately even if deferrable work is in flight.
+`mandatory=false` defers the apply if the device uploaded a photo in the
+last 5 seconds. `deadline` should be epoch seconds when device-side
+wall-clock enforcement is required.
+
+E-paper displays do not stay connected to MQTT. On each wake they poll:
+
+```
+GET  /api/forgekey/epaper/<display_id>/firmware.json
+POST /api/forgekey/epaper/<display_id>/firmware/status/
+```
+
+A `200` response to `firmware.json` must be the same signed dispatch JSON
+shown above; `204` or `404` means no update. The display posts the same OTA
+lifecycle statuses as MQTT devices before proceeding to its image fetch.
 
 ### 3.3 Watch progress
 
@@ -317,6 +354,15 @@ and renders progress in the admin UI in real time. State transitions:
 ```
 received → downloading (0..100%) → verifying → rebooting → applied
 ```
+
+Rejected policy dispatches publish `state=rejected` with `error` set to one
+of `below_minimum_version`, `above_maximum_version`,
+`hardware_target_mismatch`, `capability_target_mismatch`, or
+`rollout_cohort_mismatch`. Health/status payloads include `ota_partition`,
+`ota_running_slot`, `ota_boot_slot`, `ota_next_slot`, `ota_state`,
+`ota_pending_verify`, `ota_previous_version`, `ota_secure_version`, and
+anti-rollback support/check fields so OMS can gate rollouts on actual slot
+state.
 
 `applied` only fires after the new firmware reboots, reconnects to MQTT,
 and publishes its first occupancy/reading. Until then the partition is
@@ -339,7 +385,130 @@ Look for log lines like `ota: marked running partition as valid`.
 
 ---
 
-## 4. Troubleshooting
+## 4. Fleet rollout controls
+
+Fleet OTA is deliberately staged. Operators should create a rollout record
+in OMS with immutable artifact metadata (version, SHA-256, signature,
+hardware target, capability target) and mutable rollout state (cohort,
+percentage, health gate results, paused/aborted flag).
+
+### 4.1 Cohorts and canaries
+
+Use these cohorts for every production release:
+
+1. **Lab canary**: 1-3 bench devices per hardware target. Must include at
+   least one device already on the oldest supported `minimum_version`.
+2. **Staff canary**: 1-5% of real devices owned by staff/operators who can
+   power-cycle or USB-flash quickly.
+3. **Site canary**: one device per site/network segment, especially where
+   captive portals, firewalls, or weak RSSI are common.
+4. **Production staged rollout**: deterministic percentage cohorts
+   (`pct:10`, `pct:25`, `pct:50`, `pct:100`) based on device identity so a
+   device does not jump between cohorts during a retry.
+
+Never skip directly from lab to 100% unless the release is an emergency
+security update and rollback has already been exercised on the same target.
+
+### 4.2 Staged percentage rollout
+
+Recommended production cadence:
+
+| Stage | Target policy | Minimum dwell time | Promotion requirement |
+|---|---|---:|---|
+| Lab | explicit device list | 30 minutes | All devices report `applied`, stable slot valid |
+| 1% | `rollout_cohort=pct:1` | 2 hours | Health gates green |
+| 10% | `rollout_cohort=pct:10` | 4 hours | Health gates green, no site-level cluster |
+| 25% | `rollout_cohort=pct:25` | 8 hours | Health gates green |
+| 50% | `rollout_cohort=pct:50` | 12 hours | Health gates green |
+| 100% | `rollout_cohort=pct:100` | release-specific | Monitor until long-tail complete |
+
+Mandatory updates may shorten dwell time only with incident commander
+approval. Deadline-based policies should set `mandatory=true` once the
+maintenance deadline passes, but still keep hardware/capability filters.
+
+### 4.3 Health gates
+
+Pause promotion if any gate fails within the current stage:
+
+- **Download/apply success**: at least 98% of contacted devices reach
+  `rebooting`; at least 95% reach `applied` within the dwell window.
+- **Rollback safety**: no more than 1% report `ota_pending_verify=true` for
+  more than 15 minutes after reboot, and no device repeatedly alternates
+  between previous and target versions.
+- **Runtime health**: no statistically significant increase in MQTT
+  disconnects, boot loops, lock alarm state, failed image fetches, missing
+  temperature readings, or people-counter capture failures.
+- **Partition health**: devices must report expected `ota_running_slot`, a
+  non-empty `ota_partition`, and a valid anti-rollback check when the target
+  supports secure-version fuses.
+- **Site health**: no site/network segment has more than two devices failing
+  with the same reason (`connect_failed`, `http_404`, `signature_invalid`,
+  etc.).
+
+### 4.4 Abort criteria
+
+Abort the rollout immediately and stop dispatching when any of these occur:
+
+- Any confirmed bricked device that cannot enter the old slot after a power
+  cycle.
+- `signature_invalid`, `sha256_mismatch`, or `anti_rollback_rejected` on
+  more than one device; these indicate artifact/signing metadata problems.
+- More than 2% boot-looping, rolling back, or failing to reconnect to MQTT
+  after the update.
+- Any cabinet-lock release that increases unsafe/unsecured state reports,
+  unlock failures, or alarm timeouts above the pre-rollout baseline.
+- Any e-paper release that prevents panels from deep-sleeping or fetching
+  display content after OTA.
+
+An aborted rollout must leave the OMS rollout record paused with the final
+abort reason, affected cohorts, first/last failure timestamps, and links to
+serial/MQTT logs.
+
+### 4.5 Rollback policy
+
+ForgeKey uses ESP-IDF/Arduino OTA rollback as the first safety layer: a new
+slot remains pending until the firmware reconnects and marks itself valid.
+Operational rollback is separate:
+
+1. If the new image is merely unhealthy but devices still accept OTA,
+   dispatch the previous known-good version with a higher compatible
+   anti-rollback secure version (where secure-version fuses are enabled).
+2. If anti-rollback fuses prevent reinstalling the exact old image, build a
+   hotfix from the old source with a bumped secure version and clear release
+   notes that it is a rollback hotfix.
+3. If devices cannot reach OTA but boot the previous slot after power-cycle,
+   abort and wait for automatic/manual rollback rather than repeatedly
+   redispatching.
+4. If neither slot boots, recover by USB flashing and record the device as a
+   bricking incident.
+
+Keep every release artifact, SHA-256, signature, and signing-key identifier
+until the fleet has moved beyond the release and the rollback window has
+expired.
+
+### 4.6 Compatibility rules
+
+- `hardware_target` must name the exact build family (`seeed_xiao_esp32s3`,
+  `seeed_xiao_esp32s3_temperature`, `seeed_xiao_epaper`, or
+  `esp32c6-lock`). Do not use `all` for production except emergency signing
+  key transition images that are known to be cross-compatible.
+- `capability_target` must match the active capability (`people_counter`,
+  `temperature_sensor`, `epaper_pm`, `cabinet_lock`, etc.) or the registered
+  sensor kind. A device rejecting a capability mismatch is behaving
+  correctly.
+- `minimum_version`/`maximum_version` must bracket the versions whose NVS
+  layout, MQTT topics, and partition table are compatible with the target
+  image. Split the rollout into multiple bridge releases if NVS or partition
+  layout changes are not backwards-compatible.
+- Never change the partition table for an OTA-only release unless every
+  currently deployed partition table can receive and boot the new image.
+- Anti-rollback secure-version values must be monotonically non-decreasing.
+  Once an eFuse secure version is advanced, images with lower secure
+  versions cannot be used for rollback on that device class.
+
+---
+
+## 5. Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|

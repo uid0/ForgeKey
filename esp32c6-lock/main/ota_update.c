@@ -8,6 +8,15 @@
 #include "firmware_verify.h"
 #include "oms_ca.h"
 #include "device_config.h"
+#include "cJSON.h"
+#include "esp_ota_ops.h"
+#include "esp_app_format.h"
+#if __has_include("esp_app_desc.h")
+#include "esp_app_desc.h"
+#endif
+#if __has_include("esp_efuse.h")
+#include "esp_efuse.h"
+#endif
 
 #include <string.h>
 #include <stdio.h>
@@ -21,7 +30,9 @@
 #include "esp_http_client.h"
 #include "esp_https_ota.h"
 #include "esp_partition.h"
+#include "esp_mac.h"
 #include "mbedtls/sha256.h"
+#include "nvs.h"
 
 static const char* TAG = "OTA";
 
@@ -191,6 +202,176 @@ bool ota_parse_dispatch(const uint8_t* payload, uint32_t length,
     return true;
 }
 
+
+static const char* json_string_from(cJSON* root, cJSON* policy, const char* key) {
+    cJSON* item = policy ? cJSON_GetObjectItem(policy, key) : NULL;
+    if (!cJSON_IsString(item) || !item->valuestring) {
+        item = cJSON_GetObjectItem(root, key);
+    }
+    return (cJSON_IsString(item) && item->valuestring) ? item->valuestring : "";
+}
+
+static int version_compare(const char* a, const char* b) {
+    size_t ia = 0, ib = 0;
+    while ((a && a[ia]) || (b && b[ib])) {
+        while (a && a[ia] && (a[ia] < '0' || a[ia] > '9')) ia++;
+        while (b && b[ib] && (b[ib] < '0' || b[ib] > '9')) ib++;
+        unsigned long va = 0, vb = 0;
+        while (a && a[ia] >= '0' && a[ia] <= '9') va = va * 10 + (unsigned long)(a[ia++] - '0');
+        while (b && b[ib] >= '0' && b[ib] <= '9') vb = vb * 10 + (unsigned long)(b[ib++] - '0');
+        if (va < vb) return -1;
+        if (va > vb) return 1;
+        if ((!a || !a[ia]) && (!b || !b[ib])) return 0;
+    }
+    return 0;
+}
+
+static uint8_t lock_cohort_bucket(void) {
+    uint8_t mac[6] = {0};
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    uint32_t hash = 2166136261UL;
+    for (size_t i = 0; i < sizeof(mac); ++i) {
+        hash ^= mac[i];
+        hash *= 16777619UL;
+    }
+    return (uint8_t)(hash % 100);
+}
+
+static bool matches_token(const char* csv, const char* value) {
+    if (!csv || !csv[0] || strcmp(csv, "all") == 0 || strcmp(csv, "*") == 0) return true;
+    const char* start = csv;
+    size_t value_len = strlen(value);
+    while (*start) {
+        while (*start == ' ' || *start == ',') start++;
+        const char* end = strchr(start, ',');
+        size_t len = end ? (size_t)(end - start) : strlen(start);
+        while (len > 0 && start[len - 1] == ' ') len--;
+        if (len == value_len && strncmp(start, value, len) == 0) return true;
+        if (!end) break;
+        start = end + 1;
+    }
+    return false;
+}
+
+bool ota_policy_allows_payload(const uint8_t* payload, uint32_t length,
+                               char* out_reason, size_t reason_len) {
+    if (out_reason && reason_len) out_reason[0] = '\0';
+    char* copy = (char*)calloc(1, length + 1);
+    if (!copy) {
+        if (out_reason && reason_len) snprintf(out_reason, reason_len, "oom");
+        return false;
+    }
+    memcpy(copy, payload, length);
+    cJSON* root = cJSON_Parse(copy);
+    free(copy);
+    if (!root) {
+        if (out_reason && reason_len) snprintf(out_reason, reason_len, "parse_error");
+        return false;
+    }
+    cJSON* policy = cJSON_GetObjectItem(root, "policy");
+    if (!cJSON_IsObject(policy)) policy = root;
+
+    const char* min_version = json_string_from(root, policy, "minimum_version");
+    const char* max_version = json_string_from(root, policy, "maximum_version");
+    const char* hardware = json_string_from(root, policy, "hardware_target");
+    const char* capability = json_string_from(root, policy, "capability_target");
+    const char* cohort = json_string_from(root, policy, "rollout_cohort");
+    (void)json_string_from(root, policy, "deadline");
+
+    bool ok = true;
+    const char* reason = "";
+    if (min_version[0] && version_compare(FORGEKEY_FIRMWARE_VERSION, min_version) < 0) {
+        ok = false; reason = "below_minimum_version";
+    } else if (max_version[0] && version_compare(FORGEKEY_FIRMWARE_VERSION, max_version) > 0) {
+        ok = false; reason = "above_maximum_version";
+    } else if (hardware[0] && strcmp(hardware, "all") != 0 && strcmp(hardware, "*") != 0 &&
+               strcmp(hardware, FORGEKEY_BUILD_TARGET) != 0) {
+        ok = false; reason = "hardware_target_mismatch";
+    } else if (capability[0] && strcmp(capability, "all") != 0 && strcmp(capability, "*") != 0 &&
+               strcmp(capability, "cabinet_lock") != 0 && strcmp(capability, FORGEKEY_SENSOR_KIND) != 0) {
+        ok = false; reason = "capability_target_mismatch";
+    } else if (cohort[0]) {
+        uint8_t bucket = lock_cohort_bucket();
+        char bucket_name[5];
+        snprintf(bucket_name, sizeof(bucket_name), "c%02u", bucket);
+        bool cohort_ok = matches_token(cohort, bucket_name);
+        if (!cohort_ok && strncmp(cohort, "pct:", 4) == 0) {
+            int pct = atoi(cohort + 4);
+            if (pct < 0) pct = 0;
+            if (pct > 100) pct = 100;
+            cohort_ok = bucket < pct;
+        }
+        if (!cohort_ok) {
+            ok = false; reason = "rollout_cohort_mismatch";
+        }
+    }
+    if (!ok && out_reason && reason_len) snprintf(out_reason, reason_len, "%s", reason);
+    cJSON_Delete(root);
+    return ok;
+}
+
+static const char* ota_state_name(esp_ota_img_states_t state) {
+    switch (state) {
+        case ESP_OTA_IMG_NEW: return "new";
+        case ESP_OTA_IMG_PENDING_VERIFY: return "pending_verify";
+        case ESP_OTA_IMG_VALID: return "valid";
+        case ESP_OTA_IMG_INVALID: return "invalid";
+        case ESP_OTA_IMG_ABORTED: return "aborted";
+        case ESP_OTA_IMG_UNDEFINED: default: return "undefined";
+    }
+}
+
+static void ota_store_previous_version(const char* previous_version) {
+    nvs_handle_t nvs;
+    if (nvs_open("ota", NVS_READWRITE, &nvs) == ESP_OK) {
+        nvs_set_str(nvs, "prev_ver", previous_version ? previous_version : "");
+        nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+}
+
+static void ota_load_previous_version(char* out, size_t out_len) {
+    if (!out || out_len == 0) return;
+    out[0] = '\0';
+    nvs_handle_t nvs;
+    if (nvs_open("ota", NVS_READONLY, &nvs) == ESP_OK) {
+        size_t len = out_len;
+        if (nvs_get_str(nvs, "prev_ver", out, &len) != ESP_OK) {
+            out[0] = '\0';
+        }
+        nvs_close(nvs);
+    }
+}
+
+void ota_add_health_json(cJSON* root) {
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    const esp_partition_t* boot = esp_ota_get_boot_partition();
+    const esp_partition_t* next = esp_ota_get_next_update_partition(NULL);
+    cJSON_AddStringToObject(root, "ota_partition", running ? running->label : "");
+    cJSON_AddStringToObject(root, "ota_running_slot", running ? running->label : "");
+    cJSON_AddStringToObject(root, "ota_boot_slot", boot ? boot->label : "");
+    cJSON_AddStringToObject(root, "ota_next_slot", next ? next->label : "");
+    esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
+    bool pending = false;
+    if (running && esp_ota_get_state_partition(running, &state) == ESP_OK) {
+        pending = state == ESP_OTA_IMG_PENDING_VERIFY;
+    }
+    cJSON_AddStringToObject(root, "ota_state", ota_state_name(state));
+    cJSON_AddBoolToObject(root, "ota_pending_verify", pending);
+    char previous_version[32] = {0};
+    ota_load_previous_version(previous_version, sizeof(previous_version));
+    cJSON_AddStringToObject(root, "ota_previous_version", previous_version);
+    const esp_app_desc_t* app = esp_ota_get_app_description();
+    uint32_t secure_version = app ? app->secure_version : 0;
+    cJSON_AddNumberToObject(root, "ota_secure_version", secure_version);
+#if __has_include("esp_efuse.h")
+    cJSON_AddBoolToObject(root, "ota_anti_rollback_supported", true);
+    cJSON_AddBoolToObject(root, "ota_anti_rollback_ok", esp_efuse_check_secure_version(secure_version));
+#else
+    cJSON_AddBoolToObject(root, "ota_anti_rollback_supported", false);
+#endif
+}
+
 bool ota_apply(const char* url, const char* sha256, const char* signature,
                const char* version, bool mandatory,
                ota_status_cb_t status_cb) {
@@ -231,6 +412,19 @@ bool ota_apply(const char* url, const char* sha256, const char* signature,
         s_in_progress = false;
         return false;
     }
+
+#if __has_include("esp_efuse.h")
+    esp_app_desc_t new_app_desc = {0};
+    if (esp_https_ota_get_img_desc(https_ota_handle, &new_app_desc) == ESP_OK &&
+        !esp_efuse_check_secure_version(new_app_desc.secure_version)) {
+        ESP_LOGE(TAG, "OTA: anti-rollback rejected candidate secure_version=%lu",
+                 (unsigned long)new_app_desc.secure_version);
+        esp_https_ota_abort(https_ota_handle);
+        if (status_cb) status_cb("failed", version, -1, "anti_rollback_rejected");
+        s_in_progress = false;
+        return false;
+    }
+#endif
 
     ESP_LOGI(TAG, "OTA downloading version %s", version);
 
@@ -321,7 +515,6 @@ bool ota_apply(const char* url, const char* sha256, const char* signature,
         }
     }
 
-    mbedtls_sha256_free(&sha_ctx);
     esp_http_client_cleanup(http_client);
 
     /* Get SHA-256 digest */
@@ -362,6 +555,8 @@ bool ota_apply(const char* url, const char* sha256, const char* signature,
     }
 
     ESP_LOGI(TAG, "OTA: signature verified");
+
+    ota_store_previous_version(FORGEKEY_FIRMWARE_VERSION);
 
     /* Finalize OTA and reboot */
     esp_https_ota_finish(https_ota_handle);

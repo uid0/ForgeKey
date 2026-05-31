@@ -4,12 +4,27 @@
 #include <Update.h>
 #include <WiFiClientSecure.h>
 #include <WiFiClient.h>
+#include <WiFi.h>
 #include <mbedtls/sha256.h>
 #include <esp_ota_ops.h>
+#include <esp_app_format.h>
+#if __has_include(<esp_app_desc.h>)
+#include <esp_app_desc.h>
+#endif
+#include <Preferences.h>
+#include <time.h>
+#if __has_include(<esp_efuse.h>)
+#include <esp_efuse.h>
+#endif
 
 #include "security/oms_ca.h"
 #include "security/firmware_verify.h"
 #include "provisioning/device_config.h"
+#include "capabilities/registry.h"
+
+#ifndef ARDUINO_BOARD
+#define ARDUINO_BOARD "arduino"
+#endif
 
 OtaUpdater otaUpdater;
 
@@ -22,18 +37,160 @@ void OtaUpdater::notify(const char* state, const char* version, int progress, co
     if (statusCb) statusCb(state, version, progress, error);
 }
 
+namespace {
+
+String firstString(JsonVariantConst primary, JsonVariantConst fallback, const char* key) {
+    if (!primary[key].isNull()) {
+        if (primary[key].is<const char*>()) return String(primary[key].as<const char*>());
+        if (primary[key].is<unsigned long>()) return String(primary[key].as<unsigned long>());
+    }
+    if (!fallback[key].isNull()) {
+        if (fallback[key].is<const char*>()) return String(fallback[key].as<const char*>());
+        if (fallback[key].is<unsigned long>()) return String(fallback[key].as<unsigned long>());
+    }
+    return String("");
+}
+
+bool firstBool(JsonVariantConst primary, JsonVariantConst fallback, const char* key, bool def) {
+    if (!primary[key].isNull()) return primary[key].as<bool>();
+    if (!fallback[key].isNull()) return fallback[key].as<bool>();
+    return def;
+}
+
+uint32_t parseDeadlineEpoch(const String& deadline) {
+    if (deadline.length() == 0) return 0;
+    bool digitsOnly = true;
+    for (size_t i = 0; i < deadline.length(); ++i) {
+        if (!isDigit(deadline[i])) { digitsOnly = false; break; }
+    }
+    if (digitsOnly) return (uint32_t)deadline.toInt();
+    // ISO-8601 parsing is intentionally lightweight: Arduino newlib accepts
+    // neither timegm nor strptime consistently across ESP32 cores. The raw
+    // deadline string is still surfaced to telemetry; OMS should send epoch_s
+    // when device-side enforcement needs wall-clock certainty.
+    return 0;
+}
+
+int compareVersion(const String& a, const String& b) {
+    int ia = 0;
+    int ib = 0;
+    while (ia < (int)a.length() || ib < (int)b.length()) {
+        while (ia < (int)a.length() && !isDigit(a[ia])) ia++;
+        while (ib < (int)b.length() && !isDigit(b[ib])) ib++;
+        unsigned long va = 0;
+        unsigned long vb = 0;
+        while (ia < (int)a.length() && isDigit(a[ia])) { va = va * 10 + (a[ia++] - '0'); }
+        while (ib < (int)b.length() && isDigit(b[ib])) { vb = vb * 10 + (b[ib++] - '0'); }
+        if (va < vb) return -1;
+        if (va > vb) return 1;
+        if (ia >= (int)a.length() && ib >= (int)b.length()) return 0;
+    }
+    return 0;
+}
+
+uint8_t deviceCohortBucket() {
+    String mac = WiFi.macAddress();
+    uint32_t hash = 2166136261UL;
+    for (size_t i = 0; i < mac.length(); ++i) {
+        char ch = mac[i];
+        if (ch == ':') continue;
+        hash ^= (uint8_t)tolower(ch);
+        hash *= 16777619UL;
+    }
+    return (uint8_t)(hash % 100);
+}
+
+bool tokenListContains(const String& csv, const String& value) {
+    int start = 0;
+    while (start <= (int)csv.length()) {
+        int comma = csv.indexOf(',', start);
+        String token = (comma < 0) ? csv.substring(start) : csv.substring(start, comma);
+        token.trim();
+        if (token == value) return true;
+        if (comma < 0) break;
+        start = comma + 1;
+    }
+    return false;
+}
+
+bool matchesCapabilityTarget(const String& target) {
+    if (target.length() == 0 || target == "all" || target == "*") return true;
+    if (target == FORGEKEY_SENSOR_KIND) return true;
+    for (Capability* c = CapabilityRegistry::head(); c; c = c->next) {
+        if (c->active && target == c->id) return true;
+    }
+    return false;
+}
+
+bool matchesRolloutCohort(const String& cohort) {
+    if (cohort.length() == 0 || cohort == "all" || cohort == "*") return true;
+    uint8_t bucket = deviceCohortBucket();
+    char bucketName[5];
+    snprintf(bucketName, sizeof(bucketName), "c%02u", bucket);
+    if (cohort == bucketName) return true;
+    if (cohort.startsWith("pct:")) {
+        int pct = cohort.substring(4).toInt();
+        if (pct < 0) pct = 0;
+        if (pct > 100) pct = 100;
+        return bucket < pct;
+    }
+    return tokenListContains(cohort, String(bucketName));
+}
+
+void jsonStringField(String& payload, const char* key, const String& value) {
+    payload += ",\"";
+    payload += key;
+    payload += "\":\"";
+    for (size_t i = 0; i < value.length(); ++i) {
+        char ch = value[i];
+        if (ch == '\\' || ch == '"') payload += '\\';
+        payload += ch;
+    }
+    payload += "\"";
+}
+const char* otaStateName(esp_ota_img_states_t state) {
+    switch (state) {
+        case ESP_OTA_IMG_NEW: return "new";
+        case ESP_OTA_IMG_PENDING_VERIFY: return "pending_verify";
+        case ESP_OTA_IMG_VALID: return "valid";
+        case ESP_OTA_IMG_INVALID: return "invalid";
+        case ESP_OTA_IMG_ABORTED: return "aborted";
+        case ESP_OTA_IMG_UNDEFINED: default: return "undefined";
+    }
+}
+
+}  // namespace
+
 bool OtaUpdater::parse(const uint8_t* payload, unsigned int length, Spec& out) {
-    StaticJsonDocument<1024> doc;
+    StaticJsonDocument<1536> doc;
     DeserializationError err = deserializeJson(doc, payload, length);
     if (err) {
         Serial.printf("ota: parse error: %s\n", err.c_str());
         return false;
     }
-    out.url       = (const char*)(doc["url"]       | "");
-    out.sha256    = (const char*)(doc["sha256"]    | "");
-    out.signature = (const char*)(doc["signature"] | "");
-    out.version   = (const char*)(doc["version"]   | "");
-    out.mandatory = doc["mandatory"] | false;
+    JsonVariantConst policy = doc["policy"];
+    if (policy.isNull()) policy = doc.as<JsonVariantConst>();
+
+    out.url       = firstString(doc, policy, "url");
+    out.sha256    = firstString(doc, policy, "sha256");
+    out.signature = firstString(doc, policy, "signature");
+    out.version   = firstString(doc, policy, "version");
+    out.mandatory = firstBool(doc, policy, "mandatory", false);
+    out.minimumVersion = firstString(policy, doc, "minimum_version");
+    out.maximumVersion = firstString(policy, doc, "maximum_version");
+    out.hardwareTarget = firstString(policy, doc, "hardware_target");
+    out.capabilityTarget = firstString(policy, doc, "capability_target");
+    out.rolloutCohort = firstString(policy, doc, "rollout_cohort");
+    out.deadline = firstString(policy, doc, "deadline");
+    if (out.deadline.length() == 0) {
+        if (!policy["deadline_epoch"].isNull()) {
+            out.deadline = String(policy["deadline_epoch"].as<unsigned long>());
+        } else if (!doc["deadline_epoch"].isNull()) {
+            out.deadline = String(doc["deadline_epoch"].as<unsigned long>());
+        }
+    }
+    out.deadlineEpoch = parseDeadlineEpoch(out.deadline);
+
     if (out.url.length() == 0 || out.sha256.length() != 64) {
         Serial.println("ota: missing url or invalid sha256");
         return false;
@@ -43,6 +200,41 @@ bool OtaUpdater::parse(const uint8_t* payload, unsigned int length, Spec& out) {
         return false;
     }
     out.sha256.toLowerCase();
+    return true;
+}
+
+bool OtaUpdater::isPolicyAllowed(const Spec& spec, String& reason) const {
+    if (spec.minimumVersion.length() &&
+        compareVersion(String(FORGEKEY_FIRMWARE_VERSION), spec.minimumVersion) < 0) {
+        reason = "below_minimum_version";
+        return false;
+    }
+    if (spec.maximumVersion.length() &&
+        compareVersion(String(FORGEKEY_FIRMWARE_VERSION), spec.maximumVersion) > 0) {
+        reason = "above_maximum_version";
+        return false;
+    }
+    if (spec.hardwareTarget.length() && spec.hardwareTarget != "all" &&
+        spec.hardwareTarget != "*" && spec.hardwareTarget != FORGEKEY_BUILD_TARGET) {
+        reason = "hardware_target_mismatch";
+        return false;
+    }
+    if (!matchesCapabilityTarget(spec.capabilityTarget)) {
+        reason = "capability_target_mismatch";
+        return false;
+    }
+    if (!matchesRolloutCohort(spec.rolloutCohort)) {
+        reason = "rollout_cohort_mismatch";
+        return false;
+    }
+    if (spec.deadlineEpoch != 0) {
+        time_t now = time(nullptr);
+        if (now > 1600000000 && now >= (time_t)spec.deadlineEpoch) {
+            // Deadlines are an urgency signal, not a rejection criterion.
+            Serial.println("ota: deadline has passed; treating policy as urgent");
+        }
+    }
+    reason = "";
     return true;
 }
 
@@ -247,6 +439,17 @@ bool OtaUpdater::apply(const Spec& spec) {
 
     notify("verifying", spec.version.c_str(), 100, nullptr);
 
+    {
+        String reason;
+        if (!isPolicyAllowed(spec, reason)) {
+            Serial.printf("ota: policy rejected during final verification: %s\n", reason.c_str());
+            Update.abort();
+            updating = false;
+            notify("rejected", spec.version.c_str(), -1, reason.c_str());
+            return false;
+        }
+    }
+
     char actualHex[65];
     toHex(digest, 32, actualHex);
     if (!hexEq(String(actualHex), spec.sha256)) {
@@ -289,6 +492,14 @@ bool OtaUpdater::apply(const Spec& spec) {
         return false;
     }
 
+    {
+        Preferences prefs;
+        prefs.begin("ota", false);
+        prefs.putString("prev_ver", FORGEKEY_FIRMWARE_VERSION);
+        prefs.putString("target_ver", spec.version);
+        prefs.end();
+    }
+
     // Tell OMS we're rebooting into the new image. The post-reboot
     // markStableIfPending() call publishes the "applied" event once the new
     // firmware proves it can talk to the broker.
@@ -319,4 +530,44 @@ void OtaUpdater::markStableIfPending() {
         }
     }
     stableMarked = true;
+}
+void OtaUpdater::appendHealthJson(String& payload) {
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    const esp_partition_t* boot = esp_ota_get_boot_partition();
+    const esp_partition_t* next = esp_ota_get_next_update_partition(nullptr);
+
+    String partition = running ? String(running->label) : String("");
+    String bootPartition = boot ? String(boot->label) : String("");
+    String nextPartition = next ? String(next->label) : String("");
+    jsonStringField(payload, "ota_partition", partition);
+    jsonStringField(payload, "ota_running_slot", partition);
+    jsonStringField(payload, "ota_boot_slot", bootPartition);
+    jsonStringField(payload, "ota_next_slot", nextPartition);
+
+    esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
+    bool pending = false;
+    if (running && esp_ota_get_state_partition(running, &state) == ESP_OK) {
+        pending = (state == ESP_OTA_IMG_PENDING_VERIFY);
+    }
+    jsonStringField(payload, "ota_state", otaStateName(state));
+    payload += ",\"ota_pending_verify\":";
+    payload += pending ? "true" : "false";
+
+    Preferences prefs;
+    prefs.begin("ota", true);
+    String previousVersion = prefs.getString("prev_ver", "");
+    prefs.end();
+    jsonStringField(payload, "ota_previous_version", previousVersion);
+
+    const esp_app_desc_t* app = esp_ota_get_app_description();
+    payload += ",\"ota_secure_version\":";
+    payload += String((unsigned long)(app ? app->secure_version : 0));
+#if __has_include(<esp_efuse.h>)
+    bool allowed = app ? esp_efuse_check_secure_version(app->secure_version) : true;
+    payload += ",\"ota_anti_rollback_supported\":true";
+    payload += ",\"ota_anti_rollback_ok\":";
+    payload += allowed ? "true" : "false";
+#else
+    payload += ",\"ota_anti_rollback_supported\":false";
+#endif
 }
