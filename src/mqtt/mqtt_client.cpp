@@ -4,6 +4,7 @@
 #include <WiFi.h>
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
+#include <nvs.h>
 
 #include "security/oms_ca.h"
 
@@ -21,6 +22,18 @@ namespace {
 // Human-readable PubSubClient state codes. Numeric values defined in
 // PubSubClient.h (MQTT_CONNECTION_TIMEOUT = -4, ..., MQTT_CONNECTED = 0,
 // MQTT_CONNECT_BAD_PROTOCOL = 1, ...).
+constexpr unsigned long kQueueBaseBackoffMs = 1000;
+constexpr unsigned long kQueueMaxBackoffMs = 30000;
+constexpr const char* kQueueNvsNamespace = "mqtt_outq";
+
+unsigned long queueBackoffMs(uint8_t attempts) {
+    unsigned long backoff = kQueueBaseBackoffMs;
+    for (uint8_t i = 0; i < attempts && backoff < kQueueMaxBackoffMs; ++i) {
+        backoff *= 2;
+    }
+    return backoff > kQueueMaxBackoffMs ? kQueueMaxBackoffMs : backoff;
+}
+
 const char* mqttStateName(int state) {
     switch (state) {
         case -4: return "CONNECTION_TIMEOUT (no broker response)";
@@ -180,6 +193,7 @@ bool MqttClient::begin(const char* brokerHost, int portNum,
         Serial.println("[MQTT] begin: WARNING mTLS identity is empty — broker will reject the session");
     }
 
+    loadCriticalQueue();
     return connect();
 }
 
@@ -291,7 +305,7 @@ void MqttClient::setFirmwareTopic(const char* topic) {
                       firmwareTopic.c_str(), topic);
         firmwareTopic = topic;
         if (isConnected()) {
-            client->subscribe(firmwareTopic.c_str());
+            client->subscribe(firmwareTopic.c_str(), 1);
         }
         // Default the status topic alongside the dispatch topic. Conventional
         // shape: append "/status" to the dispatch topic so OMS can subscribe
@@ -323,7 +337,7 @@ void MqttClient::setConfigTopic(const char* topic) {
                       configTopic.c_str(), topic);
         configTopic = topic;
         if (isConnected() && configHandler) {
-            client->subscribe(configTopic.c_str());
+            client->subscribe(configTopic.c_str(), 1);
         }
     } else {
         Serial.println("[MQTT] setConfigTopic: empty value ignored");
@@ -336,7 +350,7 @@ void MqttClient::setCommandTopic(const char* topic) {
                       commandTopic.c_str(), topic);
         commandTopic = topic;
         if (isConnected() && commandHandler) {
-            client->subscribe(commandTopic.c_str());
+            client->subscribe(commandTopic.c_str(), 1);
         }
     } else {
         Serial.println("[MQTT] setCommandTopic: empty value ignored");
@@ -415,6 +429,7 @@ bool MqttClient::connect() {
         String birthPayload = buildStatePayload(true, ip.c_str(), nullptr);
         publishStateJson(birthPayload.c_str());
         resubscribeAll();
+        serviceOutboundQueue();
         return true;
     }
 
@@ -434,7 +449,7 @@ void MqttClient::resubscribeAll() {
     // A "true" here only means "we tried"; if you don't see commands flow,
     // suspect ACL on the broker side.
     if (firmwareTopic.length() && firmwareHandler) {
-        bool ok = client->subscribe(firmwareTopic.c_str());
+        bool ok = client->subscribe(firmwareTopic.c_str(), 1);
         Serial.printf("[MQTT] subscribe firmware topic=%s ok=%d (write to socket; SUBACK not awaited)\n",
                       firmwareTopic.c_str(), (int)ok);
     } else {
@@ -443,7 +458,7 @@ void MqttClient::resubscribeAll() {
                       firmwareHandler ? "set" : "(null)");
     }
     if (configTopic.length() && configHandler) {
-        bool ok = client->subscribe(configTopic.c_str());
+        bool ok = client->subscribe(configTopic.c_str(), 1);
         Serial.printf("[MQTT] subscribe config topic=%s ok=%d (write to socket; SUBACK not awaited)\n",
                       configTopic.c_str(), (int)ok);
     } else {
@@ -452,7 +467,7 @@ void MqttClient::resubscribeAll() {
                       configHandler ? "set" : "(null)");
     }
     if (commandTopic.length() && commandHandler) {
-        bool ok = client->subscribe(commandTopic.c_str());
+        bool ok = client->subscribe(commandTopic.c_str(), 1);
         Serial.printf("[MQTT] subscribe command topic=%s ok=%d (write to socket; SUBACK not awaited)\n",
                       commandTopic.c_str(), (int)ok);
     } else {
@@ -475,7 +490,10 @@ bool MqttClient::publishOccupancy(int count) {
             connect();
             lastReconnectAttempt = millis();
         }
-        return false;
+        if (occupancyTopic.length() == 0) return false;
+        String payload = "{\"count\":" + String(count) +
+                         ",\"timestamp\":" + String(millis()) + "}";
+        return enqueueOutbound(occupancyTopic.c_str(), payload.c_str(), false, false);
     }
 
     if (occupancyTopic.length() == 0) {
@@ -490,7 +508,7 @@ bool MqttClient::publishOccupancy(int count) {
     // PubSubClient::publish() with the (topic, payload) signature defaults to
     // QoS 0 / retain=false. There is no PUBACK at QoS 0; "ok" only means
     // "we wrote it to the socket" — broker delivery is not confirmed.
-    bool result = client->publish(occupancyTopic.c_str(), payload.c_str());
+    bool result = publishImmediate(occupancyTopic.c_str(), payload.c_str(), false);
     if (result) {
         lastPublishMs = millis();
         Serial.printf("[MQTT] publish OK: topic=%s qos=0 payload_len=%u payload=%s\n",
@@ -502,6 +520,7 @@ bool MqttClient::publishOccupancy(int count) {
                       "buffer_size=1024 — likely payload too large or socket closed\n",
                       occupancyTopic.c_str(), (unsigned)payload.length(),
                       st, mqttStateName(st));
+        result = enqueueOutbound(occupancyTopic.c_str(), payload.c_str(), false, false);
     }
 
     return result;
@@ -520,7 +539,18 @@ bool MqttClient::publishTemperature(float tempC, float humidity) {
             connect();
             lastReconnectAttempt = millis();
         }
-        return false;
+        if (readingTopic.length() == 0) return false;
+        char tBuf[16], hBuf[16];
+        dtostrf(tempC, 0, 2, tBuf);
+        dtostrf(humidity, 0, 2, hBuf);
+        String payload = "{\"tempC\":";
+        payload += tBuf;
+        payload += ",\"humidity\":";
+        payload += hBuf;
+        payload += ",\"timestamp\":";
+        payload += String(millis());
+        payload += "}";
+        return enqueueOutbound(readingTopic.c_str(), payload.c_str(), false, false);
     }
 
     if (readingTopic.length() == 0) {
@@ -540,7 +570,7 @@ bool MqttClient::publishTemperature(float tempC, float humidity) {
     payload += String(millis());
     payload += "}";
 
-    bool result = client->publish(readingTopic.c_str(), payload.c_str());
+    bool result = publishImmediate(readingTopic.c_str(), payload.c_str(), false);
     if (result) {
         lastPublishMs = millis();
         Serial.printf("[MQTT] publish OK: topic=%s qos=0 payload_len=%u payload=%s\n",
@@ -551,6 +581,7 @@ bool MqttClient::publishTemperature(float tempC, float humidity) {
         Serial.printf("[MQTT] publish FAILED: topic=%s qos=0 payload_len=%u state=%d (%s)\n",
                       readingTopic.c_str(), (unsigned)payload.length(),
                       st, mqttStateName(st));
+        result = enqueueOutbound(readingTopic.c_str(), payload.c_str(), false, false);
     }
     return result;
 }
@@ -559,11 +590,6 @@ bool MqttClient::publishFirmwareStatus(const char* state,
                                        const char* version,
                                        int progress,
                                        const char* error) {
-    if (!client || !client->connected()) {
-        // Best-effort; skip silently if offline. The OTA path must not block
-        // on status publishing.
-        return false;
-    }
     if (firmwareStatusTopic.length() == 0) {
         Serial.println("[MQTT] publishFirmwareStatus: no status topic set, skipping");
         return false;
@@ -590,10 +616,12 @@ bool MqttClient::publishFirmwareStatus(const char* state,
     payload += String(millis());
     payload += "}";
 
-    bool ok = client->publish(firmwareStatusTopic.c_str(), payload.c_str());
-    if (ok) lastPublishMs = millis();
-    Serial.printf("[MQTT] publishFirmwareStatus: topic=%s qos=0 payload=%s ok=%d\n",
-                  firmwareStatusTopic.c_str(), payload.c_str(), (int)ok);
+    bool ok = publishImmediate(firmwareStatusTopic.c_str(), payload.c_str(), false);
+    if (!ok) {
+        ok = enqueueOutbound(firmwareStatusTopic.c_str(), payload.c_str(), false, true);
+    }
+    Serial.printf("[MQTT] publishFirmwareStatus: topic=%s qos=0 queued_or_sent=%d payload=%s\n",
+                  firmwareStatusTopic.c_str(), (int)ok, payload.c_str());
     return ok;
 }
 
@@ -610,7 +638,7 @@ bool MqttClient::subscribeFirmware(MessageHandler handler) {
                       client->state(), mqttStateName(client->state()));
         return false;
     }
-    bool ok = client->subscribe(firmwareTopic.c_str());
+    bool ok = client->subscribe(firmwareTopic.c_str(), 1);
     Serial.printf("[MQTT] subscribeFirmware: topic=%s ok=%d\n",
                   firmwareTopic.c_str(), (int)ok);
     return ok;
@@ -631,7 +659,7 @@ bool MqttClient::refreshFirmwareSubscription() {
     // HTTP polling endpoint. Unsubscribe first so brokers reliably treat this
     // as a new subscription instead of a no-op duplicate SUBSCRIBE.
     bool unsubOk = client->unsubscribe(firmwareTopic.c_str());
-    bool subOk = client->subscribe(firmwareTopic.c_str());
+    bool subOk = client->subscribe(firmwareTopic.c_str(), 1);
     Serial.printf("[MQTT] refreshFirmwareSubscription: topic=%s unsubscribe_ok=%d subscribe_ok=%d\n",
                   firmwareTopic.c_str(), (int)unsubOk, (int)subOk);
     return subOk;
@@ -650,7 +678,7 @@ bool MqttClient::subscribeCommand(MessageHandler handler) {
                       client->state(), mqttStateName(client->state()));
         return false;
     }
-    bool ok = client->subscribe(commandTopic.c_str());
+    bool ok = client->subscribe(commandTopic.c_str(), 1);
     Serial.printf("[MQTT] subscribeCommand: topic=%s ok=%d\n",
                   commandTopic.c_str(), (int)ok);
     return ok;
@@ -661,17 +689,23 @@ bool MqttClient::publishBlinkStatus(bool on) {
 }
 
 bool MqttClient::publishStatus(const char* jsonPayload) {
-    if (!client || !client->connected()) return false;
     if (statusTopic.length() == 0) {
         Serial.println("[MQTT] publishStatus: no status topic set, skipping");
         return false;
     }
     if (!jsonPayload) jsonPayload = "{}";
-    bool ok = client->publish(statusTopic.c_str(), jsonPayload);
-    if (ok) lastPublishMs = millis();
-    Serial.printf("[MQTT] publishStatus: topic=%s payload=%s ok=%d\n",
+    bool ok = publishImmediate(statusTopic.c_str(), jsonPayload, false);
+    if (!ok) {
+        ok = enqueueOutbound(statusTopic.c_str(), jsonPayload, false, true);
+    }
+    Serial.printf("[MQTT] publishStatus: topic=%s payload=%s queued_or_sent=%d\n",
                   statusTopic.c_str(), jsonPayload, (int)ok);
     return ok;
+}
+
+bool MqttClient::enqueueStatus(const char* jsonPayload, bool critical) {
+    if (statusTopic.length() == 0) return false;
+    return enqueueOutbound(statusTopic.c_str(), jsonPayload ? jsonPayload : "{}", false, critical);
 }
 
 bool MqttClient::publishStateJson(const char* jsonPayload) {
@@ -748,6 +782,138 @@ bool MqttClient::publishEquipmentEvent(const char* jsonPayload) {
     return ok;
 }
 
+bool MqttClient::publishImmediate(const char* topic, const char* payload, bool retain) {
+    if (!client || !client->connected() || !topic || !topic[0]) return false;
+    if (!payload) payload = "";
+    bool ok = client->publish(topic, payload, retain);
+    if (ok) lastPublishMs = millis();
+    return ok;
+}
+
+bool MqttClient::enqueueOutbound(const char* topic, const char* payload, bool retain, bool critical) {
+    if (!topic || !topic[0]) return false;
+    if (!payload) payload = "";
+    if (strlen(payload) >= 768) {
+        Serial.printf("[MQTT] enqueueOutbound: payload too large for retry queue topic=%s len=%u\n",
+                      topic, (unsigned)strlen(payload));
+        return false;
+    }
+
+    if (outboundQueueCount >= kOutboundQueueSize) {
+        size_t drop = 0;
+        bool foundNoncritical = false;
+        for (size_t i = 0; i < outboundQueueCount; ++i) {
+            if (!outboundQueue[i].critical) { drop = i; foundNoncritical = true; break; }
+        }
+        if (!foundNoncritical && !critical) {
+            Serial.println("[MQTT] enqueueOutbound: queue full of critical entries; dropping noncritical publish");
+            return false;
+        }
+        Serial.printf("[MQTT] enqueueOutbound: queue full, dropping %s entry topic=%s\n",
+                      outboundQueue[drop].critical ? "oldest critical" : "noncritical",
+                      outboundQueue[drop].topic.c_str());
+        bool droppedCritical = outboundQueue[drop].critical;
+        for (size_t i = drop + 1; i < outboundQueueCount; ++i) outboundQueue[i - 1] = outboundQueue[i];
+        outboundQueueCount--;
+        if (droppedCritical) persistCriticalQueue();
+    }
+
+    OutboundMessage& item = outboundQueue[outboundQueueCount++];
+    item.topic = topic;
+    item.payload = payload;
+    item.retain = retain;
+    item.critical = critical;
+    item.nextAttemptMs = millis();
+    item.attempts = 0;
+    if (critical) persistCriticalQueue();
+    return true;
+}
+
+void MqttClient::serviceOutboundQueue() {
+    if (!client || !client->connected() || outboundQueueCount == 0) return;
+
+    unsigned long now = millis();
+    bool criticalChanged = false;
+    for (size_t i = 0; i < outboundQueueCount;) {
+        OutboundMessage& item = outboundQueue[i];
+        if ((long)(now - item.nextAttemptMs) < 0) {
+            ++i;
+            continue;
+        }
+        bool ok = publishImmediate(item.topic.c_str(), item.payload.c_str(), item.retain);
+        if (ok) {
+            Serial.printf("[MQTT] queued publish accepted: topic=%s attempts=%u critical=%d\n",
+                          item.topic.c_str(), (unsigned)item.attempts + 1, (int)item.critical);
+            if (item.critical) criticalChanged = true;
+            for (size_t j = i + 1; j < outboundQueueCount; ++j) outboundQueue[j - 1] = outboundQueue[j];
+            outboundQueueCount--;
+            continue;
+        }
+        item.attempts++;
+        item.nextAttemptMs = now + queueBackoffMs(item.attempts);
+        ++i;
+    }
+    if (criticalChanged) persistCriticalQueue();
+}
+
+void MqttClient::persistCriticalQueue() {
+    nvs_handle_t handle;
+    if (nvs_open(kQueueNvsNamespace, NVS_READWRITE, &handle) != ESP_OK) return;
+    nvs_erase_all(handle);
+    uint8_t persisted = 0;
+    for (size_t i = 0; i < outboundQueueCount && persisted < kOutboundQueueSize; ++i) {
+        if (!outboundQueue[i].critical) continue;
+        char key[8];
+        snprintf(key, sizeof(key), "t%u", persisted);
+        nvs_set_str(handle, key, outboundQueue[i].topic.c_str());
+        snprintf(key, sizeof(key), "p%u", persisted);
+        nvs_set_str(handle, key, outboundQueue[i].payload.c_str());
+        snprintf(key, sizeof(key), "r%u", persisted);
+        nvs_set_u8(handle, key, outboundQueue[i].retain ? 1 : 0);
+        persisted++;
+    }
+    nvs_set_u8(handle, "count", persisted);
+    nvs_commit(handle);
+    nvs_close(handle);
+}
+
+void MqttClient::loadCriticalQueue() {
+    nvs_handle_t handle;
+    if (nvs_open(kQueueNvsNamespace, NVS_READONLY, &handle) != ESP_OK) return;
+    uint8_t count = 0;
+    if (nvs_get_u8(handle, "count", &count) != ESP_OK) {
+        nvs_close(handle);
+        return;
+    }
+    if (count > kOutboundQueueSize) count = kOutboundQueueSize;
+    for (uint8_t i = 0; i < count && outboundQueueCount < kOutboundQueueSize; ++i) {
+        char key[8];
+        char topic[160];
+        char payload[768];
+        size_t topicLen = sizeof(topic);
+        size_t payloadLen = sizeof(payload);
+        snprintf(key, sizeof(key), "t%u", i);
+        if (nvs_get_str(handle, key, topic, &topicLen) != ESP_OK) continue;
+        snprintf(key, sizeof(key), "p%u", i);
+        if (nvs_get_str(handle, key, payload, &payloadLen) != ESP_OK) continue;
+        uint8_t retain = 0;
+        snprintf(key, sizeof(key), "r%u", i);
+        nvs_get_u8(handle, key, &retain);
+        OutboundMessage& item = outboundQueue[outboundQueueCount++];
+        item.topic = topic;
+        item.payload = payload;
+        item.retain = retain != 0;
+        item.critical = true;
+        item.nextAttemptMs = 0;
+        item.attempts = 0;
+    }
+    nvs_close(handle);
+    if (outboundQueueCount) {
+        Serial.printf("[MQTT] loaded %u critical queued publishes from NVS\n",
+                      (unsigned)outboundQueueCount);
+    }
+}
+
 bool MqttClient::isConnected() {
     return client && client->connected();
 }
@@ -757,6 +923,7 @@ void MqttClient::loop() {
     
     // Process any pending messages/pings
     client->loop();
+    serviceOutboundQueue();
     
     // Reconnect if connection is lost (same 5s throttle as publish path)
     if (!client->connected()) {
@@ -782,7 +949,7 @@ bool MqttClient::subscribeConfig(MessageHandler handler) {
                       client->state(), mqttStateName(client->state()));
         return false;
     }
-    bool ok = client->subscribe(configTopic.c_str());
+    bool ok = client->subscribe(configTopic.c_str(), 1);
     Serial.printf("[MQTT] subscribeConfig: topic=%s ok=%d\n",
                   configTopic.c_str(), (int)ok);
     return ok;

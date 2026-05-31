@@ -16,8 +16,28 @@ separately on `forgekey/<mac>/state`.
 | Ack/state | `forgekey/<mac>/status`  | Device | OMS |
 | LWT/state | `forgekey/<mac>/state` | Device/broker LWT | OMS |
 
-Command and status messages use QoS 0, retain=false. The MQTT username is
-`forgemqtt`; the password is the per-device JWT issued at registration.
+The MQTT username is `forgemqtt`; the password is the per-device JWT issued at registration.
+
+## QoS and delivery expectations
+
+ForgeKey firmware currently uses MQTT client stacks that accept outbound
+publishes at QoS 0. Where the broker and client both support QoS 1, OMS SHOULD
+request the QoS levels below; otherwise devices MUST use the local retry queue
+described here so `publish()`/`esp_mqtt_client_publish()` acceptance failures are
+retried with backoff.
+
+| Message type | Topic(s) | Expected QoS | Retain | Delivery/audit behavior |
+|--------------|----------|--------------|--------|-------------------------|
+| Commands | `forgekey/<mac>/command`, config/firmware dispatch topics | QoS 1 preferred; QoS 0 accepted for constrained clients | Commands: false. Firmware dispatch may be retained by OMS for update polling. | OMS assigns a unique `command_id`; devices validate replay state before acting. |
+| Command acks | `forgekey/<mac>/status` | QoS 1 preferred; QoS 0 plus device retry queue required | false | Every ack includes `command_id` (empty string only when the command could not be parsed). Critical acks, including command completion/rejection, remain queued until the MQTT client accepts the publish and are persisted to NVS when practical. |
+| Telemetry | `forgekey/<mac>/<kind>/occupancy`, `.../reading`, `forgekey/<mac>/status` for lock telemetry | QoS 0 normally; QoS 1 optional for critical state transitions | false | Periodic readings are best-effort. Important state telemetry may enter the outbound retry queue, but stale noncritical samples may be dropped when the queue is full. |
+| Logs | `forgekey/<mac>/logs` | QoS 0 | false | Best-effort with a small RAM buffer; logs must not block command processing or OTA. |
+| OTA status | firmware status topic (`<firmware topic>/status` unless overridden) | QoS 1 preferred; QoS 0 plus persistent retry queue required | false | Progress/failure/completion status is critical audit data and is retried/backed off until accepted by the MQTT client. |
+| LWT/state | `forgekey/<mac>/state` | QoS 0 (broker LWT setting) | true | Birth and Last Will messages are retained so subscribers see the latest online/offline state. |
+
+Retry backoff starts at approximately 1 second and doubles up to approximately
+30 seconds. Queue acceptance means the local MQTT client accepted/wrote the
+publish; QoS 0 does not prove broker delivery.
 
 The state topic is retained. Devices publish this birth message after a
 successful MQTT connect:
@@ -78,7 +98,7 @@ commands.
 Every command replies on the status topic with:
 
 ```json
-{ "cmd_ack": "<original cmd>", ...command-specific fields... }
+{ "cmd_ack": "<original cmd>", "command_id": "<command_id>", ...command-specific fields... }
 ```
 
 A second ack may follow for asynchronous commands (e.g. `capture` reports
@@ -87,14 +107,14 @@ both `queued:true` and a later `upload_status`).
 Unknown commands receive:
 
 ```json
-{ "cmd_ack": "<original cmd>", "error": "unknown_command" }
+{ "cmd_ack": "<original cmd>", "command_id": "<command_id>", "error": "unknown_command" }
 ```
 
 Malformed, unauthenticated, expired, or replayed envelopes receive a structured
 negative ack when the device can parse enough JSON to publish one:
 
 ```json
-{ "cmd_ack": "<original cmd or empty>", "command_id": "<if present>", "ok": false, "error": "expired" }
+{ "cmd_ack": "<original cmd or empty>", "command_id": "<command_id or empty>", "ok": false, "error": "expired" }
 ```
 
 `error` values include `parse_error`, `missing_envelope_field`,

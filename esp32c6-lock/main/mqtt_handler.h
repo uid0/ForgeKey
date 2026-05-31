@@ -10,6 +10,8 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#include "esp_err.h"
+
 #define FORGEKEY_MQTT_MAX_TOPIC 128
 #define FORGEKEY_MQTT_MAX_CLIENT_ID 64
 
@@ -30,6 +32,14 @@ int mqtt_handler_subscribe(const char* topic, int qos);
 /* Publish a message. Returns ESP_OK on success. */
 esp_err_t mqtt_handler_publish(const char* topic, const char* data,
                                 int data_len, int qos, bool retain);
+
+/* Queue an important publish for retry with exponential backoff; critical entries persist in NVS. */
+esp_err_t mqtt_handler_publish_queued(const char* topic, const char* data,
+                                       int data_len, int qos, bool retain,
+                                       bool critical);
+
+/* Service retry queue from the main loop. */
+void mqtt_handler_tick(void);
 
 /* Set handlers for specific topic types. */
 void mqtt_handler_set_command_handler(mqtt_message_handler_t handler);

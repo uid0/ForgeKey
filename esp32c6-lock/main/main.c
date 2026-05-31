@@ -62,10 +62,10 @@ static void on_command_message(const char* topic, const uint8_t* payload, uint32
 static void on_config_message(const char* topic, const uint8_t* payload, uint32_t length);
 static void on_firmware_dispatch(const char* topic, const uint8_t* payload, uint32_t length);
 
-static void publish_status_snapshot(const char* mac_str, const char* requested_cmd);
-static void publish_unknown_command_ack(const char* cmd);
+static void publish_status_snapshot(const char* mac_str, const char* requested_cmd, const char* command_id);
+static void publish_unknown_command_ack(const char* cmd, const char* command_id);
 static void publish_command_reject_ack(const char* cmd, const char* command_id, const char* error);
-static void publish_unsupported_command_ack(const char* cmd);
+static void publish_unsupported_command_ack(const char* cmd, const char* command_id);
 static void publish_lock_cmd_ack(const char* cmd, const char* command_id,
                                   const char* state, const char* error);
 static int current_wifi_rssi(void);
@@ -293,7 +293,7 @@ void app_main(void) {
             if (json_str) {
                 const char* status_topic = mqtt_handler_get_status_topic();
                 if (status_topic[0]) {
-                    mqtt_handler_publish(status_topic, json_str, strlen(json_str), 0, 0);
+                    mqtt_handler_publish_queued(status_topic, json_str, strlen(json_str), 0, 0, false);
                     LOCK_LOGI("Telemetry published");
                 }
                 cJSON_free(json_str);
@@ -302,6 +302,7 @@ void app_main(void) {
             last_telemetry_ms = now_ms;
         }
 
+        mqtt_handler_tick();
         vTaskDelay(10 / portTICK_PERIOD_MS);
     }
 }
@@ -316,9 +317,7 @@ static void publish_lock_cmd_ack(const char* cmd, const char* command_id,
     }
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "cmd_ack", cmd ? cmd : "");
-    if (command_id && command_id[0]) {
-        cJSON_AddStringToObject(root, "command_id", command_id);
-    }
+    cJSON_AddStringToObject(root, "command_id", command_id ? command_id : "");
     if (state && state[0]) {
         cJSON_AddStringToObject(root, "state", state);
     }
@@ -328,7 +327,7 @@ static void publish_lock_cmd_ack(const char* cmd, const char* command_id,
     char* json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     if (json_str) {
-        mqtt_handler_publish(status_topic, json_str, strlen(json_str), 0, 0);
+        mqtt_handler_publish_queued(status_topic, json_str, strlen(json_str), 0, 0, true);
         cJSON_free(json_str);
     }
 }
@@ -363,10 +362,18 @@ static void on_command_message(const char* topic, const uint8_t* payload, uint32
     command_validation_remember_accepted(&validation);
 
     if (strcmp(cmd_str, "status") == 0 || strcmp(cmd_str, "ping") == 0) {
-        publish_status_snapshot(lock_state_get_mac_address(), cmd_str);
+        publish_status_snapshot(lock_state_get_mac_address(), cmd_str, command_id);
     } else if (strcmp(cmd_str, "restart") == 0) {
-        mqtt_handler_publish(mqtt_handler_get_status_topic(),
-                             "{\"cmd_ack\":\"restart\",\"in_ms\":1000}", -1, 0, 0);
+        cJSON* ack = cJSON_CreateObject();
+        cJSON_AddStringToObject(ack, "cmd_ack", "restart");
+        cJSON_AddStringToObject(ack, "command_id", command_id ? command_id : "");
+        cJSON_AddNumberToObject(ack, "in_ms", 1000);
+        char* ack_json = cJSON_PrintUnformatted(ack);
+        cJSON_Delete(ack);
+        if (ack_json) {
+            mqtt_handler_publish_queued(mqtt_handler_get_status_topic(), ack_json, strlen(ack_json), 0, 0, true);
+            cJSON_free(ack_json);
+        }
         cJSON_Delete(doc);
         vTaskDelay(1000 / portTICK_PERIOD_MS);
         esp_restart();
@@ -390,16 +397,16 @@ static void on_command_message(const char* topic, const uint8_t* payload, uint32
         publish_lock_cmd_ack(cmd_str, command_id, NULL, "not_implemented");
         LOCK_LOGW("Command %s not implemented on this firmware build", cmd_str);
     } else if (strcmp(cmd_str, "blink") == 0 || strcmp(cmd_str, "identify") == 0) {
-        publish_unsupported_command_ack(cmd_str);
+        publish_unsupported_command_ack(cmd_str, command_id);
         LOCK_LOGW("Command %s unsupported on ESP32-C6 lock build", cmd_str);
     } else {
-        publish_unknown_command_ack(cmd_str);
+        publish_unknown_command_ack(cmd_str, command_id);
     }
 
     cJSON_Delete(doc);
 }
 
-static void publish_status_snapshot(const char* mac_str, const char* requested_cmd) {
+static void publish_status_snapshot(const char* mac_str, const char* requested_cmd, const char* command_id) {
     const char* status_topic = mqtt_handler_get_status_topic();
     if (!status_topic[0]) {
         LOCK_LOGW("Status snapshot skipped: status topic unset");
@@ -412,6 +419,7 @@ static void publish_status_snapshot(const char* mac_str, const char* requested_c
 
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "cmd_ack", "status");
+    cJSON_AddStringToObject(root, "command_id", command_id ? command_id : "");
     cJSON_AddStringToObject(root, "requested_cmd", requested_cmd ? requested_cmd : "status");
     cJSON_AddItemToObject(root, "capabilities", caps);
     cJSON_AddStringToObject(root, "firmware_version", FORGEKEY_FIRMWARE_VERSION);
@@ -427,31 +435,33 @@ static void publish_status_snapshot(const char* mac_str, const char* requested_c
     char* json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     if (json_str) {
-        mqtt_handler_publish(status_topic, json_str, strlen(json_str), 0, 0);
+        mqtt_handler_publish_queued(status_topic, json_str, strlen(json_str), 0, 0, true);
         cJSON_free(json_str);
     }
 }
 
-static void publish_unsupported_command_ack(const char* cmd) {
+static void publish_unsupported_command_ack(const char* cmd, const char* command_id) {
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "cmd_ack", cmd ? cmd : "");
+    cJSON_AddStringToObject(root, "command_id", command_id ? command_id : "");
     cJSON_AddStringToObject(root, "error", "unsupported");
     char* json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     if (json_str) {
-        mqtt_handler_publish(mqtt_handler_get_status_topic(), json_str, strlen(json_str), 0, 0);
+        mqtt_handler_publish_queued(mqtt_handler_get_status_topic(), json_str, strlen(json_str), 0, 0, true);
         cJSON_free(json_str);
     }
 }
 
-static void publish_unknown_command_ack(const char* cmd) {
+static void publish_unknown_command_ack(const char* cmd, const char* command_id) {
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "cmd_ack", cmd ? cmd : "");
+    cJSON_AddStringToObject(root, "command_id", command_id ? command_id : "");
     cJSON_AddStringToObject(root, "error", "unknown_command");
     char* json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     if (json_str) {
-        mqtt_handler_publish(mqtt_handler_get_status_topic(), json_str, strlen(json_str), 0, 0);
+        mqtt_handler_publish_queued(mqtt_handler_get_status_topic(), json_str, strlen(json_str), 0, 0, true);
         cJSON_free(json_str);
     }
 }
@@ -459,15 +469,13 @@ static void publish_unknown_command_ack(const char* cmd) {
 static void publish_command_reject_ack(const char* cmd, const char* command_id, const char* error) {
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "cmd_ack", cmd ? cmd : "");
-    if (command_id && command_id[0]) {
-        cJSON_AddStringToObject(root, "command_id", command_id);
-    }
+    cJSON_AddStringToObject(root, "command_id", command_id ? command_id : "");
     cJSON_AddBoolToObject(root, "ok", false);
     cJSON_AddStringToObject(root, "error", error ? error : "invalid_command");
     char* json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     if (json_str) {
-        mqtt_handler_publish(mqtt_handler_get_status_topic(), json_str, strlen(json_str), 0, 0);
+        mqtt_handler_publish_queued(mqtt_handler_get_status_topic(), json_str, strlen(json_str), 0, 0, true);
         cJSON_free(json_str);
     }
 }
@@ -530,8 +538,8 @@ static void on_firmware_dispatch(const char* topic, const uint8_t* payload, uint
                             &mandatory)) {
         const char* status_topic = mqtt_handler_get_firmware_status_topic();
         if (status_topic[0]) {
-            mqtt_handler_publish(status_topic,
-                "{\"state\":\"failed\",\"error\":\"parse_error\"}", -1, 0, 0);
+            mqtt_handler_publish_queued(status_topic,
+                "{\"state\":\"failed\",\"error\":\"parse_error\"}", -1, 0, 0, true);
         }
         LOCK_LOGW("Firmware dispatch: parse error");
         return;
@@ -543,7 +551,7 @@ static void on_firmware_dispatch(const char* topic, const uint8_t* payload, uint
     if (status_topic[0]) {
         char buf[128];
         snprintf(buf, sizeof(buf), "{\"state\":\"received\",\"version\":\"%s\"}", version);
-        mqtt_handler_publish(status_topic, buf, -1, 0, 0);
+        mqtt_handler_publish_queued(status_topic, buf, -1, 0, 0, true);
     }
 
     LOCK_LOGI("Firmware dispatch: applying update");
