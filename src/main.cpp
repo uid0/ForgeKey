@@ -9,6 +9,7 @@
 #include "provisioning/register.h"
 #include "ota/ota_updater.h"
 #include "config/credential_rotation.h"
+#include "config/wifi_desired_state.h"
 #include "security/command_validation.h"
 #include "wifi_setup/captive.h"
 
@@ -224,6 +225,7 @@ static void publishStatusSnapshot(const char* requestedCmd, const char* commandI
     payload += String((unsigned long)ESP.getFreeHeap());
     payload += ",\"rssi\":";
     payload += String(WiFi.RSSI());
+    WifiSetup::appendHealthJson(payload);
     payload += ",\"uptime_ms\":";
     payload += String(millis());
     payload += ",\"mac\":\"";
@@ -518,9 +520,10 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
 //   {"cmd": "forget_wifi"}                     -> clear WiFi creds, reboot
 //   {"cmd": "set_equipment", "tags": [...]}   -> configure equipment tags
 //   {"cmd": "set_ble", "enabled": true}       -> enable/disable BLE
+//   {"cmd": "set_wifi", "wifi": {"profiles": [...]}} -> two-phase WiFi desired-state
 //   {"provisioning_token": "...", "valid_after": "..."}  -> token rotation
 static void onConfigMessage(const char* topic, const uint8_t* payload, unsigned int length) {
-    StaticJsonDocument<384> doc;
+    DynamicJsonDocument doc(4096);
     DeserializationError err = deserializeJson(doc, payload, length);
     if (!err) {
         const char* cmd = doc["cmd"] | "";
@@ -528,6 +531,24 @@ static void onConfigMessage(const char* topic, const uint8_t* payload, unsigned 
         if (strcmp(cmd, "forget_wifi") == 0) {
             debugPrint("INFO", "CFG", "forget_wifi command received");
             WifiSetup::forgetAndRestart();  // does not return
+            return;
+        }
+        if (strcmp(cmd, "set_wifi") == 0 || strcmp(cmd, "desired_state") == 0) {
+            String detail;
+            bool ok = wifi_desired_state::apply(
+                doc.as<JsonVariantConst>(),
+                [](unsigned long timeoutMs) { return mqttClient.probeReachability(timeoutMs); },
+                detail);
+            StaticJsonDocument<192> ack;
+            ack["cmd_ack"] = cmd;
+            ack["command_id"] = commandId;
+            ack["ok"] = ok;
+            ack["detail"] = detail;
+            String json;
+            serializeJson(ack, json);
+            mqttClient.publishStatus(json.c_str());
+            StatusLed::triggerMessageFlash();
+            debugPrintf(ok ? "INFO" : "WARN", "CFG", "wifi desired-state: %s", detail.c_str());
             return;
         }
 #ifndef FORGEKEY_LOCK
@@ -987,6 +1008,8 @@ void loop() {
         mqttClient.publishBlinkStatus(false);
         debugPrint("INFO", "CMD", "identify expired -> blink off");
     }
+
+    WifiSetup::tickHealth();
 
     mqttClient.loop();
     delay(10);
