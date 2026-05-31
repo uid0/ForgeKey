@@ -87,6 +87,11 @@ OTA start, OTA completion, rollback, lock tamper, and capability failure.
 | `critical` | Device is online but cannot perform its primary function safely. |
 | `retired` | Device intentionally stopped normal service. |
 
+
+## Hardware manifest health fields
+
+Firmware includes a `hardware` object in status, firmware-status, and telemetry health payloads. The object reports the selected board manifest (`board_id`, `board_name`), GPIO ownership records, `active_capabilities`, and `skipped_capabilities`. Capability setup is manifest-gated at boot: firmware runs detection, validates GPIO ownership and unsafe/strap-pin constraints, then calls capability setup only for the remaining active capabilities.
+
 ## Capability health requirements
 
 Every capability should eventually report:

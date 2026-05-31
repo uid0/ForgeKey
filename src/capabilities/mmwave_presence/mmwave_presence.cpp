@@ -1,17 +1,12 @@
-// mmwave-presence capability stub. Reserves the slot in the registry; the
-// detect() probe always returns false today so this contributes nothing at
-// runtime. Once a 24/60 GHz mmWave sensor is wired in (Seeed MR24HPC1, LD2410,
-// etc.), fill in the probe + driver. Suggested probe approaches:
-//   - LD2410: open Serial1 at 256000 baud, send the magic-word query frame
-//     (FD FC FB FA 02 00 FF 00 01 00 04 03 02 01) and look for the ack.
-//     Datasheet: https://www.hlktech.net/index.php?id=988
-//   - MR24HPC1: same pattern over UART at 115200; protocol manual at
-//     https://wiki.seeedstudio.com/Radar_MR24HPC1/.
-// Topic suffix would be "presence" (boolean + distance/speed payload).
+// mmWave-presence capability. Activation is explicit and manifest-gated: the
+// radar UART pins must be declared before firmware touches the bus. Topic
+// suffix: "presence" (boolean + distance/speed payload).
 
 #ifndef FORGEKEY_DISABLE_MMWAVE_PRESENCE
 
 #include "../capability.h"
+#include "../../boards/board_manifest.h"
+#include <Arduino.h>
 
 namespace MmwavePresence {
 
@@ -19,17 +14,34 @@ bool detectFn();
 void setupFn();
 void tickFn();
 
+namespace {
+bool g_configured = false;
+}
+
 bool detectFn() {
-    // TODO: probe UART for the configured mmWave module's heartbeat / ack.
-    return false;
+    g_configured = BoardManifest::mmwaveConfigured() &&
+                   BoardManifest::capabilityAllowed("mmwave_presence");
+    if (!g_configured) {
+        Serial.println("[CAP/mmwave_presence] skipped: no radar UART in board manifest");
+        return false;
+    }
+    return true;
 }
 
 void setupFn() {
-    // unreachable while detectFn() returns false
+    if (!g_configured) return;
+    Serial1.begin(BoardManifest::mmwaveBaud(), SERIAL_8N1,
+                  BoardManifest::mmwaveRxPin(), BoardManifest::mmwaveTxPin());
+    Serial.printf("[CAP/mmwave_presence] UART rx=%d tx=%d baud=%lu\n",
+                  BoardManifest::mmwaveRxPin(), BoardManifest::mmwaveTxPin(),
+                  (unsigned long)BoardManifest::mmwaveBaud());
 }
 
 void tickFn() {
-    // unreachable while detectFn() returns false
+    if (!g_configured) return;
+    while (Serial1.available() > 0) {
+        (void)Serial1.read();
+    }
 }
 
 }  // namespace MmwavePresence

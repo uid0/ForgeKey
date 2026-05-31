@@ -6,6 +6,7 @@
 
 #include "../capability.h"
 #include "status_led.h"
+#include "../../boards/board_manifest.h"
 
 namespace StatusLed {
 
@@ -15,13 +16,10 @@ void tickFn();
 
 namespace {
 
-// Onboard LED on XIAO ESP32-S3 is GPIO 21 (orange). Active LOW.
-// TODO: when boards without an onboard LED are added, move this to a
-// FORGEKEY_STATUS_LED_PIN compile-time override and have detectFn() return
-// false if the override is unset.
-constexpr int LED_PIN = 21;
-constexpr int LED_ON  = LOW;
-constexpr int LED_OFF = HIGH;
+int ledPin() { return BoardManifest::statusLedPin(); }
+bool ledAvailable() { return ledPin() >= 0 && BoardManifest::capabilityAllowed("status_led"); }
+int ledOnLevel() { return BoardManifest::statusLedActiveLow() ? LOW : HIGH; }
+int ledOffLevel() { return BoardManifest::statusLedActiveLow() ? HIGH : LOW; }
 
 struct BlinkPattern {
     int onMs;
@@ -90,6 +88,7 @@ const BlinkPattern& patternFor(State s) {
 }
 
 void applyPattern(const BlinkPattern& p) {
+    if (!ledAvailable()) return;
     g_currentPattern = p;
     g_blinkCount = 0;
     g_patternComplete = false;
@@ -101,12 +100,12 @@ void applyPattern(const BlinkPattern& p) {
     if (p.phaseCount > 0) {
         // Multi-phase pattern: first phase determines initial LED state
         g_ledOnNow = (p.phases[0] > 0);
-        digitalWrite(LED_PIN, g_ledOnNow ? LED_ON : LED_OFF);
+        digitalWrite(ledPin(), g_ledOnNow ? ledOnLevel() : ledOffLevel());
         g_lastToggle = millis();
     } else {
         // Legacy single-phase pattern
         g_ledOnNow = (p.onMs > 0);
-        digitalWrite(LED_PIN, g_ledOnNow ? LED_ON : LED_OFF);
+        digitalWrite(ledPin(), g_ledOnNow ? ledOnLevel() : ledOffLevel());
         g_lastToggle = millis();
     }
 }
@@ -124,11 +123,11 @@ unsigned long g_blinkOverrideExpiresMs = 0;
 bool g_blinkOverrideExpiredFlag = false;
 
 void triggerMessageFlash() {
-    if (g_blinkOverride) return;
+    if (!ledAvailable() || g_blinkOverride) return;
     g_messageFlashActive = true;
     g_flashStartMs = millis();
     g_flashLedOn = true;
-    digitalWrite(LED_PIN, LED_ON);
+    digitalWrite(ledPin(), ledOnLevel());
     g_lastToggle = millis();
 }
 
@@ -140,6 +139,7 @@ void requestState(State s) {
 }
 
 bool setBlinkOverride(bool on) {
+    if (!ledAvailable()) return false;
     if (on == g_blinkOverride) {
         if (!on) g_blinkOverrideExpiresMs = 0;
         return false;
@@ -159,6 +159,7 @@ bool setBlinkOverride(bool on) {
 }
 
 bool setBlinkOverrideTimed(unsigned long durationMs) {
+    if (!ledAvailable()) return false;
     bool wasOff = !g_blinkOverride;
     if (wasOff) {
         g_blinkOverride = true;
@@ -177,12 +178,17 @@ bool consumeBlinkOverrideExpired() {
 }
 
 bool detectFn() {
-    return true;  // always-present onboard LED
+    const int pin = BoardManifest::statusLedPin();
+    if (pin < 0 || !BoardManifest::capabilityAllowed("status_led")) {
+        Serial.println("[CAP/status_led] skipped: no status LED in board manifest");
+        return false;
+    }
+    return true;
 }
 
 void setupFn() {
-    pinMode(LED_PIN, OUTPUT);
-    digitalWrite(LED_PIN, LED_OFF);
+    pinMode(ledPin(), OUTPUT);
+    digitalWrite(ledPin(), ledOffLevel());
     g_state = State::Boot;
     applyPattern(PATTERN_BOOT);
 }
@@ -230,7 +236,7 @@ void tickFn() {
             // Toggle LED every 100ms during flash
             if (now - g_lastToggle >= 100) {
                 g_flashLedOn = !g_flashLedOn;
-                digitalWrite(LED_PIN, g_flashLedOn ? LED_ON : LED_OFF);
+                digitalWrite(ledPin(), g_flashLedOn ? ledOnLevel() : ledOffLevel());
                 g_lastToggle = now;
             }
         }
@@ -260,13 +266,13 @@ void tickFn() {
                 g_cycleCount++;
                 if (g_currentPattern.count > 0 && g_cycleCount >= g_currentPattern.count) {
                     g_patternComplete = true;
-                    digitalWrite(LED_PIN, LED_OFF);
+                    digitalWrite(ledPin(), ledOffLevel());
                     return;
                 }
             }
             // Toggle LED state for the new phase
             g_ledOnNow = (g_currentPhase % 2 == 0);
-            digitalWrite(LED_PIN, g_ledOnNow ? LED_ON : LED_OFF);
+            digitalWrite(ledPin(), g_ledOnNow ? ledOnLevel() : ledOffLevel());
             g_phaseStartMs = now;
             g_lastToggle = now;
 
@@ -282,13 +288,13 @@ void tickFn() {
     unsigned long interval = g_ledOnNow ? g_currentPattern.onMs : g_currentPattern.offMs;
     if (now - g_lastToggle >= interval) {
         g_ledOnNow = !g_ledOnNow;
-        digitalWrite(LED_PIN, g_ledOnNow ? LED_ON : LED_OFF);
+        digitalWrite(ledPin(), g_ledOnNow ? ledOnLevel() : ledOffLevel());
         g_lastToggle = now;
         if (!g_ledOnNow) {
             ++g_blinkCount;
             if (g_currentPattern.count > 0 && g_blinkCount >= g_currentPattern.count) {
                 g_patternComplete = true;
-                digitalWrite(LED_PIN, LED_OFF);
+                digitalWrite(ledPin(), ledOffLevel());
             }
         }
     }
@@ -305,6 +311,7 @@ REGISTER_CAPABILITY(status_led, "status_led",
 #else  // FORGEKEY_DISABLE_STATUS_LED — provide no-op stubs so callers compile.
 
 #include "status_led.h"
+#include "../../boards/board_manifest.h"
 namespace StatusLed {
 void requestState(State) {}
 bool setBlinkOverride(bool) { return false; }

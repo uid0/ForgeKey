@@ -11,6 +11,7 @@ idf_component_register(
          "credential_rotation.c"
          "command_validation.c"
          "firmware_verify.c"
+         "boards/lock_board_manifest.c"
     INCLUDE_DIRS "."
     REQUIRES 
         esp_wifi

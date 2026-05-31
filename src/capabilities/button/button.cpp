@@ -1,14 +1,13 @@
-// Push-button capability stub. Reserves the slot; detect() returns false
-// today. When a button is wired up (typical: external pull-up to a GPIO,
-// active-low momentary contact), populate the probe + edge-detection.
-// Suggested probe: configure the configured GPIO as INPUT_PULLUP, sample
-// twice ~10ms apart, and require a stable HIGH idle state - otherwise the
-// pin is floating (no button) and we should not register.
-// Topic suffix would be "button_press" (event payload: button id + edge).
+// Push-button capability. Activation is manifest-gated so an unpopulated
+// header pin is never probed unless the board manifest or build flags claim it.
+// The default electrical contract is an active-low momentary switch with a
+// pull-up idle state. Topic suffix: "button_press".
 
 #ifndef FORGEKEY_DISABLE_BUTTON
 
 #include "../capability.h"
+#include "../../boards/board_manifest.h"
+#include <Arduino.h>
 
 namespace Button {
 
@@ -16,17 +15,45 @@ bool detectFn();
 void setupFn();
 void tickFn();
 
+namespace {
+int g_pin = -1;
+bool g_lastPressed = false;
+unsigned long g_lastEdgeMs = 0;
+}
+
 bool detectFn() {
-    // TODO: probe FORGEKEY_BUTTON_PIN for stable pull-up idle state.
-    return false;
+    g_pin = BoardManifest::buttonPin();
+    if (g_pin < 0 || !BoardManifest::capabilityAllowed("button")) {
+        Serial.println("[CAP/button] skipped: no button pin in board manifest");
+        return false;
+    }
+    pinMode(g_pin, INPUT_PULLUP);
+    delay(10);
+    const int first = digitalRead(g_pin);
+    delay(10);
+    const int second = digitalRead(g_pin);
+    const bool stableIdle = first == HIGH && second == HIGH;
+    if (!stableIdle) {
+        Serial.printf("[CAP/button] skipped: GPIO%d did not show stable pull-up idle\n", g_pin);
+    }
+    return stableIdle;
 }
 
 void setupFn() {
-    // unreachable while detectFn() returns false
+    pinMode(g_pin, INPUT_PULLUP);
+    g_lastPressed = digitalRead(g_pin) == LOW;
+    g_lastEdgeMs = millis();
 }
 
 void tickFn() {
-    // unreachable while detectFn() returns false
+    if (g_pin < 0) return;
+    const bool pressed = digitalRead(g_pin) == LOW;
+    const unsigned long now = millis();
+    if (pressed != g_lastPressed && now - g_lastEdgeMs >= 30) {
+        g_lastPressed = pressed;
+        g_lastEdgeMs = now;
+        Serial.printf("[CAP/button] edge=%s gpio=%d\n", pressed ? "pressed" : "released", g_pin);
+    }
 }
 
 }  // namespace Button
