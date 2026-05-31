@@ -9,7 +9,7 @@ the people-counting pipeline see [PEOPLE_COUNTER.md](PEOPLE_COUNTER.md).
 ## High-level flow
 
 ```
-flash → boot → wifi → camera → registered? ─no→ POST /register/ → store creds
+flash → boot → wifi → camera → registered? ─no→ POST /enroll/ → store cert
                                        │
                                        yes
                                        ▼
@@ -34,11 +34,14 @@ and can be overridden via `-D` flags in `platformio.ini`:
 
 | Macro | Default | Purpose |
 |-------|---------|---------|
-| `OMS_HOST` | `dms.openmakerspace.org` | OMS HTTPS host for `/api/forgekey/...` |
+| `OMS_HOST` | `dms.openmakersuite.net` | OMS HTTPS host for `/api/forgekey/...` |
 | `OMS_PORT` | `443` | TLS port |
-| `FORGEKEY_PROVISIONING_TOKEN` | `REPLACE_ME_PROVISIONING_TOKEN` | Shared bearer for first-boot register POST |
-| `FORGEKEY_SENSOR_KIND` | `people-counter` | Capability tag sent at register time |
-| `FORGEKEY_FIRMWARE_VERSION` | `0.1.0` | Reported in registration payload + OTA logs |
+| `FORGEKEY_BOOTSTRAP_TOKEN` | `REPLACE_ME_BOOTSTRAP_TOKEN` | Short-lived/per-device bearer for first-boot enrollment; legacy `FORGEKEY_PROVISIONING_TOKEN` is only a build-flag alias |
+| `FORGEKEY_BOOTSTRAP_CLAIM_CODE` | empty | Human claim code printed on the device label and bound to the bootstrap record |
+| `FORGEKEY_MANUFACTURING_RECORD_ID` | empty | Factory work-order/record identifier sent during enrollment |
+| `FORGEKEY_SUPPORT_URL` | `https://openmakersuite.net/forgekey/support` | URL printed on the label and sent to OMS |
+| `FORGEKEY_SENSOR_KIND` | `people-counter` | Capability tag sent at enrollment time |
+| `FORGEKEY_FIRMWARE_VERSION` | `0.1.0` | Reported in enrollment payload + OTA logs |
 | `PHOTO_UPLOAD_INTERVAL_MS` | `300000` | Periodic photo cadence |
 | `PHOTO_UPLOAD_MOTION_WINDOW_MS` | `30000` | Skip photo if no motion seen this recently |
 | `FORGEKEY_AP_PASSWORD` | `12345678` | Captive-portal AP password (printed on sticker) |
@@ -67,22 +70,45 @@ credentials from a phone or laptop on-site:
 3. The user picks their SSID from the scanned list, types the PSK, hits
    *Save*. WiFiManager persists the creds and reboots.
 4. After reboot the device re-runs step 1, this time succeeding, then
-   continues to OMS registration / occupancy publishing.
+   continues to OMS enrollment / occupancy publishing.
 
 `connectOrPortal()` blocks. If the user never completes the form, the device
 sits in AP mode forever — by design, since there's nothing useful it can do
 without WiFi. A timeout can be passed in if needed.
 
-### Sticker label format
+### Physical label and QR format
 
-Every shipped device should carry a sticker showing its AP credentials:
+Every shipped device carries a durable label with both human-readable text and
+a QR code. The QR payload is a support/claim URL that contains no long-lived
+secret; operators still authenticate to OMS before ownership is transferred.
+
+Human-readable label:
 
 ```
-ForgeKey-Setup-XXXX
-Pwd: 12345678
+ForgeKey <DEVICE_CLASS>
+MAC: <12-hex-mac>
+Claim: <XXXX-XXXX-XXXX>
+Setup WiFi: ForgeKey-Setup-<last4> / 12345678
+Support: <FORGEKEY_SUPPORT_URL>
 ```
 
-Replace `XXXX` with the last four hex chars of the printed MAC address.
+QR payload:
+
+```
+<FORGEKEY_SUPPORT_URL>?mac=<12-hex-mac>&class=<device-class>&claim=<claim-code>
+```
+
+Required fields:
+
+| Field | Source | Notes |
+|-------|--------|-------|
+| MAC | eFuse base MAC read at manufacturing | Use lowercase 12-hex without separators in QR; the text label may group it for readability. |
+| Device class | `FORGEKEY_SENSOR_KIND` / `FORGEKEY_BUILD_TARGET` | Examples: `people-counter`, `temperature-sensor`, `cabinet-lock`. |
+| Claim code | Manufacturing system | 12+ random base32 characters grouped with dashes; stored hashed in OMS and printed once. |
+| Support URL | `FORGEKEY_SUPPORT_URL` | Must resolve to an operator-friendly claim/support page. |
+
+The captive-portal AP SSID remains `ForgeKey-Setup-XXXX`, where `XXXX` is the
+last four hex chars of the printed MAC address.
 
 ### Forgetting WiFi (re-provisioning a deployed device)
 
@@ -101,36 +127,123 @@ portal. Use this when handing a device to a new makerspace.
 > that has lost WiFi entirely needs a power-cycle reset by hand (a future
 > revision will add a physical button + GPIO trigger).
 
-## Provisioning (first boot)
+## Bootstrap identity and enrollment (first boot)
+
+### Manufacturing record
+
+Manufacturing creates a one-row bootstrap record before the unit leaves the
+bench. That record is the root of trust for first enrollment and contains:
+
+| Field | Description | Handling |
+|-------|-------------|----------|
+| MAC | eFuse base MAC for the module | Immutable device lookup key; printed on the label and encoded in the QR URL. |
+| Device class | `people-counter`, `temperature-sensor`, `cabinet-lock`, etc. | Must match the firmware's `FORGEKEY_SENSOR_KIND`; OMS rejects mismatches. |
+| Claim code | Random human code such as `FK7P-Q9CD-2M6R` | Printed on the label; store only a salted hash in OMS; mark single-use after owner claim. |
+| Bootstrap token | Per-device or very small-batch bearer | Sent only in `X-ForgeKey-Bootstrap-Token`; expiry should be short and scoped to the MAC/class/record. |
+| Manufacturing record ID | Work order / serial / fixture run ID | Sent as `manufacturing_record_id` for audit and support. |
+| QR/support URL | Claim/support page | QR contains MAC, class, and claim code but not the bootstrap token. |
+| Public-key status | Pending until first boot | OMS stores the device public key/CSR fingerprint on first successful enrollment. |
+
+The bootstrap token replaces the former shared fleet provisioning token. New
+builds should set `FORGEKEY_BOOTSTRAP_TOKEN` per device (or inject it into NVS
+on the fixture). The legacy `FORGEKEY_PROVISIONING_TOKEN` macro is retained only
+as a temporary build-flag alias and must not be used as a shared production
+secret.
+
+### Enrollment request
 
 On every boot the device:
 
-1. Connects WiFi via the captive-portal flow above. If WiFi creds aren't
-   saved yet this blocks until a user completes the portal form.
+1. Connects WiFi via the captive-portal flow above. If WiFi creds are not saved
+   yet, this blocks until an operator completes the portal form.
 2. Bumps a persistent `boot_count` in NVS namespace `forgekey`.
-3. If NVS does not yet contain a `dev_id` + `jwt`, runs `runProvisioning()`:
-   - Captures one JPEG (`CameraManager::captureJpeg`, frame2jpg-encoded).
+3. If NVS does not yet contain a `dev_id`, client certificate, and private key,
+   runs the enrollment flow:
+   - Generates a P-256 keypair on-device. The private key never leaves the
+     device except being stored in NVS as `c_key`.
+   - Builds a CSR with subject `CN=forgekey-<mac>`.
    - POSTs `multipart/form-data` to
-     `https://OMS_HOST/api/forgekey/devices/register/` with two parts:
-     * `metadata` — JSON `{mac_address, firmware_version, sensor_kind,
-       boot_count, free_heap, ip}`
-     * `photo` — `image/jpeg` of the area
-   - Header `X-ForgeKey-Provisioning-Token: <FORGEKEY_PROVISIONING_TOKEN>`.
-   - Expects 2xx with JSON body
-     `{device_id, mqtt_topic_for_firmware, mqtt_topic_for_pings, jwt_token}`.
-   - Persists those four fields into NVS.
-4. Subsequent boots skip the registration POST.
+     `https://OMS_HOST/api/forgekey/devices/enroll/` with:
+     * `metadata` — JSON including `mac_address`, `firmware_version`,
+       `sensor_kind`, `boot_count`, `free_heap`, `ip`, `csr_pem`,
+       `device_public_key_pem`, `bootstrap_claim_code`,
+       `manufacturing_record_id`, `support_url`, `unique_chip_id`,
+       `flash_memory_id`, and `chip_info`.
+     * `photo` — `image/jpeg` of the area for imaging builds only; lock and
+       temperature builds send metadata only.
+   - Sends headers `X-ForgeKey-Bootstrap-Token: <token>` and
+     `X-ForgeKey-Claim-Code: <claim-code>`.
+   - Expects 2xx with JSON body containing at least `device_id` and a signed
+     `client_certificate_pem`/`certificate_pem`; OMS may also return MQTT
+     broker policy, topics, command public key, and asset ID.
+   - Persists the device id, certificate, private key, command public key, MQTT
+     topics, and broker policy into NVS.
+4. Subsequent boots skip enrollment and use the persisted certificate bundle.
 
-If registration fails (network, OMS down, bad token), the device keeps running
-locally — counting people and printing to serial — and retries the POST on the
-next boot. There is no infinite retry loop in `setup()` to keep boot fast.
+OMS validates the bootstrap token against the manufacturing record, MAC, device
+class, claim-code hash, and expiry before signing the CSR. If enrollment fails
+(network, OMS down, expired token, MAC/class mismatch), the device keeps
+running locally and retries on the next boot. There is no infinite retry loop in
+`setup()` to keep boot fast.
 
-### Re-registration trigger
+### Operator owner-claim flow
 
-If a `/photo/` POST returns `401 Unauthorized` the device clears its NVS
-credentials. The next reboot re-runs the registration flow, picking up a new
-`jwt_token`. (The next photo cycle simply skips itself with `AuthExpired`;
-re-registration mid-loop is out of scope for v1.)
+1. Operator scans the QR label or enters the MAC and claim code in OMS.
+2. OMS authenticates the operator, verifies the claim code against the
+   manufacturing record, and checks that the device is enrolled but unowned.
+3. OMS binds the device to the selected organization/site/asset, marks the
+   claim code consumed, and records actor, timestamp, MAC, device id, and
+   manufacturing record ID.
+4. OMS pushes any site-specific MQTT policy/config over the device config topic;
+   the device does not need to expose the claim code again after this point.
+
+### Unclaim flow
+
+Use unclaim when a working device should move to a different owner without
+wiping hardware identity. OMS should:
+
+1. Require an authenticated operator with rights on the current owner.
+2. Remove owner/site/asset bindings and revoke site-specific ACLs.
+3. Keep the device certificate valid only for the quarantine/unclaimed policy,
+   or issue a replacement certificate with restricted topics.
+4. Mint a new one-time claim code and update the support/claim record; apply a
+   new physical label if the old claim code was exposed.
+
+### Retire flow
+
+Use retire when a device is lost, scrapped, or permanently removed:
+
+1. OMS marks the device and manufacturing record `retired`.
+2. OMS revokes the client certificate, MQTT ACLs, pending bootstrap tokens,
+   unused claim codes, and OTA targeting.
+3. If the device later connects, OMS rejects MQTT/HTTPS auth and may publish a
+   final signed command telling firmware to clear credentials before access is
+   fully disabled.
+4. Retired devices require a new manufacturing record and physical inspection
+   before they can re-enter service.
+
+### Factory-reset flow
+
+A factory reset is for refurbishing or recovering a device that should enroll
+again:
+
+1. Operator initiates reset in OMS or via a signed local/service command.
+2. Firmware calls `provisioning.clear()` / `provisioning_clear()`, wiping
+   `dev_id`, MQTT topics, client certificate, private key, command public key,
+   broker policy, and lock asset ID where present.
+3. The reset deliberately preserves `boots` and `prov_tok` so a freshly minted
+   short-lived bootstrap token can survive re-enrollment. Manufacturing may
+   erase all NVS if a full refurbish requires removing WiFi and counters too.
+4. OMS revokes the old certificate and mints a new per-device bootstrap token
+   and claim code bound to the same MAC/class (or to a replacement record).
+5. Device reboots, runs enrollment, posts a new CSR/public key, and stores the
+   newly signed certificate.
+
+### Re-enrollment trigger
+
+If an authenticated OMS path returns `401 Unauthorized`, the device clears its
+NVS credentials. The next reboot re-runs enrollment with the active bootstrap
+token. Mid-loop re-enrollment is out of scope for v1.
 
 ## Periodic photo upload
 
@@ -139,7 +252,7 @@ The main loop checks `PhotoUploader::shouldUpload()` each tick:
 - True if the last upload was ≥ `PHOTO_UPLOAD_INTERVAL_MS` ago **and** motion
   has been observed within the last `PHOTO_UPLOAD_MOTION_WINDOW_MS`.
 - The very first post-boot upload is unconditional so OMS sees the device
-  immediately after registration.
+  immediately after enrollment.
 - Any frame that the detector flags as `motionDetected` or that contains a
   detected person counts as motion.
 
@@ -147,11 +260,11 @@ When eligible:
 
 - Capture a fresh JPEG.
 - POST `multipart/form-data` (single `photo` part) to
-  `https://OMS_HOST/api/forgekey/devices/<mac>/photo/` with
-  `Authorization: Bearer <jwt_token>`.
+  `https://OMS_HOST/api/forgekey/devices/<mac>/photo/` over TLS using the
+  enrolled client certificate/private key for mTLS.
 - Status codes:
   * `2xx` → record `lastUploadMs`, free buffer, done.
-  * `401` → clear NVS credentials (forces re-register on next reboot).
+  * `401` → clear NVS credentials (forces re-enrollment on next reboot).
   * `5xx` / other → log + continue; next interval will retry.
 
 Photos are JPEG-encoded from the same QVGA grayscale frame the detector uses,
@@ -159,7 +272,7 @@ which keeps memory pressure low (one camera config, one PSRAM frame buffer).
 
 ## OTA firmware updates
 
-OTA is dispatched over MQTT, not pulled. After registration the device
+OTA is dispatched over MQTT, not pulled. After enrollment the device
 subscribes to the topic returned by the server in `mqtt_topic_for_firmware`
 (typically `forgekey/<mac>/firmware`).
 
@@ -263,14 +376,14 @@ continue to use the default development NVS partition. See
 | `b_host` | str | OMS-assigned MQTT broker hostname |
 | `b_port` | uint16 | OMS-assigned MQTT broker TLS port |
 | `b_tls` | bool | Whether the MQTT broker policy requires TLS |
-| `prov_tok` | str | OTA-rotated provisioning token (overrides compile-time default) |
+| `prov_tok` | str | Short-lived/per-device bootstrap token override (overrides compile-time default) |
 
-A factory reset (re-registration) is `provisioning.clear()` from the field —
+A factory reset (re-enrollment) is `provisioning.clear()` from the field —
 or an over-the-air firmware that wipes the credential keys. `clear()`
-deliberately preserves `boots` and `prov_tok` so a rotated token survives
-re-registration.
+deliberately preserves `boots` and `prov_tok` so a freshly issued bootstrap
+token survives re-enrollment.
 
-## Credential rotation
+## Bootstrap token rotation
 
 Devices subscribe to `forgekey/<mac>/config`. A payload of:
 
@@ -278,25 +391,27 @@ Devices subscribe to `forgekey/<mac>/config`. A payload of:
 { "provisioning_token": "<new>", "valid_after": "2026-05-01T00:00:00Z" }
 ```
 
-writes the new token to NVS (`prov_tok`). The device uses the rotated token
-on its next re-registration; OMS coordinates the cutover by accepting both
-the old and new tokens during the transition window, then revoking the old
-one once all devices have ack'd. `valid_after` is parsed and logged but the
-device does not enforce it — the back-end controls when the old token
-stops being honoured by `/api/forgekey/devices/register/`.
+writes the new short-lived/per-device bootstrap token to NVS (`prov_tok`). The
+device uses that token on its next re-enrollment. OMS should mint tokens scoped
+to one MAC/device class/manufacturing record and should expire unused tokens
+quickly. `valid_after` is parsed and logged but the device does not enforce it
+— the back-end controls when tokens are accepted by
+`/api/forgekey/devices/enroll/`.
 
 ## Security model
 
 - **Transport**: TLS to OMS with the OMS root certificate baked into firmware
   (`src/security/oms_ca.h`). `WiFiClientSecure::setCACert()` is used in all
-  three HTTPS paths (registration, photo upload, OTA download). MITM via a
+  three HTTPS paths (enrollment, photo upload, OTA download). MITM via a
   rogue public CA is rejected at the TLS handshake.
-- **Provisioning bearer**: shared token baked into the firmware at build time
-  via `FORGEKEY_PROVISIONING_TOKEN`. The token can be rotated post-deploy
-  through the MQTT `forgekey/<mac>/config` channel; the rotated value lives
-  in NVS and overrides the compile-time default.
-- **Per-device auth**: each device gets a unique `jwt_token` from OMS at
-  registration, used for HTTPS uploads and MQTT auth thereafter.
+- **Bootstrap bearer**: short-lived/per-device token provided as
+  `FORGEKEY_BOOTSTRAP_TOKEN` at manufacturing time or delivered into NVS as
+  `prov_tok`. It is sent in `X-ForgeKey-Bootstrap-Token` only during
+  enrollment and is validated against MAC, device class, claim code,
+  manufacturing record, and expiry.
+- **Per-device auth**: each device generates its own P-256 private key and CSR.
+  OMS signs the CSR and returns a unique client certificate used for MQTT/HTTPS
+  authentication thereafter.
 - **OTA integrity + authenticity**:
   * SHA-256 of the downloaded image must match the dispatch payload.
   * ECDSA(P-256) signature over the same digest must verify against the
@@ -336,26 +451,26 @@ To rotate the OTA signing keypair (suspected compromise, scheduled hygiene):
 4. Bump `FORGEKEY_FIRMWARE_VERSION`, build, dispatch.
 5. After fleet uptake, retire the old private key in OMS.
 
-### Provisioning bearer token
+### Bootstrap token
 
-For rotation post-deploy:
+For rotation or refurbish:
 
-1. Generate the new shared token.
-2. Publish the rotation message to each device's `forgekey/<mac>/config`
-   topic. The device persists it to NVS immediately and acknowledges by
-   logging the new token's prefix to serial.
-3. Once OMS metrics show all devices ack'd (or the rollout window expires),
-   stop accepting the old token at `/api/forgekey/devices/register/`.
-4. Future builds should also bake the new token as the compile-time default
-   so freshly flashed devices skip the rotation step.
+1. Generate a new token scoped to the device MAC, class, manufacturing record,
+   and a short expiry; generate a fresh claim code if ownership can change.
+2. Publish the rotation message to the device's `forgekey/<mac>/config` topic
+   while it is online, or inject the token in NVS during refurbish. The device
+   persists it to `prov_tok`.
+3. Revoke any previous unused bootstrap token and old claim code in OMS.
+4. Reboot or factory-reset the device so it posts a new CSR/public key to
+   `/api/forgekey/devices/enroll/`.
 
 ## Manual smoke test (hardware)
 
 After `~/.platformio/penv/bin/platformio run --target upload`:
 
 1. Watch the serial monitor — confirm WiFi connect and `provision: first
-   boot — registering with OMS`.
-2. Confirm the registration POST appears in OMS access logs and the device
+   boot — enrolling with OMS`.
+2. Confirm the enrollment POST appears in OMS access logs and the device
    shows up in the OMS admin device list.
 3. Within 5 minutes of motion, confirm a photo lands in the OMS device
    gallery for that MAC.
@@ -363,7 +478,7 @@ After `~/.platformio/penv/bin/platformio run --target upload`:
    `forgekey/<mac>/firmware`. Confirm the serial log shows
    `ota: downloading → installed → rebooting`.
 5. After reboot, confirm the new firmware version appears in the next
-   registration ping or occupancy log line, and that
+   enrollment/status ping or occupancy log line, and that
    `ota: marked running partition as valid` appears once a publish lands.
 
 ## Building & releasing firmware
@@ -429,7 +544,7 @@ pipeline is compiled out and a DHT 21 (AM2301) is sampled instead.
 
 | Aspect | People-counter | Temperature-sensor |
 |---|---|---|
-| Sensor kind sent at register | `people-counter` | `temperature-sensor` |
+| Sensor kind sent at enrollment | `people-counter` | `temperature-sensor` |
 | MQTT topic kind segment | `people_counter` | `temperature_sensor` |
 | Publish topic leaf | `/occupancy` | `/reading` |
 | Publish payload | `{count, timestamp}` | `{tempC, humidity, timestamp}` |
@@ -454,5 +569,4 @@ the right binary per device kind.
 - Offline queue + exponential backoff for unreachable OMS
 - Multi-channel update streams (stable / beta / dev)
 - ESP32 hardware Secure Boot v2 (fuse-burning, irreversible)
-- mTLS (per-device client cert) — current model relies on JWT bearer for
-  per-device auth; mTLS revisit if the attack surface widens
+- Full server-side claim/retire audit UI and label reprint automation

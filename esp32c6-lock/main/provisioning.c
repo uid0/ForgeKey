@@ -53,7 +53,7 @@ static esp_err_t forgekey_nvs_open(nvs_open_mode_t open_mode, nvs_handle_t* out_
 #define NVS_KEY_B_PORT    "b_port"
 #define NVS_KEY_B_TLS     "b_tls"
 #define NVS_KEY_BOOTS     "boots"
-#define NVS_KEY_PROV_TOK  "prov_tok"
+#define NVS_KEY_PROV_TOK  "prov_tok"  /* short-lived/per-device bootstrap token override */
 #define NVS_KEY_ASSET_ID  "asset_id"
 
 #define BOUNDARY "----ForgekeyBoundary7d3f2c1a"
@@ -96,6 +96,8 @@ static void add_chip_features_json(cJSON* features, uint32_t chip_features) {
 static bool generate_device_key_and_csr(const char* mac,
                                         char* private_key_pem,
                                         size_t private_key_len,
+                                        char* public_key_pem,
+                                        size_t public_key_len,
                                         char* csr_pem,
                                         size_t csr_len) {
     const char* personalization = "forgekey-enroll";
@@ -138,6 +140,12 @@ static bool generate_device_key_and_csr(const char* mac,
         goto fail;
     }
 
+    rc = mbedtls_pk_write_pubkey_pem(&pk, (unsigned char*)public_key_pem, public_key_len);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "write_pubkey_pem failed: -0x%04x", -rc);
+        goto fail;
+    }
+
     mbedtls_x509write_csr_set_md_alg(&req, MBEDTLS_MD_SHA256);
     mbedtls_x509write_csr_set_key(&req, &pk);
     rc = mbedtls_x509write_csr_set_subject_name(&req, subject_name);
@@ -169,6 +177,7 @@ fail:
 
 static char* build_enrollment_metadata_json(const char* mac,
                                             const char* ip_addr,
+                                            const char* public_key_pem,
                                             const char* csr_pem) {
     cJSON* meta = cJSON_CreateObject();
     if (!meta) {
@@ -185,6 +194,10 @@ static char* build_enrollment_metadata_json(const char* mac,
     cJSON_AddNumberToObject(meta, "free_heap", (double)esp_get_free_heap_size());
     cJSON_AddStringToObject(meta, "ip", ip_addr);
     cJSON_AddStringToObject(meta, "csr_pem", csr_pem);
+    cJSON_AddStringToObject(meta, "device_public_key_pem", public_key_pem);
+    cJSON_AddStringToObject(meta, "bootstrap_claim_code", FORGEKEY_BOOTSTRAP_CLAIM_CODE);
+    cJSON_AddStringToObject(meta, "manufacturing_record_id", FORGEKEY_MANUFACTURING_RECORD_ID);
+    cJSON_AddStringToObject(meta, "support_url", FORGEKEY_SUPPORT_URL);
 
     cJSON* chip_info_json = cJSON_AddObjectToObject(meta, "chip_info");
     if (chip_info_json) {
@@ -433,7 +446,7 @@ const char* provisioning_active_token(void) {
     nvs_handle_t nvs_handle;
     esp_err_t err = forgekey_nvs_open(NVS_READWRITE, &nvs_handle);
     if (err != ESP_OK) {
-        return FORGEKEY_PROVISIONING_TOKEN;
+        return FORGEKEY_BOOTSTRAP_TOKEN;
     }
 
     size_t tok_len = sizeof(stored_token);
@@ -444,7 +457,7 @@ const char* provisioning_active_token(void) {
         }
     }
     nvs_close(nvs_handle);
-    return FORGEKEY_PROVISIONING_TOKEN;
+    return FORGEKEY_BOOTSTRAP_TOKEN;
 }
 
 bool provisioning_set_token(const char* token) {
@@ -458,7 +471,7 @@ bool provisioning_set_token(const char* token) {
     nvs_commit(nvs_handle);
     nvs_close(nvs_handle);
 
-    ESP_LOGI(TAG, "Provisioning token updated in NVS");
+    ESP_LOGI(TAG, "Bootstrap token updated in NVS");
     return true;
 }
 
@@ -467,15 +480,17 @@ bool provisioning_enroll(const char* host, uint16_t port,
                          const uint8_t* jpeg_buf, size_t jpeg_len) {
     bool has_photo = (jpeg_buf != NULL && jpeg_len > 0);
     char private_key_pem[FORGEKEY_PROV_MAX_KEY];
+    char public_key_pem[FORGEKEY_PROV_MAX_PUBKEY];
     char csr_pem[FORGEKEY_PROV_MAX_CERT];
 
     if (!generate_device_key_and_csr(mac, private_key_pem, sizeof(private_key_pem),
+                                     public_key_pem, sizeof(public_key_pem),
                                      csr_pem, sizeof(csr_pem))) {
         ESP_LOGE(TAG, "Failed to generate device keypair/CSR");
         return false;
     }
 
-    char* meta_json = build_enrollment_metadata_json(mac, ip_addr, csr_pem);
+    char* meta_json = build_enrollment_metadata_json(mac, ip_addr, public_key_pem, csr_pem);
     if (!meta_json) {
         ESP_LOGE(TAG, "Failed to build enrollment metadata JSON");
         return false;
@@ -509,10 +524,11 @@ bool provisioning_enroll(const char* host, uint16_t port,
     size_t total_len = mb.len + (has_photo ? jpeg_len : 0) + strlen(tail);
     const char* active_token = provisioning_active_token();
 
-    ESP_LOGI(TAG, "Enrolling: host=%s port=%u mac=%s body=%u csr_len=%u",
-             host, port, mac, (unsigned)total_len, (unsigned)strlen(csr_pem));
-    if (strcmp(active_token, "REPLACE_ME_PROVISIONING_TOKEN") == 0) {
-        ESP_LOGW(TAG, "WARNING: using placeholder provisioning token");
+    ESP_LOGI(TAG, "Enrolling: host=%s port=%u mac=%s body=%u csr_len=%u public_key_len=%u",
+             host, port, mac, (unsigned)total_len, (unsigned)strlen(csr_pem),
+             (unsigned)strlen(public_key_pem));
+    if (strcmp(active_token, "REPLACE_ME_BOOTSTRAP_TOKEN") == 0) {
+        ESP_LOGW(TAG, "WARNING: using placeholder bootstrap token");
     }
 
     /* Build URL */
@@ -535,7 +551,9 @@ bool provisioning_enroll(const char* host, uint16_t port,
     char cl_buf[16];
     snprintf(cl_buf, sizeof(cl_buf), "%u", (unsigned)total_len);
     esp_http_client_set_header(http_client, "Content-Length", cl_buf);
-    esp_http_client_set_header(http_client, "X-ForgeKey-Provisioning-Token", active_token);
+    esp_http_client_set_header(http_client, "X-ForgeKey-Bootstrap-Token", active_token);
+    esp_http_client_set_header(http_client, "X-ForgeKey-Claim-Code",
+                               FORGEKEY_BOOTSTRAP_CLAIM_CODE);
 
     esp_err_t err = esp_http_client_open(http_client, (int)total_len);
     if (err != ESP_OK) {

@@ -34,11 +34,11 @@ constexpr const char* kKeyClientCert = "c_cert";
 constexpr const char* kKeyClientKey  = "c_key";
 constexpr const char* kKeyCmdPubKey  = "cmd_pub";
 constexpr const char* kKeyBoots    = "boots";
-constexpr const char* kKeyProvTok  = "prov_tok";  // OTA-delivered rotation override
+constexpr const char* kKeyProvTok  = "prov_tok";  // short-lived/per-device bootstrap token override
 constexpr const char* kKeyBrokerHost = "b_host";
 constexpr const char* kKeyBrokerPort = "b_port";
 constexpr const char* kKeyBrokerTls  = "b_tls";
-constexpr const char* kPlaceholderToken = "REPLACE_ME_PROVISIONING_TOKEN";
+constexpr const char* kPlaceholderToken = "REPLACE_ME_BOOTSTRAP_TOKEN";
 
 // Multipart boundary used for the multipart/form-data enrollment POST.
 constexpr const char* kBoundary = "----ForgekeyBoundary7d3f2c1a";
@@ -71,9 +71,11 @@ void addChipFeatures(JsonObject features, uint32_t chipFeatures) {
 
 bool generateDeviceKeyAndCsr(const String& mac,
                              String& privateKeyPem,
+                             String& publicKeyPem,
                              String& csrPem) {
     constexpr const char* kPersonalization = "forgekey-enroll";
     unsigned char privateKeyBuf[2048];
+    unsigned char publicKeyBuf[1024];
     unsigned char csrBuf[2048];
     char subjectName[64];
     snprintf(subjectName, sizeof(subjectName), "CN=forgekey-%s", mac.c_str());
@@ -114,6 +116,13 @@ bool generateDeviceKeyAndCsr(const String& mac,
         goto fail;
     }
     privateKeyPem = reinterpret_cast<const char*>(privateKeyBuf);
+
+    rc = mbedtls_pk_write_pubkey_pem(&pk, publicKeyBuf, sizeof(publicKeyBuf));
+    if (rc != 0) {
+        Serial.printf("enroll: write_pubkey_pem failed: -0x%04x\n", -rc);
+        goto fail;
+    }
+    publicKeyPem = reinterpret_cast<const char*>(publicKeyBuf);
 
     mbedtls_x509write_csr_set_md_alg(&req, MBEDTLS_MD_SHA256);
     mbedtls_x509write_csr_set_key(&req, &pk);
@@ -264,11 +273,11 @@ DeviceCredentials Provisioning::credentials() const { return creds; }
 String Provisioning::activeProvisioningToken() const {
     Preferences p;
     if (!beginProvisioningPrefs(p, /*readOnly=*/true)) {
-        return String(FORGEKEY_PROVISIONING_TOKEN);
+        return String(FORGEKEY_BOOTSTRAP_TOKEN);
     }
     String stored = p.getString(kKeyProvTok, "");
     p.end();
-    return stored.length() > 0 ? stored : String(FORGEKEY_PROVISIONING_TOKEN);
+    return stored.length() > 0 ? stored : String(FORGEKEY_BOOTSTRAP_TOKEN);
 }
 
 bool Provisioning::setProvisioningToken(const String& token) {
@@ -306,8 +315,9 @@ bool Provisioning::enrollDevice(const char* host, uint16_t port,
     // contains only the metadata part.
     const bool hasPhoto = (jpegBuf != nullptr && jpegLen > 0);
     String privateKeyPem;
+    String publicKeyPem;
     String csrPem;
-    if (!generateDeviceKeyAndCsr(mac, privateKeyPem, csrPem)) {
+    if (!generateDeviceKeyAndCsr(mac, privateKeyPem, publicKeyPem, csrPem)) {
         Serial.println("enroll: failed to generate device keypair/CSR");
         return false;
     }
@@ -331,6 +341,10 @@ bool Provisioning::enrollDevice(const char* host, uint16_t port,
     meta["free_heap"]        = ESP.getFreeHeap();
     meta["ip"]               = ipAddr;
     meta["csr_pem"]          = csrPem;
+    meta["device_public_key_pem"] = publicKeyPem;
+    meta["bootstrap_claim_code"] = FORGEKEY_BOOTSTRAP_CLAIM_CODE;
+    meta["manufacturing_record_id"] = FORGEKEY_MANUFACTURING_RECORD_ID;
+    meta["support_url"] = FORGEKEY_SUPPORT_URL;
     meta["unique_chip_id"]   = uniqueChipId;
     if (flashIdErr == ESP_OK) {
         char flashMemoryIdHex[11];
@@ -351,14 +365,15 @@ bool Provisioning::enrollDevice(const char* host, uint16_t port,
     addChipFeatures(chipInfoJson.createNestedObject("features"), chipInfo.features);
 
     Serial.printf("enroll: chip_info model=%s cores=%u revision=%u full_revision=%u "
-                  "unique_chip_id=%s flash_memory_id=%s csr_len=%u\n",
+                  "unique_chip_id=%s flash_memory_id=%s csr_len=%u public_key_len=%u\n",
                   chipInfoJson["model"].as<const char*>(),
                   (unsigned)chipInfo.cores,
                   (unsigned)chipInfo.revision,
                   (unsigned)chipInfo.full_revision,
                   uniqueChipId,
                   flashIdErr == ESP_OK ? meta["flash_memory_id"].as<const char*>() : "(unavailable)",
-                  (unsigned)csrPem.length());
+                  (unsigned)csrPem.length(),
+                  (unsigned)publicKeyPem.length());
     String metaJson;
     serializeJson(meta, metaJson);
 
@@ -388,7 +403,7 @@ bool Provisioning::enrollDevice(const char* host, uint16_t port,
                   host, port, host, port, (unsigned)totalLen,
                   tokenPreview.c_str(), (unsigned)activeToken.length());
     if (activeToken == kPlaceholderToken) {
-        Serial.println("enroll: WARNING using placeholder provisioning token; OMS will reject this with 401");
+        Serial.println("enroll: WARNING using placeholder bootstrap token; OMS will reject this with 401");
     }
 
     WiFiClientSecure tls;
@@ -416,11 +431,12 @@ bool Provisioning::enrollDevice(const char* host, uint16_t port,
 
     tls.printf("POST /api/forgekey/devices/enroll/ HTTP/1.1\r\n"
                "Host: %s\r\n"
-               "X-ForgeKey-Provisioning-Token: %s\r\n"
+               "X-ForgeKey-Bootstrap-Token: %s\r\n"
+               "X-ForgeKey-Claim-Code: %s\r\n"
                "Content-Type: multipart/form-data; boundary=%s\r\n"
                "Content-Length: %u\r\n"
                "Connection: close\r\n\r\n",
-               host, activeToken.c_str(), kBoundary,
+               host, activeToken.c_str(), FORGEKEY_BOOTSTRAP_CLAIM_CODE, kBoundary,
                (unsigned)totalLen);
     tls.print(head);
     if (hasPhoto) {

@@ -45,10 +45,10 @@ bool provisioning_persist(const prov_credentials_t* creds);
 /* Wipe stored credentials from NVS. */
 void provisioning_clear(void);
 
-/* Get active provisioning token (NVS override or compile-time default). */
+/* Get active short-lived/per-device bootstrap token (NVS override or compile-time default). */
 const char* provisioning_active_token(void);
 
-/* Set provisioning token (delivered via MQTT config). */
+/* Set bootstrap token (delivered via MQTT config). */
 bool provisioning_set_token(const char* token);
 
 /* POST enrollment to OMS. Returns true on success.

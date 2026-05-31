@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Extract secrets from Arduino project and populate ESP32-C6 lock headers.
 
-Reads provisioning tokens, CA certificates, firmware public keys, OMS command
+Reads bootstrap tokens, CA certificates, firmware public keys, OMS command
 public keys, and predefined WiFi networks from the Arduino codebase, then writes populated
 C headers into esp32c6-lock/main/.
 
@@ -54,8 +54,8 @@ def extract_pem_macro(header_path: Path, macro_name: str) -> str:
 def extract_string_macro(header_path: Path, macro_name: str) -> str:
     """Extract a string macro value from a header."""
     text = header_path.read_text()
-    pattern = rf'#ifndef\s+{macro_name}\s*\n#define\s+{macro_name}\s+"(.*?)"'
-    match = re.search(pattern, text)
+    pattern = rf'^#define\s+{macro_name}\s+"(.*?)"'
+    match = re.search(pattern, text, re.MULTILINE)
     if not match:
         print(f"WARNING: Could not find {macro_name} in {header_path}, using placeholder")
         return "REPLACE_ME"
@@ -118,8 +118,8 @@ def write_firmware_pubkey(dest: Path, pem: str):
     print(f"  Written: {dest / 'firmware_pubkey.h'} ({len(pem)} bytes PEM)")
 
 
-def write_device_config(dest: Path, provisioning_token: str):
-    """Write device_config.h with extracted secrets."""
+def write_device_config(dest: Path, bootstrap_token: str, claim_code: str, record_id: str, support_url: str):
+    """Write device_config.h with extracted bootstrap identity."""
     content = f'''/*
  * Device configuration for ESP32-C6 lock build.
  * Auto-generated from Arduino project sources — do not edit manually.
@@ -138,9 +138,25 @@ def write_device_config(dest: Path, provisioning_token: str):
 #define OMS_PORT 443
 #endif
 
-/* Provisioning token (extracted from src/provisioning/device_config.h) */
-#ifndef FORGEKEY_PROVISIONING_TOKEN
-#define FORGEKEY_PROVISIONING_TOKEN "{provisioning_token}"
+/* Per-device bootstrap identity (extracted from src/provisioning/device_config.h) */
+#ifndef FORGEKEY_BOOTSTRAP_TOKEN
+#ifdef FORGEKEY_PROVISIONING_TOKEN
+#define FORGEKEY_BOOTSTRAP_TOKEN FORGEKEY_PROVISIONING_TOKEN
+#else
+#define FORGEKEY_BOOTSTRAP_TOKEN "{bootstrap_token}"
+#endif
+#endif
+
+#ifndef FORGEKEY_BOOTSTRAP_CLAIM_CODE
+#define FORGEKEY_BOOTSTRAP_CLAIM_CODE "{claim_code}"
+#endif
+
+#ifndef FORGEKEY_MANUFACTURING_RECORD_ID
+#define FORGEKEY_MANUFACTURING_RECORD_ID "{record_id}"
+#endif
+
+#ifndef FORGEKEY_SUPPORT_URL
+#define FORGEKEY_SUPPORT_URL "{support_url}"
 #endif
 
 /* Sensor kind */
@@ -357,9 +373,13 @@ bool firmware_verify_decode_base64(const char* in, size_t in_len,
 def main():
     print("Extracting secrets from Arduino project for ESP32-C6 lock build...\n")
 
-    # Extract provisioning token
-    prov_token = extract_string_macro(SRC_PROVISIONING / "device_config.h", "FORGEKEY_PROVISIONING_TOKEN")
-    print(f"  Provisioning token: {prov_token[:12]}..." if len(prov_token) > 12 else f"  Provisioning token: {prov_token}")
+    # Extract bootstrap identity
+    bootstrap_token = extract_string_macro(SRC_PROVISIONING / "device_config.h", "FORGEKEY_BOOTSTRAP_TOKEN")
+    claim_code = extract_string_macro(SRC_PROVISIONING / "device_config.h", "FORGEKEY_BOOTSTRAP_CLAIM_CODE")
+    record_id = extract_string_macro(SRC_PROVISIONING / "device_config.h", "FORGEKEY_MANUFACTURING_RECORD_ID")
+    support_url = extract_string_macro(SRC_PROVISIONING / "device_config.h", "FORGEKEY_SUPPORT_URL")
+    print(f"  Bootstrap token: {bootstrap_token[:12]}..." if len(bootstrap_token) > 12 else f"  Bootstrap token: {bootstrap_token}")
+    print(f"  Claim code: {claim_code or '(set per device at manufacturing)'}")
 
     # Extract PEM certificates
     oms_ca_pem = extract_pem_macro(SRC_SECURITY / "oms_ca.h", "OMS_CA_PEM")
@@ -386,7 +406,7 @@ def main():
     write_oms_ca(DEST, oms_ca_pem)
     write_firmware_pubkey(DEST, fw_pubkey_pem)
     write_oms_command_pubkey(DEST, oms_cmd_pubkey_pem)
-    write_device_config(DEST, prov_token)
+    write_device_config(DEST, bootstrap_token, claim_code, record_id, support_url)
     write_wifi_secrets(DEST, networks)
     write_firmware_verify(DEST)
     write_firmware_verify_header(DEST)

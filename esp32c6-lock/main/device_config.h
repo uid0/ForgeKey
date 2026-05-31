@@ -16,9 +16,25 @@
 #define OMS_PORT 443
 #endif
 
-/* Provisioning token (extracted from src/provisioning/device_config.h) */
-#ifndef FORGEKEY_PROVISIONING_TOKEN
-#define FORGEKEY_PROVISIONING_TOKEN "REPLACE_ME_PROVISIONING_TOKEN"
+/* Per-device bootstrap identity (extracted from src/provisioning/device_config.h) */
+#ifndef FORGEKEY_BOOTSTRAP_TOKEN
+#ifdef FORGEKEY_PROVISIONING_TOKEN
+#define FORGEKEY_BOOTSTRAP_TOKEN FORGEKEY_PROVISIONING_TOKEN
+#else
+#define FORGEKEY_BOOTSTRAP_TOKEN "REPLACE_ME_BOOTSTRAP_TOKEN"
+#endif
+#endif
+
+#ifndef FORGEKEY_BOOTSTRAP_CLAIM_CODE
+#define FORGEKEY_BOOTSTRAP_CLAIM_CODE ""
+#endif
+
+#ifndef FORGEKEY_MANUFACTURING_RECORD_ID
+#define FORGEKEY_MANUFACTURING_RECORD_ID ""
+#endif
+
+#ifndef FORGEKEY_SUPPORT_URL
+#define FORGEKEY_SUPPORT_URL "https://openmakersuite.net/forgekey/support"
 #endif
 
 /* Sensor kind */
