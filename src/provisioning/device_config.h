@@ -33,6 +33,16 @@
 #define FORGEKEY_FIRMWARE_VERSION "0.1.0"
 #endif
 
+// Build identity used by fleet OTA policy filters. PlatformIO envs override
+// this with their exact environment name.
+#ifndef FORGEKEY_BUILD_TARGET
+#define FORGEKEY_BUILD_TARGET "seeed_xiao_esp32s3"
+#endif
+
+#ifndef FORGEKEY_BUILD_FRAMEWORK
+#define FORGEKEY_BUILD_FRAMEWORK "arduino"
+#endif
+
 // First-boot fallback MQTT broker. The authoritative broker host/port/tls
 // come back from the OMS enrollment response and are persisted to NVS;
 // these values are only used before a successful enrollment (or if the

@@ -9,6 +9,8 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
+#include "cJSON.h"
 
 /* OTA status callback */
 typedef void (*ota_status_cb_t)(const char* state, const char* version,
@@ -34,6 +36,9 @@ bool ota_apply(const char* url, const char* sha256, const char* signature,
 void ota_mark_stable(void);
 
 /* Check if an OTA update is in progress. */
+bool ota_policy_allows_payload(const uint8_t* payload, uint32_t length,
+                               char* out_reason, size_t reason_len);
+void ota_add_health_json(cJSON* root);
 bool ota_in_progress(void);
 
 #endif /* FORGEKEY_OTA_UPDATE_H */
