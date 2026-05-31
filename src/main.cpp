@@ -9,6 +9,7 @@
 #include "provisioning/register.h"
 #include "ota/ota_updater.h"
 #include "config/credential_rotation.h"
+#include "config/device_lifecycle.h"
 #include "config/wifi_desired_state.h"
 #include "config/ble_desired_state.h"
 #include "security/command_validation.h"
@@ -381,6 +382,18 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
     if (strcmp(cmd, "status") == 0 || strcmp(cmd, "ping") == 0) {
         publishStatusSnapshot(cmd, commandId);
         debugPrintf("INFO", "CMD", "%s -> status snapshot", cmd);
+        return;
+    }
+    if (strcmp(cmd, "retire") == 0 || strcmp(cmd, "factory_reset") == 0 ||
+        strcmp(cmd, "reprovision") == 0) {
+        device_lifecycle::Action action = device_lifecycle::Action::Retire;
+        if (strcmp(cmd, "factory_reset") == 0) {
+            action = device_lifecycle::Action::FactoryReset;
+        } else if (strcmp(cmd, "reprovision") == 0) {
+            action = device_lifecycle::Action::Reprovision;
+        }
+        debugPrintf("WARN", "LIFE", "accepted signed lifecycle command %s", cmd);
+        device_lifecycle::handleSignedCommand(action, commandId, validation.actor.c_str());
         return;
     }
     if (strcmp(cmd, "capture") == 0 || strcmp(cmd, "capture_photo") == 0) {

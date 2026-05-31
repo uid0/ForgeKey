@@ -76,6 +76,7 @@ static bool command_has_operator_identity(cJSON* doc);
 static int current_wifi_rssi(void);
 static char s_last_command_id[72] = {0};
 static void ota_status_callback(const char* state, const char* version, int progress, const char* error);
+static void handle_lifecycle_command(const char* cmd, const char* command_id, const char* actor);
 
 /* Application entry point */
 void app_main(void) {
@@ -463,7 +464,10 @@ static void on_command_message(const char* topic, const uint8_t* payload, uint32
                                   strcmp(cmd_str, "init_ack") == 0 ||
                                   strcmp(cmd_str, "emergency_unlock") == 0 ||
                                   strcmp(cmd_str, "commission") == 0 ||
-                                  strcmp(cmd_str, "restart") == 0;
+                                  strcmp(cmd_str, "restart") == 0 ||
+                                  strcmp(cmd_str, "retire") == 0 ||
+                                  strcmp(cmd_str, "factory_reset") == 0 ||
+                                  strcmp(cmd_str, "reprovision") == 0;
     if (safety_sensitive && !command_has_operator_identity(doc)) {
         publish_command_reject_ack(cmd_str, command_id, "missing_operator_identity");
         cJSON_Delete(doc);
@@ -477,6 +481,14 @@ static void on_command_message(const char* topic, const uint8_t* payload, uint32
 
     if (strcmp(cmd_str, "status") == 0 || strcmp(cmd_str, "ping") == 0) {
         publish_status_snapshot(lock_state_get_mac_address(), cmd_str, command_id);
+    } else if (strcmp(cmd_str, "retire") == 0 ||
+               strcmp(cmd_str, "factory_reset") == 0 ||
+               strcmp(cmd_str, "reprovision") == 0) {
+        cJSON* actor_field = cJSON_GetObjectItemCaseSensitive(doc, "actor");
+        const char* actor = (cJSON_IsString(actor_field) && actor_field->valuestring) ? actor_field->valuestring : "";
+        handle_lifecycle_command(cmd_str, command_id, actor);
+        cJSON_Delete(doc);
+        return;
     } else if (strcmp(cmd_str, "restart") == 0) {
         cJSON* ack = cJSON_CreateObject();
         cJSON_AddStringToObject(ack, "cmd_ack", "restart");
@@ -544,6 +556,65 @@ static void on_command_message(const char* topic, const uint8_t* payload, uint32
     }
 
     cJSON_Delete(doc);
+}
+
+static void persist_lifecycle_state(const char* state) {
+    nvs_handle_t nvs_handle;
+    if (nvs_open("fk_lifecycle", NVS_READWRITE, &nvs_handle) != ESP_OK) {
+        return;
+    }
+    nvs_set_str(nvs_handle, "state", state ? state : "unknown");
+    nvs_commit(nvs_handle);
+    nvs_close(nvs_handle);
+}
+
+static void publish_lifecycle_final_state(const char* cmd, const char* state,
+                                          const char* command_id, const char* actor) {
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "online", false);
+    cJSON_AddStringToObject(root, "lifecycle_state", state ? state : "unknown");
+    cJSON_AddStringToObject(root, "reason", cmd ? cmd : "lifecycle_command");
+    cJSON_AddStringToObject(root, "command_id", command_id ? command_id : "");
+    cJSON_AddStringToObject(root, "actor", actor ? actor : "");
+    forgekey_time_add_json(root);
+    char* json_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (json_str) {
+        mqtt_handler_publish_state_payload(json_str);
+        cJSON_free(json_str);
+    }
+}
+
+static void handle_lifecycle_command(const char* cmd, const char* command_id, const char* actor) {
+    const bool factory_reset = strcmp(cmd, "factory_reset") == 0;
+    const bool reprovision = strcmp(cmd, "reprovision") == 0;
+    const char* state = factory_reset ? "factory_reset" : (reprovision ? "reprovisioning" : "retired");
+    const char* detail = factory_reset ? "all_local_credentials_wiped" : "identity_cleared_wifi_retained";
+
+    persist_lifecycle_state(state);
+    publish_lifecycle_final_state(cmd, state, command_id, actor);
+    publish_lock_cmd_ack(cmd, command_id, state, NULL);
+
+    cJSON* ack = cJSON_CreateObject();
+    cJSON_AddStringToObject(ack, "cmd_ack", cmd ? cmd : "");
+    cJSON_AddStringToObject(ack, "command_id", command_id ? command_id : "");
+    cJSON_AddBoolToObject(ack, "ok", true);
+    cJSON_AddStringToObject(ack, "detail", detail);
+    forgekey_time_add_json(ack);
+    char* ack_json = cJSON_PrintUnformatted(ack);
+    cJSON_Delete(ack);
+    if (ack_json) {
+        mqtt_handler_publish_queued(mqtt_handler_get_status_topic(), ack_json, strlen(ack_json), 0, 0, true);
+        cJSON_free(ack_json);
+    }
+
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+    provisioning_wipe_credentials(factory_reset, factory_reset);
+    if (factory_reset) {
+        esp_wifi_restore();
+    }
+    vTaskDelay(250 / portTICK_PERIOD_MS);
+    esp_restart();
 }
 
 static void publish_status_snapshot(const char* mac_str, const char* requested_cmd, const char* command_id) {

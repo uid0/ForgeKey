@@ -546,6 +546,18 @@ void mqtt_handler_set_firmware_status_topic(const char* topic) {
     }
 }
 
+esp_err_t mqtt_handler_publish_state_payload(const char* payload) {
+    if (!payload) payload = "{}";
+    if (!s_mqtt_client || !s_mqtt_connected || !s_state_topic[0]) {
+        return ESP_FAIL;
+    }
+    int msg_id = esp_mqtt_client_publish(s_mqtt_client, s_state_topic,
+                                         payload, 0, 0, true);
+    ESP_LOGI(TAG, "State publish topic=%s payload=%s msg_id=%d",
+             s_state_topic, payload, msg_id);
+    return msg_id >= 0 ? ESP_OK : ESP_FAIL;
+}
+
 const char* mqtt_handler_get_capabilities_topic(void) {
     return s_capabilities_topic;
 }
