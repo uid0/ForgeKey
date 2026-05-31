@@ -71,3 +71,11 @@ config FORGEKEY_MQTT_TOPIC_KIND
     default "cabinet_lock"
     help
         MQTT topic kind segment for this device type.
+
+config FORGEKEY_PRODUCTION_SECURITY
+    bool "Enable ForgeKey production security profile"
+    default n
+    help
+        Store provisioning artifacts in the encrypted NVS partition and assume
+        manufacturing has enabled secure boot, flash encryption, and debug-port
+        lock-down eFuses.

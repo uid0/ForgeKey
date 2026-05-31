@@ -19,6 +19,14 @@ Provisioning provisioning;
 
 namespace {
 constexpr const char* kNvsNamespace = "forgekey";
+#ifdef FORGEKEY_PRODUCTION_SECURITY
+#ifndef FORGEKEY_SECURE_NVS_PARTITION
+#define FORGEKEY_SECURE_NVS_PARTITION "nvs"
+#endif
+constexpr const char* kNvsPartition = FORGEKEY_SECURE_NVS_PARTITION;
+#else
+constexpr const char* kNvsPartition = nullptr;
+#endif
 constexpr const char* kKeyDeviceId = "dev_id";
 constexpr const char* kKeyFwTopic  = "fw_topic";
 constexpr const char* kKeyPingTopic = "p_topic";
@@ -178,11 +186,15 @@ bool firstBool(JsonVariantConst primary, JsonVariantConst secondary, bool fallba
     if (!secondary.isNull()) return secondary.as<bool>();
     return fallback;
 }
+
+bool beginProvisioningPrefs(Preferences& prefs, bool readOnly) {
+    return prefs.begin(kNvsNamespace, readOnly, kNvsPartition);
+}
 }  // namespace
 
 void Provisioning::begin() {
     Preferences p;
-    p.begin(kNvsNamespace, /*readOnly=*/false);
+    beginProvisioningPrefs(p, /*readOnly=*/false);
     cachedBootCount = p.getUInt(kKeyBoots, 0) + 1;
     p.putUInt(kKeyBoots, cachedBootCount);
     p.end();
@@ -192,7 +204,7 @@ void Provisioning::begin() {
 
 void Provisioning::load() {
     Preferences p;
-    p.begin(kNvsNamespace, /*readOnly=*/true);
+    beginProvisioningPrefs(p, /*readOnly=*/true);
     creds.deviceId          = p.getString(kKeyDeviceId, "");
     creds.mqttFirmwareTopic = p.getString(kKeyFwTopic, "");
     creds.mqttPingsTopic    = p.getString(kKeyPingTopic, "");
@@ -233,7 +245,7 @@ bool Provisioning::isProvisioned() const {
 
 void Provisioning::clear() {
     Preferences p;
-    p.begin(kNvsNamespace, /*readOnly=*/false);
+    beginProvisioningPrefs(p, /*readOnly=*/false);
     p.remove(kKeyDeviceId);
     p.remove(kKeyFwTopic);
     p.remove(kKeyPingTopic);
@@ -251,7 +263,7 @@ DeviceCredentials Provisioning::credentials() const { return creds; }
 
 String Provisioning::activeProvisioningToken() const {
     Preferences p;
-    if (!p.begin(kNvsNamespace, /*readOnly=*/true)) {
+    if (!beginProvisioningPrefs(p, /*readOnly=*/true)) {
         return String(FORGEKEY_PROVISIONING_TOKEN);
     }
     String stored = p.getString(kKeyProvTok, "");
@@ -262,7 +274,7 @@ String Provisioning::activeProvisioningToken() const {
 bool Provisioning::setProvisioningToken(const String& token) {
     if (token.length() == 0) return false;
     Preferences p;
-    if (!p.begin(kNvsNamespace, /*readOnly=*/false)) return false;
+    if (!beginProvisioningPrefs(p, /*readOnly=*/false)) return false;
     size_t written = p.putString(kKeyProvTok, token);
     p.end();
     return written > 0;
@@ -270,7 +282,7 @@ bool Provisioning::setProvisioningToken(const String& token) {
 
 bool Provisioning::persist(const DeviceCredentials& c) {
     Preferences p;
-    if (!p.begin(kNvsNamespace, /*readOnly=*/false)) return false;
+    if (!beginProvisioningPrefs(p, /*readOnly=*/false)) return false;
     p.putString(kKeyDeviceId, c.deviceId);
     p.putString(kKeyFwTopic, c.mqttFirmwareTopic);
     p.putString(kKeyPingTopic, c.mqttPingsTopic);
