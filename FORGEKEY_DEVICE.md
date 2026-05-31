@@ -6,6 +6,16 @@ keeps itself updated, and ships periodic photos for the OMS area-imagery feed.
 This document covers fo-0z9 (provisioning, periodic photo upload, OTA). For
 the people-counting pipeline see [PEOPLE_COUNTER.md](PEOPLE_COUNTER.md).
 
+## Integration contracts
+
+Firmware/backend boundaries are described by versioned contract documents in
+[`docs/contracts/`](docs/contracts/README.md). Use the OpenAPI specs for
+provisioning, photo upload, ePaper image/battery exchange, OTA artifact delivery,
+and diagnostics upload; use the MQTT matrix for topic/payload routing; and use
+canonical error codes for provisioning, MQTT, OTA, commands, diagnostics, lock
+operations, and sensor failures. Payload schemas remain under
+[`docs/schemas/`](docs/schemas/README.md).
+
 ## Hardware artifact index
 
 Repeatable hardware documentation now lives under [`hardware/`](hardware/).

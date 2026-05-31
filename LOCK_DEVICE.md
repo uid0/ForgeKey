@@ -164,6 +164,14 @@ This prevents a false "secure" report from a forced-open door (reed switch
 still closed but latch disengaged) or a partially latched door (latch
 supervisor shows locked but door is ajar).
 
+## Contract references
+
+The lock protocol examples below are implementation notes for the ESP32-C6 lock
+firmware. The canonical MQTT topic/payload matrix for the `cabinet_lock` device
+class is [`docs/contracts/mqtt.md`](docs/contracts/mqtt.md), lock-related error
+codes are defined in [`docs/contracts/error-codes.md`](docs/contracts/error-codes.md),
+and shared payload schemas are registered in [`docs/schemas/`](docs/schemas/README.md).
+
 ## MQTT Protocol
 
 ### From Django to XIAO (Unlock Command)

@@ -1,0 +1,97 @@
+openapi: 3.1.0
+info:
+  title: ForgeKey Provisioning API
+  version: 1.0.0
+  description: Enrollment, credential rotation, reprovisioning, and retirement endpoints used by ForgeKey devices and OMS.
+servers:
+  - url: https://oms.example.com/api/forgekey/v1
+security:
+  - DeviceBootstrapToken: []
+paths:
+  /provisioning/enroll:
+    post:
+      operationId: enrollDevice
+      summary: Enroll an unprovisioned device and return credentials plus MQTT/HTTP policy.
+      tags: [Provisioning]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../schemas/provisioning_enroll_request.v1.schema.json
+      responses:
+        '201':
+          description: Device enrolled or idempotently re-enrolled.
+          headers:
+            X-ForgeKey-Correlation-Id:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: ../schemas/provisioning_enroll_response.v1.schema.json
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+  /devices/{device_id}/credentials:rotate:
+    post:
+      operationId: rotateDeviceCredentials
+      summary: Rotate MQTT/HTTPS client credentials for an already enrolled device.
+      tags: [Provisioning]
+      security:
+        - DeviceMutualTLS: []
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../schemas/provisioning_enroll_request.v1.schema.json
+      responses:
+        '200':
+          description: Replacement credential bundle and policy.
+          content:
+            application/json:
+              schema:
+                $ref: ../schemas/provisioning_enroll_response.v1.schema.json
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /devices/{device_id}:retire:
+    post:
+      operationId: retireDevice
+      summary: Mark a device identity retired and revoke MQTT/HTTPS credentials.
+      tags: [Provisioning]
+      security:
+        - DeviceMutualTLS: []
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      responses:
+        '204': { description: Device retired. }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+components:
+  parameters:
+    DeviceId:
+      name: device_id
+      in: path
+      required: true
+      schema: { type: string }
+  responses:
+    Error:
+      description: Canonical ForgeKey error. See error-codes.md.
+      content:
+        application/json:
+          schema:
+            $ref: ../schemas/error.v1.schema.json
+  securitySchemes:
+    DeviceBootstrapToken:
+      type: http
+      scheme: bearer
+      bearerFormat: ForgeKey bootstrap token
+    DeviceMutualTLS:
+      type: mutualTLS

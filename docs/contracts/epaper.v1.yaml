@@ -1,0 +1,85 @@
+openapi: 3.1.0
+info:
+  title: ForgeKey ePaper API
+  version: 1.0.0
+  description: ePaper image manifest/download and battery telemetry contract.
+servers:
+  - url: https://oms.example.com/api/forgekey/v1
+security:
+  - DeviceMutualTLS: []
+paths:
+  /devices/{device_id}/epaper/image:
+    get:
+      operationId: getEpaperImageManifest
+      summary: Return the current image manifest for an ePaper device.
+      tags: [ePaper]
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      responses:
+        '200':
+          description: Current image metadata; device downloads `download_url` or the binary endpoint below.
+          content:
+            application/json:
+              schema:
+                $ref: ../schemas/epaper_image_manifest.v1.schema.json
+        '204': { description: No image change is pending. }
+        '401': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /devices/{device_id}/epaper/image/{image_id}/bytes:
+    get:
+      operationId: downloadEpaperImageBytes
+      summary: Download image bytes referenced by an ePaper image manifest.
+      tags: [ePaper]
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+        - name: image_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Binary image bytes. Verify with manifest sha256 and byte_length.
+          headers:
+            X-ForgeKey-Schema-Version:
+              schema: { const: forgekey.epaper_image_manifest.v1 }
+            X-ForgeKey-SHA256:
+              schema: { type: string }
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '401': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /devices/{device_id}/epaper/battery:
+    post:
+      operationId: reportEpaperBattery
+      summary: Report battery and power telemetry from a low-power ePaper device.
+      tags: [ePaper]
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../schemas/epaper_battery.v1.schema.json
+      responses:
+        '202': { description: Battery telemetry accepted. }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+components:
+  parameters:
+    DeviceId:
+      name: device_id
+      in: path
+      required: true
+      schema: { type: string }
+  responses:
+    Error:
+      description: Canonical ForgeKey error. See error-codes.md.
+      content:
+        application/json:
+          schema:
+            $ref: ../schemas/error.v1.schema.json
+  securitySchemes:
+    DeviceMutualTLS:
+      type: mutualTLS

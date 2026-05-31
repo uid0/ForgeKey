@@ -50,7 +50,10 @@ ForgeKey is based off of the adaptable ESP32 series of chips.
 - [docs/FLEET_MANAGEMENT_TODO.md](docs/FLEET_MANAGEMENT_TODO.md) — phased backlog for completing best-in-class ESP32 fleet management.
 - [docs/DEVICE_TWIN.md](docs/DEVICE_TWIN.md) — desired/reported state contract for fleet configuration drift management.
 - [docs/DEVICE_HEALTH.md](docs/DEVICE_HEALTH.md) — shared health telemetry contract for ESP32 device monitoring.
-- [docs/schemas/README.md](docs/schemas/README.md) — planned JSON Schema registry for OMS/firmware contracts.
+- [docs/contracts/README.md](docs/contracts/README.md) — self-describing HTTP OpenAPI, MQTT topic, payload, and error-code contracts.
+- [docs/contracts/mqtt.md](docs/contracts/mqtt.md) — canonical MQTT topics and payload schemas for every device class.
+- [docs/contracts/error-codes.md](docs/contracts/error-codes.md) — canonical provisioning, MQTT, OTA, command, diagnostics, lock, and sensor error codes.
+- [docs/schemas/README.md](docs/schemas/README.md) — JSON Schema registry for OMS/firmware contracts.
 - [DEBUG.md](DEBUG.md) — diagnostic logging reference.
 
 ## Active Firmware Targets
