@@ -12,6 +12,7 @@
 
 #include "../../mqtt/mqtt_client.h"
 #include "../../provisioning/device_config.h"
+#include "../../config/ble_desired_state.h"
 
 // Detection hysteresis
 #ifndef BLE_EQUIP_DETECTED_THRESHOLD
@@ -32,6 +33,8 @@ namespace {
 
 bool g_active = false;
 bool g_enabled = true;
+unsigned long g_lastTick = 0;
+char g_lastError[32] = {0};
 
 // Configured equipment tags
 constexpr int MAX_TAGS = 16;
@@ -171,7 +174,8 @@ void reportEvent(int tagIdx, const char* event, int8_t rssi) {
     doc["cmd_ack"] = "equipment";
     doc["event"] = event;
     doc["name"] = t->name;
-    doc["mac"] = t->mac;
+    if (ble_desired_state::current().rawMacEnabled) doc["mac"] = t->mac;
+    doc["id"] = ble_desired_state::publicDeviceId(t->mac, millis());
     doc["rssi"] = rssi;
     doc["zone"] = zoneFromRssi(rssi);
 
@@ -217,15 +221,30 @@ bool detectFn() {
 
 void setupFn() {
     g_active = true;
+    g_enabled = ble_desired_state::current().equipmentEnabled;
     loadTagsFromNvs();
     Serial.printf("[CAP/ble_equipment] loaded %d tags from NVS\n", g_tagCount);
 }
 
 void tickFn() {
+    g_enabled = ble_desired_state::current().equipmentEnabled;
+    g_lastTick = millis();
     // This capability doesn't scan on its own — it processes scan results
     // from the ble_scanner capability. The actual detection logic runs
     // when ble_scanner publishes its results. Config updates are handled
     // in main.cpp onConfigMessage.
+}
+
+void appendHealthJson(String& out) {
+    out += "{\"status\":\"";
+    out += g_enabled ? (g_active ? "ok" : "unsupported") : "disabled";
+    out += "\",\"last_tick_age_ms\":";
+    out += String(g_lastTick ? (millis() - g_lastTick) : 0);
+    out += ",\"last_error\":";
+    if (g_lastError[0]) { out += "\""; out += g_lastError; out += "\""; } else { out += "null"; }
+    out += ",\"metrics\":{\"tag_count\":";
+    out += String(g_tagCount);
+    out += "}}";
 }
 
 }  // namespace BleEquipment

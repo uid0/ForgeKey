@@ -10,6 +10,7 @@
 #include "ota/ota_updater.h"
 #include "config/credential_rotation.h"
 #include "config/wifi_desired_state.h"
+#include "config/ble_desired_state.h"
 #include "security/command_validation.h"
 #include "time/time_sync.h"
 #include "wifi_setup/captive.h"
@@ -229,6 +230,33 @@ static void publishStatusSnapshot(const char* requestedCmd, const char* commandI
     payload += String(WiFi.RSSI());
     WifiSetup::appendHealthJson(payload);
     BoardManifest::appendHealthJson(payload, CapabilityRegistry::head());
+    payload += ",\"ble_config\":";
+    ble_desired_state::appendConfigJson(payload);
+    payload += ",\"capability_health\":{\"ble\":{";
+    bool bleHealthAdded = false;
+#ifndef FORGEKEY_DISABLE_BLE_SCANNER
+    payload += "\"scanner\":";
+    BleScanner::appendHealthJson(payload);
+    bleHealthAdded = true;
+#endif
+#ifndef FORGEKEY_DISABLE_BLE_BEACON
+    if (bleHealthAdded) payload += ",";
+    payload += "\"beacon\":";
+    BleBeacon::appendHealthJson(payload);
+    bleHealthAdded = true;
+#endif
+#ifndef FORGEKEY_DISABLE_BLE_RELAY
+    if (bleHealthAdded) payload += ",";
+    payload += "\"relay\":";
+    BleRelay::appendHealthJson(payload);
+    bleHealthAdded = true;
+#endif
+#ifndef FORGEKEY_DISABLE_BLE_EQUIPMENT
+    if (bleHealthAdded) payload += ",";
+    payload += "\"equipment\":";
+    BleEquipment::appendHealthJson(payload);
+#endif
+    payload += "}}";
     payload += ",\"uptime_ms\":";
     payload += String(millis());
     ForgeKeyTime::appendJson(payload);
@@ -537,7 +565,7 @@ static void onConfigMessage(const char* topic, const uint8_t* payload, unsigned 
             WifiSetup::forgetAndRestart();  // does not return
             return;
         }
-        if (strcmp(cmd, "set_wifi") == 0 || strcmp(cmd, "desired_state") == 0) {
+        if (strcmp(cmd, "set_wifi") == 0) {
             String detail;
             bool ok = wifi_desired_state::apply(
                 doc.as<JsonVariantConst>(),
@@ -555,47 +583,92 @@ static void onConfigMessage(const char* topic, const uint8_t* payload, unsigned 
             debugPrintf(ok ? "INFO" : "WARN", "CFG", "wifi desired-state: %s", detail.c_str());
             return;
         }
-#ifndef FORGEKEY_LOCK
-#ifndef FORGEKEY_DISABLE_BLE_BEACON
-        if (strcmp(cmd, "set_ble") == 0) {
-            // Global BLE enable/disable
-            bool enabled = doc["enabled"] | FORGEKEY_BLE_ENABLED_DEFAULT;
-            bool scanner = doc["scanner"] | enabled;
-            bool beacon = doc["beacon"] | enabled;
-            bool relay = doc["relay"] | enabled;
-            bool equipment = doc["equipment"] | enabled;
+        if (strcmp(cmd, "desired_state") == 0) {
+            String wifiDetail;
+            bool wifiOk = true;
+            if (!doc["wifi"].isNull()) {
+                wifiOk = wifi_desired_state::apply(
+                    doc.as<JsonVariantConst>(),
+                    [](unsigned long timeoutMs) { return mqttClient.probeReachability(timeoutMs); },
+                    wifiDetail);
+            } else {
+                wifiDetail = "not_requested";
+            }
 
+            String bleDetail;
+            bool bleOk = true;
+            if (!doc["ble"].isNull()) {
+                bleOk = ble_desired_state::apply(doc.as<JsonVariantConst>(), bleDetail);
 #ifndef FORGEKEY_DISABLE_BLE_SCANNER
-            BleScanner::setEnabled(scanner);
+                BleScanner::setEnabled(ble_desired_state::current().scannerEnabled);
 #endif
 #ifndef FORGEKEY_DISABLE_BLE_BEACON
-            BleBeacon::setEnabled(beacon);
+                BleBeacon::setEnabled(ble_desired_state::current().beaconEnabled);
 #endif
 #ifndef FORGEKEY_DISABLE_BLE_RELAY
-            BleRelay::setEnabled(relay);
+                BleRelay::setEnabled(ble_desired_state::current().relayEnabled);
 #endif
 #ifndef FORGEKEY_DISABLE_BLE_EQUIPMENT
-            BleEquipment::setEnabled(equipment);
+                BleEquipment::setEnabled(ble_desired_state::current().equipmentEnabled);
 #endif
+            } else {
+                bleDetail = "not_requested";
+            }
 
-            // Ack with resolved state
             StaticJsonDocument<256> ack;
-            ack["cmd_ack"] = "set_ble";
+            ack["cmd_ack"] = "desired_state";
             ack["command_id"] = commandId;
-            ack["enabled"] = enabled;
-            ack["scanner"] = scanner;
-            ack["beacon"] = beacon;
-            ack["relay"] = relay;
-            ack["equipment"] = equipment;
+            ack["ok"] = wifiOk && bleOk;
+            ack["wifi_detail"] = wifiDetail;
+            ack["ble_detail"] = bleDetail;
             String json;
             serializeJson(ack, json);
             mqttClient.publishStatus(json.c_str());
             StatusLed::triggerMessageFlash();
-            debugPrintf("INFO", "CFG", "BLE state: enabled=%d scanner=%d beacon=%d relay=%d equipment=%d",
-                        (int)enabled, (int)scanner, (int)beacon, (int)relay, (int)equipment);
             return;
         }
+#ifndef FORGEKEY_LOCK
+        if (strcmp(cmd, "set_ble") == 0) {
+            String detail;
+            bool ok = ble_desired_state::apply(doc.as<JsonVariantConst>(), detail);
+            const ble_desired_state::BleConfig& cfg = ble_desired_state::current();
+
+#ifndef FORGEKEY_DISABLE_BLE_SCANNER
+            BleScanner::setEnabled(cfg.scannerEnabled);
 #endif
+#ifndef FORGEKEY_DISABLE_BLE_BEACON
+            BleBeacon::setEnabled(cfg.beaconEnabled);
+#endif
+#ifndef FORGEKEY_DISABLE_BLE_RELAY
+            BleRelay::setEnabled(cfg.relayEnabled);
+#endif
+#ifndef FORGEKEY_DISABLE_BLE_EQUIPMENT
+            BleEquipment::setEnabled(cfg.equipmentEnabled);
+#endif
+
+            StaticJsonDocument<512> ack;
+            ack["cmd_ack"] = "set_ble";
+            ack["command_id"] = commandId;
+            ack["ok"] = ok;
+            ack["detail"] = detail;
+            JsonObject ble = ack.createNestedObject("ble");
+            ble["scanner"] = cfg.scannerEnabled;
+            ble["beacon"] = cfg.beaconEnabled;
+            ble["relay"] = cfg.relayEnabled;
+            ble["equipment"] = cfg.equipmentEnabled;
+            ble["scan_interval_ms"] = cfg.scanIntervalMs;
+            ble["scan_duration_s"] = cfg.scanDurationS;
+            ble["rssi_threshold"] = cfg.rssiThreshold;
+            ble["raw_mac_enabled"] = cfg.rawMacEnabled;
+            ble["identity_mode"] = cfg.identityMode;
+            ble["site_namespace"] = cfg.siteNamespace;
+            String json;
+            serializeJson(ack, json);
+            mqttClient.publishStatus(json.c_str());
+            StatusLed::triggerMessageFlash();
+            debugPrintf(ok ? "INFO" : "WARN", "CFG", "BLE desired-state: %s", detail.c_str());
+            return;
+        }
 #ifndef FORGEKEY_DISABLE_BLE_EQUIPMENT
         if (strcmp(cmd, "set_equipment") == 0) {
             if (BleEquipment::setTagsFromJson(payload, length)) {
@@ -730,6 +803,8 @@ void setup() {
         String earlyMac = WiFi.macAddress();
         debugPrintf("INFO", "MAIN", "WiFi.macAddress() (pre-connect): %s", earlyMac.c_str());
     }
+
+    ble_desired_state::begin();
 
     // Capability detection runs before WiFi: pure hardware probes. Any
     // capability whose detect() returns true gets setup() called immediately
