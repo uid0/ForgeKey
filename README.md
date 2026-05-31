@@ -46,6 +46,9 @@ ForgeKey is based off of the adaptable ESP32 series of chips.
 - [LOCK_DEVICE.md](LOCK_DEVICE.md) — cabinet-lock build on ESP32-C6 / ESP-IDF: state machine, MQTT protocol, hardware wiring, embedded web page.
 - [esp32c6-lock/README.md](esp32c6-lock/README.md) — ESP-IDF-specific build, flash, and project-layout notes for the cabinet-lock firmware.
 - [docs/OTA_DEPLOYMENT.md](docs/OTA_DEPLOYMENT.md) — operator walkthrough for shipping new firmware (signing-key setup, build, upload via OMS, troubleshooting).
+- [docs/INSTALLATION.md](docs/INSTALLATION.md) — QR-code onboarding payloads and install checklists for each hardware variant.
+- [docs/STATUS_SEMANTICS.md](docs/STATUS_SEMANTICS.md) — common LED/status state semantics across device classes.
+- [docs/OPERATOR_RUNBOOK.md](docs/OPERATOR_RUNBOOK.md) — commissioning, support-mode, degraded-device, OTA, and retirement workflows.
 - [docs/VERIFICATION_LADDER.md](docs/VERIFICATION_LADDER.md) — practical verification ladder from host tests through simulator, firmware build, CI, and hardware smoke evidence.
 - [docs/FLEET_MANAGEMENT_TODO.md](docs/FLEET_MANAGEMENT_TODO.md) — phased backlog for completing best-in-class ESP32 fleet management.
 - [docs/DEVICE_TWIN.md](docs/DEVICE_TWIN.md) — desired/reported state contract for fleet configuration drift management.

@@ -51,6 +51,14 @@
         "type": "object",
         "additionalProperties": true
       }
+    },
+    "diagnostics": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "support_mode": {
+      "type": "object",
+      "additionalProperties": true
     }
   },
   "required": [
