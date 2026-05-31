@@ -25,9 +25,16 @@ public:
     // True if the device has already stored a successful enrollment response.
     bool isProvisioned() const;
 
-    // Wipe stored credentials. Used when factory-resetting or when the
-    // server tells us our identity is invalid (rare).
+    // Wipe stored identity credentials. Used when re-enrolling or when the
+    // server tells us our identity is invalid (rare). Leaves bootstrap token
+    // and WiFi profiles intact.
     void clear();
+
+    // Wipe local lifecycle credentials from NVS. When wipeBootstrapToken is
+    // true, the short-lived bootstrap token override is also removed. When
+    // wipeWifiProfiles is true, known ForgeKey WiFi profile namespaces are
+    // erased too (the caller should also reset the WiFi driver credentials).
+    bool wipeCredentials(bool wipeBootstrapToken, bool wipeWifiProfiles);
 
     // Returns the cached credentials. Only meaningful after isProvisioned().
     DeviceCredentials credentials() const;

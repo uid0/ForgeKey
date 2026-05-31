@@ -224,35 +224,119 @@ wiping hardware identity. OMS should:
 4. Mint a new one-time claim code and update the support/claim record; apply a
    new physical label if the old claim code was exposed.
 
-### Retire flow
+### Fleet lifecycle states after deployment
 
-Use retire when a device is lost, scrapped, or permanently removed:
+OMS owns the authoritative lifecycle state, but firmware mirrors terminal or
+identity-changing transitions locally so a recovered device cannot keep using
+stale credentials. The post-deployment states are:
 
-1. OMS marks the device and manufacturing record `retired`.
-2. OMS revokes the client certificate, MQTT ACLs, pending bootstrap tokens,
-   unused claim codes, and OTA targeting.
-3. If the device later connects, OMS rejects MQTT/HTTPS auth and may publish a
-   final signed command telling firmware to clear credentials before access is
-   fully disabled.
-4. Retired devices require a new manufacturing record and physical inspection
-   before they can re-enter service.
+| State | Meaning | Device behavior | OMS requirements |
+|-------|---------|-----------------|------------------|
+| `active` | Claimed or claimable device with a valid client certificate and MQTT policy | Normal telemetry, OTA, command, and photo/lock behavior | Maintain current owner/site/asset bindings, certificate status, MQTT ACLs, and OTA target eligibility |
+| `transfer_pending` | Current owner is releasing the device to another owner/site | Continue reporting, but OMS should restrict commands to transfer-safe operations | Record releasing actor, new/rotated claim code, old/new owner intent, and any ACL quarantine |
+| `transferred` | Device has moved to the new owner/site/asset | Use existing cert only if OMS policy allows the new site, otherwise accept `reprovision` | Audit old owner, new owner, actor, timestamp, MAC/device id, claim code rotation, and policy changes |
+| `retired` | Device is scrapped or permanently removed while still reachable | On signed `retire`, publish final retained offline state, erase device identity credentials, keep WiFi/bootstrap for possible bench diagnostics, and reboot unprovisioned | Revoke certificate, MQTT ACLs, bootstrap tokens, claim codes, and OTA targeting; retain audit evidence permanently |
+| `decommissioned` | Device has been intentionally taken out of service and should not rejoin without refurbish | Same firmware action as `retire`, with OMS recording the softer business reason | Same revocation/audit as retire; include disposition and expected storage/scrap location |
+| `lost_stolen` | Device is missing or suspected hostile | If online, accept only signed lifecycle/remediation commands, publish final retained `lost_stolen`/offline state if possible, then erase identity | Immediately revoke cert/ACLs/tokens/claim codes, disable OTA, alert operators, and require incident audit fields |
+| `factory_reset` | Device is being refurbished and all local credentials should be removed | On signed `factory_reset`, publish final retained offline state, erase device cert/key/topics/command key/bootstrap override and WiFi profiles, reset WiFi driver creds, and reboot into captive portal/enrollment | Revoke old cert, mint a fresh bootstrap token/claim code only after physical custody is verified, and link old/new credential lineage |
+| `reprovisioning` | Device should keep local WiFi but obtain a fresh OMS identity | On signed `reprovision`, publish final retained offline state, erase device cert/key/topics/command key, retain WiFi and `prov_tok`, and reboot into enrollment | Revoke old cert after final state/ack when possible, issue a short-lived bootstrap token, and audit reason/actor |
 
-### Factory-reset flow
+Firmware commands are verbs (`retire`, `factory_reset`, `reprovision`); OMS may
+map business states such as `decommissioned` or `lost_stolen` to `retire` when
+the desired on-device result is identity wipe plus offline retention.
 
-A factory reset is for refurbishing or recovering a device that should enroll
-again:
+### Signed lifecycle commands
 
-1. Operator initiates reset in OMS or via a signed local/service command.
-2. Firmware calls `provisioning.clear()` / `provisioning_clear()`, wiping
-   `dev_id`, MQTT topics, client certificate, private key, command public key,
-   broker policy, and lock asset ID where present.
-3. The reset deliberately preserves `boots` and `prov_tok` so a freshly minted
-   short-lived bootstrap token can survive re-enrollment. Manufacturing may
-   erase all NVS if a full refurbish requires removing WiFi and counters too.
-4. OMS revokes the old certificate and mints a new per-device bootstrap token
-   and claim code bound to the same MAC/class (or to a replacement record).
-5. Device reboots, runs enrollment, posts a new CSR/public key, and stores the
-   newly signed certificate.
+The per-device command topic (`forgekey/<mac>/command`) now accepts these
+lifecycle-changing commands after the same signed command envelope validation
+used by other OMS commands:
+
+```json
+{
+  "cmd": "reprovision",
+  "command_id": "oms-command-uuid",
+  "issued_at": "2026-05-31T12:00:00Z",
+  "expires_at": "2026-05-31T12:05:00Z",
+  "nonce": "single-use-random",
+  "actor": "oms-user-or-service-id",
+  "signature": "base64url-raw-es256-signature"
+}
+```
+
+`retire`, `factory_reset`, and `reprovision` require a non-empty `actor`,
+`command_id`, `nonce`, validity window, and either a detached signature over the
+canonical envelope or a signed JWT. Devices reject stale, future-dated, replayed,
+wrong-device, or unsigned lifecycle commands before any credentials are erased.
+
+Before wiping credentials, firmware best-effort publishes a retained final state
+on `forgekey/<mac>/state` with `online:false`, `lifecycle_state`, `reason`,
+`command_id`, `actor`, and clock fields. OMS should wait for this retained state
+or command ack when the device is online, then revoke credentials. If the device
+is already offline, OMS must revoke immediately and mark the final-state publish
+as not observed in the audit record.
+
+### Transfer / unclaim flow
+
+Use transfer when a working device should move to a different owner without
+necessarily wiping hardware identity. OMS should:
+
+1. Require authenticated approval from the releasing owner and, when known, the
+   receiving owner/site administrator.
+2. Put the device in `transfer_pending`, remove site-specific ACLs, and rotate
+   the human claim code.
+3. Decide whether the current client certificate may survive in a quarantine
+   policy. If not, send signed `reprovision` while the device is still online.
+4. Record old owner/site/asset, new owner/site/asset, actor(s), timestamps, MAC,
+   device id, manufacturing record ID, claim-code rotation, and whether a final
+   retained offline/reprovisioning state was observed.
+5. Complete to `transferred` only after the new owner claims the rotated code
+   and the device reports under the new policy.
+
+### Retire, decommission, and lost/stolen flows
+
+Use these states when a device must not continue operating under its current
+identity:
+
+1. OMS records the requested terminal state (`retired`, `decommissioned`, or
+   `lost_stolen`) with actor, reason, timestamp, MAC, device id, owner/site,
+   manufacturing record ID, and evidence/ticket reference.
+2. If the device is online and still trusted enough to receive commands, OMS
+   sends signed `retire` and waits briefly for the command ack or retained final
+   offline/decommissioned state.
+3. Firmware erases `dev_id`, MQTT topics, client certificate, private key,
+   command public key, broker policy, and lock `asset_id` where present. WiFi
+   credentials and `prov_tok` are retained so a bench can still inspect or
+   recover the unit without exposing the retired device identity.
+4. OMS revokes the client certificate, MQTT ACLs, pending bootstrap tokens,
+   unused claim codes, OTA targeting, photo upload authorization, and command
+   eligibility. For lost/stolen devices, revocation happens immediately even if
+   the final state was not observed.
+5. A retired/decommissioned/lost-stolen device may re-enter service only after
+   physical inspection, new audit disposition, and explicit creation or reset of
+   the manufacturing/bootstrap record.
+
+### Factory-reset and reprovision flows
+
+A signed `factory_reset` is for refurbishing a device that should forget local
+network and bootstrap state. A signed `reprovision` is a lighter identity reset
+that keeps WiFi and the current NVS bootstrap token override.
+
+1. Operator initiates the command in OMS; OMS signs the command envelope with a
+   short expiry and unique nonce.
+2. Firmware publishes the final retained offline state while the old certificate
+   still works, then wipes local NVS credentials:
+   - `reprovision` / `retire`: erase `dev_id`, MQTT topics, client certificate,
+     private key, command public key, broker policy, and lock `asset_id`; retain
+     `boots`, WiFi profiles, and `prov_tok`.
+   - `factory_reset`: erase the same identity keys plus `prov_tok` and saved
+     WiFi credentials/profiles, then reset ESP WiFi driver credentials.
+3. OMS revokes the old certificate and mints any replacement bootstrap token or
+   claim code only after the reset is authorized.
+4. Device reboots. `reprovision` can enroll immediately using retained WiFi and
+   active bootstrap token. `factory_reset` starts the captive portal before
+   enrollment.
+5. OMS links old and new credential IDs, CSR fingerprints, command ids, and
+   observed final-state/ack telemetry in the audit log.
 
 ### Re-enrollment trigger
 
@@ -434,10 +518,18 @@ continue to use the default development NVS partition. See
 | `b_tls` | bool | Whether the MQTT broker policy requires TLS |
 | `prov_tok` | str | Short-lived/per-device bootstrap token override (overrides compile-time default) |
 
-A factory reset (re-enrollment) is `provisioning.clear()` from the field —
-or an over-the-air firmware that wipes the credential keys. `clear()`
-deliberately preserves `boots` and `prov_tok` so a freshly issued bootstrap
-token survives re-enrollment.
+Field lifecycle commands call `provisioning.clear()` or the lower-level
+credential wipe helper. `clear()` deliberately preserves `boots` and `prov_tok`
+so a freshly issued bootstrap token survives `reprovision`; signed
+`factory_reset` additionally removes `prov_tok` and saved WiFi profiles so the
+unit returns to captive-portal onboarding.
+
+Additional namespaces used by lifecycle support:
+
+| Namespace | Keys | Description |
+|-----------|------|-------------|
+| `fk_lifecycle` | `state` | Last local lifecycle transition such as `retired`, `reprovisioning`, or `factory_reset` for bench diagnostics after reboot. |
+| `fk_wifi` / `wifi_creds` | build-specific WiFi profile keys | Saved WiFi credentials; retained for `retire`/`reprovision`, wiped for `factory_reset`. |
 
 ## Bootstrap token rotation
 
@@ -468,6 +560,17 @@ quickly. `valid_after` is parsed and logged but the device does not enforce it
 - **Per-device auth**: each device generates its own P-256 private key and CSR.
   OMS signs the CSR and returns a unique client certificate used for MQTT/HTTPS
   authentication thereafter.
+- **Signed lifecycle commands**: `retire`, `factory_reset`, and
+  `reprovision` use the OMS command public key, a unique `command_id`/`nonce`,
+  `actor`, and `issued_at`/`expires_at` envelope. Firmware rejects replayed or
+  expired commands and publishes a retained final offline lifecycle state before
+  wiping credentials when it still has MQTT access.
+- **OMS revocation and audit**: OMS must revoke the old client certificate, MQTT
+  ACLs, bootstrap tokens, claim codes, OTA targeting, upload permissions, and
+  command eligibility for terminal or identity-reset states. Audit records must
+  include actor, reason, command id, timestamps, MAC, device id, manufacturing
+  record, owner/site/asset, credential serial/fingerprint, revocation time, and
+  whether final retained state/ack was observed.
 - **OTA integrity + authenticity**:
   * SHA-256 of the downloaded image must match the dispatch payload.
   * ECDSA(P-256) signature over the same digest must verify against the
