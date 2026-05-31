@@ -33,6 +33,46 @@ unexpectedly:
 { "online": false, "reason": "unexpected_disconnect" }
 ```
 
+## Mandatory command envelope
+
+Every message published to `forgekey/<mac>/command` MUST be a signed JSON
+object with these envelope fields plus any command-specific fields:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `cmd` | yes | Command verb, e.g. `restart`, `identify`, `blink`, `capture`, `status`, `unlock`, or a future capability verb. |
+| `command_id` | yes | OMS-generated unique ID for this command. Devices include it in acks and reject replayed IDs. |
+| `issued_at` | yes | UTC issue time as Unix epoch seconds or RFC 3339 `YYYY-MM-DDTHH:MM:SSZ`. |
+| `expires_at` | yes | UTC expiry time as Unix epoch seconds or RFC 3339. Devices reject expired envelopes. |
+| `nonce` | yes | Per-command random value. Devices reject replayed nonces. |
+| `actor` | yes | OMS user/service identity that authorized the command. |
+| `jwt` | conditionally | ES256 command JWT signed by the OMS command key. Required unless `signature` is present. |
+| `signature` | conditionally | Detached ES256 signature. Required unless `jwt` is present. The detached signing input is the UTF-8 string `cmd\ncommand_id\nissued_at\nexpires_at\nnonce\nactor`. |
+
+The command JWT MUST bind at least `cmd`, `command_id` (or `jti`), `nonce`,
+and `actor` (or `sub`) to the envelope. It SHOULD also include `mac` (or
+`device`) and `exp`. Devices verify JWTs and detached signatures against the
+OMS command public key provisioned by enrollment, falling back to the compiled
+key only when no provisioned key is present.
+
+Example `restart` command envelope:
+
+```json
+{
+  "cmd": "restart",
+  "command_id": "01JZ6Q9NNAD8W8P8ZC2JF9M3VT",
+  "issued_at": "2026-05-31T19:20:00Z",
+  "expires_at": "2026-05-31T19:20:30Z",
+  "nonce": "2f31f06cf7b44b0e9d8076d23b77d7a9",
+  "actor": "user:ops@example.com",
+  "jwt": "<es256-command-jwt>"
+}
+```
+
+Devices maintain a small RAM/NVS replay cache for recent `command_id` and
+`nonce` values. A reboot does not allow immediate replay of the last accepted
+commands.
+
 ## Common ack shape
 
 Every command replies on the status topic with:
@@ -50,10 +90,24 @@ Unknown commands receive:
 { "cmd_ack": "<original cmd>", "error": "unknown_command" }
 ```
 
+Malformed, unauthenticated, expired, or replayed envelopes receive a structured
+negative ack when the device can parse enough JSON to publish one:
+
+```json
+{ "cmd_ack": "<original cmd or empty>", "command_id": "<if present>", "ok": false, "error": "expired" }
+```
+
+`error` values include `parse_error`, `missing_envelope_field`,
+`missing_authenticator`, `invalid_timestamp`, `issued_in_future`, `expired`,
+`replay_detected`, `malformed_jwt`, `jwt_claim_mismatch`, `wrong_device`,
+`invalid_signature`, and `invalid_token`.
+
 Silent drops are explicitly avoided — an OMS UI seeing no ack indicates a
 broker/network problem, not a malformed command.
 
 ## Commands
+
+The examples below show the command-specific fields for readability. Every published command MUST also include the mandatory envelope fields described above.
 
 ### `restart`
 

@@ -72,6 +72,11 @@ bool lock_state_handle_unlock(const char* token, long timestamp);
 bool lock_state_validate_signed_command(const char* token, long timestamp,
                                         const char* expected_cmd);
 
+/* Validate a detached base64url-encoded ES256 raw signature (r||s) over an
+ * already-canonicalized command envelope string. */
+bool lock_state_validate_command_signature(const char* signing_input,
+                                           const char* signature_b64url);
+
 /* Get MAC address string (caller must free). */
 char* lock_state_get_mac_address(void);
 

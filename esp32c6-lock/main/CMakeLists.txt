@@ -9,6 +9,7 @@ idf_component_register(
          "web_server.c"
          "ota_update.c"
          "credential_rotation.c"
+         "command_validation.c"
          "firmware_verify.c"
     INCLUDE_DIRS "."
     REQUIRES 
