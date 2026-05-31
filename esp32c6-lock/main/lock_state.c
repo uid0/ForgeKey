@@ -5,6 +5,7 @@
  */
 
 #include "lock_state.h"
+#include "watchdog_manager.h"
 #include "lock_config.h"
 #include "device_config.h"
 #include "provisioning.h"
@@ -499,6 +500,7 @@ void lock_state_tick(void) {
     if (g_solenoid_active && (now - g_solenoid_start_ms >= FORGEKEY_LOCK_SOLENOID_PULSE_MS)) {
         gpio_set_level(FORGEKEY_LOCK_SOLENOID_PIN, 0);
         g_solenoid_active = false;
+        forgekey_watchdog_resume();
         ESP_LOGI(TAG, "Solenoid pulse complete");
     }
 
@@ -644,6 +646,7 @@ bool lock_state_handle_unlock(const char* token, long timestamp) {
     /* Valid signed command: pulse the solenoid */
     g_solenoid_start_ms = (uint32_t)(esp_timer_get_time() / 1000);
     g_solenoid_active = true;
+    forgekey_watchdog_suspend("lock_actuation");
     gpio_set_level(FORGEKEY_LOCK_SOLENOID_PIN, FORGEKEY_LOCK_SOLENOID_ACTIVE);
 
     /* Transition to UNLOCKED */
@@ -661,6 +664,7 @@ bool lock_state_set_lockout(bool enabled) {
         if (g_solenoid_active) {
             gpio_set_level(FORGEKEY_LOCK_SOLENOID_PIN, 0);
             g_solenoid_active = false;
+            forgekey_watchdog_resume();
         }
         g_state = LOCK_STATE_LOCKOUT;
         g_last_trigger = LOCK_TRIGGER_LOCKOUT;
@@ -700,6 +704,7 @@ bool lock_state_handle_emergency_unlock(void) {
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
     g_solenoid_start_ms = now;
     g_solenoid_active = true;
+    forgekey_watchdog_suspend("lock_actuation");
     gpio_set_level(FORGEKEY_LOCK_SOLENOID_PIN, FORGEKEY_LOCK_SOLENOID_ACTIVE);
     g_state = LOCK_STATE_UNLOCKED;
     g_state_start_ms = now;

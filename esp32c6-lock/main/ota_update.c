@@ -6,6 +6,7 @@
 
 #include "ota_update.h"
 #include "firmware_verify.h"
+#include "watchdog_manager.h"
 #include "oms_ca.h"
 #include "device_config.h"
 #include "cJSON.h"
@@ -322,12 +323,14 @@ static const char* ota_state_name(esp_ota_img_states_t state) {
 }
 
 static void ota_store_previous_version(const char* previous_version) {
+    forgekey_watchdog_suspend("ota_nvs_write");
     nvs_handle_t nvs;
     if (nvs_open("ota", NVS_READWRITE, &nvs) == ESP_OK) {
         nvs_set_str(nvs, "prev_ver", previous_version ? previous_version : "");
         nvs_commit(nvs);
         nvs_close(nvs);
     }
+    forgekey_watchdog_resume();
 }
 
 static void ota_load_previous_version(char* out, size_t out_len) {
@@ -484,12 +487,15 @@ bool ota_apply(const char* url, const char* sha256, const char* signature,
     int last_progress = 0;
     uint8_t buf[1024];
 
+    forgekey_watchdog_suspend("ota_flash_write");
+
     while (received < content_length) {
         int n = esp_http_client_read(http_client, (char*)buf, sizeof(buf));
         if (n <= 0) {
             if (esp_http_client_is_complete_data_transfer(http_client)) {
                 break;
             }
+            forgekey_watchdog_mark_healthy(FORGEKEY_WATCHDOG_OTA);
             vTaskDelay(10 / portTICK_PERIOD_MS);
             continue;
         }
@@ -501,12 +507,14 @@ bool ota_apply(const char* url, const char* sha256, const char* signature,
             esp_http_client_cleanup(http_client);
             esp_https_ota_abort(https_ota_handle);
             if (status_cb) status_cb("failed", version, -1, "flash_write_failed");
+            forgekey_watchdog_resume();
             s_in_progress = false;
             return false;
         }
 
         mbedtls_sha256_update(&sha_ctx, buf, n);
         received += n;
+        forgekey_watchdog_mark_healthy(FORGEKEY_WATCHDOG_OTA);
 
         int pct = (int)((received * 100) / content_length);
         if (pct >= last_progress + 10 && pct < 100) {
@@ -531,6 +539,7 @@ bool ota_apply(const char* url, const char* sha256, const char* signature,
         ESP_LOGE(TAG, "OTA: SHA-256 mismatch (got %s, expected %s)", actual_hex, sha256);
         esp_https_ota_abort(https_ota_handle);
         if (status_cb) status_cb("failed", version, -1, "sha256_mismatch");
+        forgekey_watchdog_resume();
         s_in_progress = false;
         return false;
     }
@@ -542,6 +551,7 @@ bool ota_apply(const char* url, const char* sha256, const char* signature,
         ESP_LOGE(TAG, "OTA: signature is not valid base64");
         esp_https_ota_abort(https_ota_handle);
         if (status_cb) status_cb("failed", version, -1, "bad_base64_signature");
+        forgekey_watchdog_resume();
         s_in_progress = false;
         return false;
     }
@@ -550,6 +560,7 @@ bool ota_apply(const char* url, const char* sha256, const char* signature,
         ESP_LOGE(TAG, "OTA: signature verification failed");
         esp_https_ota_abort(https_ota_handle);
         if (status_cb) status_cb("failed", version, -1, "signature_invalid");
+        forgekey_watchdog_resume();
         s_in_progress = false;
         return false;
     }
@@ -560,6 +571,7 @@ bool ota_apply(const char* url, const char* sha256, const char* signature,
 
     /* Finalize OTA and reboot */
     esp_https_ota_finish(https_ota_handle);
+    forgekey_watchdog_resume();
 
     if (status_cb) status_cb("rebooting", version, 100, NULL);
     ESP_LOGI(TAG, "OTA: %s installed, rebooting", version);

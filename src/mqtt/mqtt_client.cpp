@@ -8,6 +8,7 @@
 #include "wifi_setup/captive.h"
 #include "boards/board_manifest.h"
 #include "power/power_manager.h"
+#include "watchdog/watchdog_manager.h"
 #include "capabilities/registry.h"
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
@@ -900,6 +901,7 @@ void MqttClient::serviceOutboundQueue() {
 }
 
 void MqttClient::persistCriticalQueue() {
+    ForgeKeyWatchdog::CriticalSection watchdogSafeFlash("mqtt_outbox_nvs");
     nvs_handle_t handle;
     if (nvs_open(kQueueNvsNamespace, NVS_READWRITE, &handle) != ESP_OK) return;
     nvs_erase_all(handle);
@@ -996,6 +998,16 @@ bool MqttClient::subscribeConfig(MessageHandler handler) {
     Serial.printf("[MQTT] subscribeConfig: topic=%s ok=%d\n",
                   configTopic.c_str(), (int)ok);
     return ok;
+}
+
+bool MqttClient::restart() {
+    String brokerCopy = broker;
+    String certCopy = clientCertificatePem;
+    String keyCopy = clientPrivateKeyPem;
+    int portCopy = port;
+    bool tlsCopy = useTls;
+    end();
+    return begin(brokerCopy.c_str(), portCopy, certCopy.c_str(), keyCopy.c_str(), tlsCopy);
 }
 
 void MqttClient::end() {

@@ -73,6 +73,9 @@ esp_err_t mqtt_handler_publish_state_payload(const char* payload);
 /* Get the capabilities announcement topic. */
 const char* mqtt_handler_get_capabilities_topic(void);
 
+/* Restart MQTT client using the last broker and credential configuration. */
+bool mqtt_handler_restart(void);
+
 /* End MQTT client. */
 void mqtt_handler_end(void);
 
