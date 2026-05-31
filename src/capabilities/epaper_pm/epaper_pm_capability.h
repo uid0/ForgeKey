@@ -16,12 +16,13 @@
 //      `If-None-Match: <last-etag-from-NVS>`. On 304 skip the redraw;
 //      on 200 decode the PNG and push it to the panel; on 404/409
 //      paint a "display not bound" card.
-//   3. HTTP POST /api/forgekey/epaper/<display_id>/battery/ with a
-//      placeholder 100% — the SKU 6416 driver board does NOT route a
-//      battery voltage-divider line to the XIAO socket, so a real
-//      reading is impossible without a hardware mod. The endpoint
-//      stays declared on the OMS side for future device classes.
-//   4. Persist the new ETag to NVS, request deep sleep.
+//   3. Occasionally HTTP POST /api/forgekey/epaper/<display_id>/battery/
+//      with a placeholder 100% — the SKU 6416 driver board does NOT
+//      route a battery voltage-divider line to the XIAO socket, so a
+//      real reading is impossible without a hardware mod. The endpoint
+//      stays declared on the OMS side for future device classes, but the
+//      firmware skips most placeholder POSTs to save battery.
+//   4. Persist the new ETag/backoff counters to NVS, request deep sleep.
 //
 // The display_id is the same UUID the OMS admin sees on the
 // EPaperDisplay row; it's provisioned during device enrollment and
@@ -33,9 +34,9 @@
 namespace EPaperPmCapability {
 
 // Default wake interval — overridable from build flags or NVS at runtime.
-// 60 min hits a balance between freshness of the days-until-PM number
-// and battery life on the LiPo cell. Lower it for high-cycle assets
-// (e.g. machines on a 7-day filter cadence), raise it for monthly stuff.
+// 60 min is the active cadence after changed content. Repeated 304
+// unchanged responses back off from this value up to the firmware's quiet
+// cap; HTTP/network failures use a shorter exponential retry ladder.
 static constexpr uint32_t DEFAULT_WAKE_INTERVAL_MIN = 60;
 
 // Probes for the Seeed XIAO 7.5" ePaper panel. The driver board is
@@ -49,8 +50,9 @@ bool detectFn();
 // display_id from NVS, and arm the deep-sleep wake reason. Idempotent.
 void setupFn();
 
-// Runs the full wake cycle (HTTP GET image → render → POST battery →
-// deep sleep request). Designed to be called once per main loop in a
+// Runs the full wake cycle (HTTP GET image → render as needed →
+// occasional battery heartbeat → adaptive deep sleep request). Designed
+// to be called once per main loop in a
 // build that does not use the long-running tick model.
 void tickFn();
 

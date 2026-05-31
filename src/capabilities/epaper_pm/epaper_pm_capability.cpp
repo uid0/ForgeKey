@@ -40,6 +40,12 @@
 // publishes a battery-sense path or operators wire a divider onto the
 // `BAT_4V2` net by hand. Operators rely on the on-board charger LEDs
 // for visual "swap me" signalling.
+//
+// OTA note: unlike the MAC/MQTT device classes documented in
+// FORGEKEY_DEVICE.md, this ePaper build currently skips provisioning,
+// MQTT, and OTA setup in main.cpp. Adaptive wake backoff does not add
+// remote reflashing support; ePaper OTA needs a future display_id-keyed
+// HTTPS polling contract or a bounded-awake MQTT path.
 
 #if defined(FORGEKEY_EPAPER) && !defined(FORGEKEY_DISABLE_EPAPER)
 
@@ -54,6 +60,7 @@
 #include <esp_random.h>
 #include <esp_sleep.h>
 #include <qrcode.h>
+#include <stdint.h>
 
 // Seeed_GFX picks up the panel driver (UC8179) and the XIAO socket
 // pin map from BOARD_SCREEN_COMBO=502 + USE_XIAO_EPAPER_DRIVER_BOARD
@@ -75,6 +82,10 @@ namespace {
 constexpr const char *kNvsNamespace = "epaper";
 constexpr const char *kNvsKeyDisplayId = "did";
 constexpr const char *kNvsKeyEtag = "etag";
+constexpr const char *kNvsKeyUnchangedCount = "unch";
+constexpr const char *kNvsKeyFailureCount = "fail";
+constexpr const char *kNvsKeyBatteryPostSkips = "bskip";
+constexpr const char *kNvsKeyWakeIntervalMin = "wake_min";
 
 // Panel geometry. The Seeed_GFX driver reports these too, but they're
 // the cleanest place to put the size assumptions the QR / PNG paint
@@ -87,6 +98,22 @@ constexpr int kPanelHeight = 480;
 // above the high-water mark and well inside the ESP32-C3's 320KB SRAM.
 // Capping prevents a runaway response from exhausting the heap.
 constexpr size_t kMaxPngBytes = 65536;
+
+// Adaptive cadence. ePaper keeps its image with no power, so repeated
+// unchanged wakes should decay toward a quiet polling interval instead
+// of spending battery on hourly WiFi + HTTP sessions forever.
+constexpr uint32_t kMinWakeIntervalMin = 5;
+constexpr uint32_t kMaxQuietWakeIntervalMin = 12 * 60;
+constexpr uint32_t kErrorBaseWakeIntervalMin = 15;
+constexpr uint32_t kMaxErrorWakeIntervalMin = 4 * 60;
+constexpr uint32_t kSetupRetryWakeIntervalMin = 5;
+constexpr uint32_t kRetiredWakeIntervalMin = 12 * 60;
+
+// The SKU 6416 board cannot report real battery voltage, so the battery
+// endpoint is a low-value heartbeat for this hardware. Send it occasionally
+// instead of paying for a second HTTP request on every wake. Default to this
+// threshold on new firmware so upgraded panels report once, then decay.
+constexpr uint32_t kBatteryPostEveryWakeCycles = 24;
 
 // QR code parameters. Version 5 (37x37 modules) at ECC level M holds
 // up to 106 bytes — fits our typical bind URL of ~90 chars with
@@ -109,6 +136,10 @@ EPaper g_panel;
 // what stage we were in for log / telemetry purposes.
 String g_displayId;
 String g_lastEtag;
+uint32_t g_consecutiveUnchanged = 0;
+uint32_t g_consecutiveFailures = 0;
+uint32_t g_batteryPostSkips = kBatteryPostEveryWakeCycles;
+uint32_t g_configuredWakeIntervalMin = DEFAULT_WAKE_INTERVAL_MIN;
 bool g_ranThisBoot = false;
 
 // PNG-decode callback can't capture state, so the decoder writes
@@ -416,10 +447,33 @@ bool postBattery(uint8_t percent) {
 
 // ---- NVS + sleep ---------------------------------------------------
 
-void persistEtag() {
+uint32_t clampWakeInterval(uint32_t minutes) {
+    if (minutes < kMinWakeIntervalMin) {
+        return kMinWakeIntervalMin;
+    }
+    return minutes;
+}
+
+uint32_t saturatingDoubledInterval(uint32_t baseMinutes,
+                                   uint32_t exponent,
+                                   uint32_t maxMinutes) {
+    uint32_t minutes = baseMinutes;
+    for (uint32_t i = 0; i < exponent && minutes < maxMinutes; ++i) {
+        if (minutes > maxMinutes / 2) {
+            return maxMinutes;
+        }
+        minutes *= 2;
+    }
+    return minutes > maxMinutes ? maxMinutes : minutes;
+}
+
+void persistWakeState() {
     Preferences prefs;
     prefs.begin(kNvsNamespace, /*readonly=*/false);
     prefs.putString(kNvsKeyEtag, g_lastEtag);
+    prefs.putUInt(kNvsKeyUnchangedCount, g_consecutiveUnchanged);
+    prefs.putUInt(kNvsKeyFailureCount, g_consecutiveFailures);
+    prefs.putUInt(kNvsKeyBatteryPostSkips, g_batteryPostSkips);
     prefs.end();
 }
 
@@ -428,13 +482,77 @@ void loadFromNvs() {
     prefs.begin(kNvsNamespace, /*readonly=*/true);
     g_displayId = prefs.getString(kNvsKeyDisplayId, String(""));
     g_lastEtag = prefs.getString(kNvsKeyEtag, String(""));
+    g_consecutiveUnchanged = prefs.getUInt(kNvsKeyUnchangedCount, 0);
+    g_consecutiveFailures = prefs.getUInt(kNvsKeyFailureCount, 0);
+    g_batteryPostSkips = prefs.getUInt(kNvsKeyBatteryPostSkips,
+                                       kBatteryPostEveryWakeCycles);
+    g_configuredWakeIntervalMin = clampWakeInterval(
+        prefs.getUInt(kNvsKeyWakeIntervalMin, DEFAULT_WAKE_INTERVAL_MIN));
     prefs.end();
 }
 
-void requestDeepSleep() {
-    uint32_t minutes = DEFAULT_WAKE_INTERVAL_MIN;
-    // TODO: read FORGEKEY_EPAPER_WAKE_INTERVAL_MINUTES from NVS so the
-    // operator dashboard can tune cadence per panel without a reflash.
+uint32_t nextWakeIntervalForResult(const char *result) {
+    if (strcmp(result, "ok") == 0) {
+        g_consecutiveUnchanged = 0;
+        g_consecutiveFailures = 0;
+        return g_configuredWakeIntervalMin;
+    }
+    if (strcmp(result, "unchanged") == 0) {
+        g_consecutiveFailures = 0;
+        const uint32_t exponent = g_consecutiveUnchanged;
+        if (g_consecutiveUnchanged < UINT32_MAX) {
+            ++g_consecutiveUnchanged;
+        }
+        return saturatingDoubledInterval(g_configuredWakeIntervalMin,
+                                         exponent,
+                                         kMaxQuietWakeIntervalMin);
+    }
+    if (strcmp(result, "bind") == 0) {
+        g_consecutiveUnchanged = 0;
+        g_consecutiveFailures = 0;
+        return kSetupRetryWakeIntervalMin;
+    }
+    if (strcmp(result, "retired") == 0) {
+        g_consecutiveUnchanged = 0;
+        g_consecutiveFailures = 0;
+        return kRetiredWakeIntervalMin;
+    }
+
+    g_consecutiveUnchanged = 0;
+    const uint32_t exponent = g_consecutiveFailures;
+    if (g_consecutiveFailures < UINT32_MAX) {
+        ++g_consecutiveFailures;
+    }
+    return saturatingDoubledInterval(kErrorBaseWakeIntervalMin,
+                                     exponent,
+                                     kMaxErrorWakeIntervalMin);
+}
+
+bool isBatteryHeartbeatEligible(const char *result) {
+    // Only spend the extra request after a successful image check. If the
+    // GET failed, a second POST is likely to fail too and costs battery
+    // without improving the displayed state. Bind/retired panels also do
+    // not need placeholder battery telemetry while waiting for staff action.
+    return strcmp(result, "ok") == 0 || strcmp(result, "unchanged") == 0;
+}
+
+bool shouldPostBatteryThisWake(const char *result) {
+    if (!isBatteryHeartbeatEligible(result)) {
+        return false;
+    }
+    if (g_batteryPostSkips >= kBatteryPostEveryWakeCycles) {
+        return true;
+    }
+    ++g_batteryPostSkips;
+    return g_batteryPostSkips >= kBatteryPostEveryWakeCycles;
+}
+
+void markBatteryPostAttempted() {
+    g_batteryPostSkips = 0;
+}
+
+void requestDeepSleep(uint32_t minutes) {
+    minutes = clampWakeInterval(minutes);
     const uint64_t microseconds = static_cast<uint64_t>(minutes) * 60ULL * 1000000ULL;
     Serial.printf("[epaper] deep-sleeping for %u minute(s)\n", minutes);
     esp_sleep_enable_timer_wakeup(microseconds);
@@ -483,11 +601,25 @@ void tickFn() {
     // current state (paintFromPng already flushed on success; 304 and
     // transport errors keep the prior render).
 
+    const uint32_t nextWakeMinutes = nextWakeIntervalForResult(result);
+
     // See header — no ADC line on this board variant; placeholder until
-    // either Seeed publishes a path or somebody wires a divider.
-    postBattery(kPlaceholderBatteryPercent);
-    persistEtag();
-    requestDeepSleep();
+    // either Seeed publishes a path or somebody wires a divider. Avoid
+    // spending an extra HTTP POST on every wake for placeholder telemetry.
+    if (shouldPostBatteryThisWake(result)) {
+        Serial.println("[epaper] posting placeholder battery heartbeat");
+        postBattery(kPlaceholderBatteryPercent);
+        markBatteryPostAttempted();
+    } else if (isBatteryHeartbeatEligible(result)) {
+        Serial.printf("[epaper] skipping battery heartbeat (%u/%u wake cycles)\n",
+                      g_batteryPostSkips,
+                      kBatteryPostEveryWakeCycles);
+    } else {
+        Serial.printf("[epaper] skipping battery heartbeat for result=%s\n", result);
+    }
+
+    persistWakeState();
+    requestDeepSleep(nextWakeMinutes);
 }
 
 }  // namespace EPaperPmCapability

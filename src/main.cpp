@@ -670,7 +670,7 @@ void setup() {
     // this device class needs.
     debugPrint("INFO", "MAIN",
                "ePaper build: skipping provisioning/MQTT/OTA setup "
-               "(HTTPS-only device class)");
+               "(HTTPS-only device class; no remote reflashing yet)");
     debugPrint("INFO", "MAIN", "Setup complete. Starting main loop...");
     return;
 #endif
