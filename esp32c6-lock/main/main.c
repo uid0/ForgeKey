@@ -53,6 +53,7 @@
 #include "boards/lock_board_manifest.h"
 #include "forgekey_time.h"
 #include "power/power_manager.h"
+#include "watchdog_manager.h"
 
 static const char* TAG = "LOCK";
 
@@ -78,12 +79,37 @@ static int current_wifi_rssi(void);
 static char s_last_command_id[72] = {0};
 static void ota_status_callback(const char* state, const char* version, int progress, const char* error);
 static void handle_lifecycle_command(const char* cmd, const char* command_id, const char* actor);
+static bool recover_subsystem(forgekey_watchdog_subsystem_t subsystem, const char* reason);
+
+static bool recover_subsystem(forgekey_watchdog_subsystem_t subsystem, const char* reason) {
+    LOCK_LOGW("Recovering subsystem %s: %s",
+              forgekey_watchdog_subsystem_name(subsystem), reason ? reason : "timeout");
+    switch (subsystem) {
+        case FORGEKEY_WATCHDOG_WIFI:
+            esp_wifi_disconnect();
+            esp_wifi_connect();
+            return true;
+        case FORGEKEY_WATCHDOG_MQTT:
+            return mqtt_handler_restart();
+        case FORGEKEY_WATCHDOG_BLE:
+        case FORGEKEY_WATCHDOG_CAMERA:
+        case FORGEKEY_WATCHDOG_SENSORS:
+            return true;
+        case FORGEKEY_WATCHDOG_LOCK_STATE_MACHINE:
+        case FORGEKEY_WATCHDOG_OTA:
+        case FORGEKEY_WATCHDOG_COUNT:
+        default:
+            return false;
+    }
+}
 
 /* Application entry point */
 void app_main(void) {
     LOCK_LOGI("ForgeKey Lock Starting...");
     LOCK_LOGI("Firmware version: %s", FORGEKEY_FIRMWARE_VERSION);
     LOCK_LOGI("ESP-IDF version: %s", esp_get_idf_version());
+    forgekey_watchdog_begin();
+    forgekey_watchdog_set_recovery_callback(recover_subsystem);
 
     /* ===== 1. NVS init ===== */
     esp_err_t ret = nvs_flash_init();
@@ -241,6 +267,8 @@ void app_main(void) {
     while (1) {
         /* Tick lock state machine */
         lock_state_tick();
+        forgekey_watchdog_mark_healthy(FORGEKEY_WATCHDOG_LOCK_STATE_MACHINE);
+        forgekey_watchdog_mark_healthy(FORGEKEY_WATCHDOG_SENSORS);
 
         /* Tick web server */
         lock_web_server_tick();
@@ -337,6 +365,7 @@ void app_main(void) {
             lock_board_manifest_add_health_json(root);
             forgekey_power_add_health_json(root, lock_board_manifest_battery_config());
             ota_add_health_json(root);
+            forgekey_watchdog_add_health_json(root);
             cJSON_AddStringToObject(root, "last_trigger", trigger_str);
             cJSON_AddStringToObject(root, "state", lock_state_state_name(lock_state_get_state()));
             cJSON_AddBoolToObject(root, "reed_closed", tel.reed_closed);
@@ -364,6 +393,7 @@ void app_main(void) {
 
         forgekey_time_tick();
         mqtt_handler_tick();
+        forgekey_watchdog_tick(mqtt_handler_is_connected());
         vTaskDelay(10 / portTICK_PERIOD_MS);
     }
 }
@@ -644,6 +674,7 @@ static void publish_status_snapshot(const char* mac_str, const char* requested_c
     lock_board_manifest_add_health_json(root);
     forgekey_power_add_health_json(root, lock_board_manifest_battery_config());
     ota_add_health_json(root);
+    forgekey_watchdog_add_health_json(root);
     forgekey_time_add_json(root);
     cJSON_AddNumberToObject(root, "free_heap", esp_get_free_heap_size());
     cJSON_AddNumberToObject(root, "rssi", current_wifi_rssi());
@@ -761,6 +792,7 @@ static void ota_status_callback(const char* state, const char* version, int prog
     lock_board_manifest_add_health_json(root);
     forgekey_power_add_health_json(root, lock_board_manifest_battery_config());
     ota_add_health_json(root);
+    forgekey_watchdog_add_health_json(root);
     forgekey_time_add_json(root);
     char* json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -819,7 +851,9 @@ static void on_firmware_dispatch(const char* topic, const uint8_t* payload, uint
     }
 
     LOCK_LOGI("Firmware dispatch: applying update");
+    forgekey_watchdog_mark_busy(FORGEKEY_WATCHDOG_OTA);
     ota_apply(url, sha256, signature, version, mandatory, ota_status_callback);
+    forgekey_watchdog_mark_idle(FORGEKEY_WATCHDOG_OTA);
     /* unreachable on success */
     LOCK_LOGW("Firmware dispatch: apply returned (failed)");
 }

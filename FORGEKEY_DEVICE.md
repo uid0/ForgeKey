@@ -400,6 +400,43 @@ valid. The only exception is a server-provided challenge/nonce flow (`auth_flow:
 comes from the signed one-time challenge plus the device replay cache instead
 of the device wall clock.
 
+
+## Watchdog and unattended-reliability expectations
+
+Every ForgeKey firmware target is expected to remain unattended for long field
+runs. The watchdog policy is therefore layered rather than a single immediate
+reboot trigger:
+
+1. **Task watchdog:** When the underlying ESP framework exposes
+   `esp_task_wdt`, the main application task is registered with a 30 second
+   task watchdog. The firmware feeds that watchdog from the main loop only
+   while no unsafe subsystem has exceeded its health deadline.
+2. **Subsystem health timers:** Firmware tracks independent monotonic health
+   timers for WiFi, MQTT, camera, OTA, BLE, sensors, and the lock state
+   machine. A subsystem marks itself healthy when it completes normal loop
+   work, has an active connection, observes sensor/state-machine progress, or
+   is intentionally busy on a long-running operation.
+3. **Local recovery before reboot:** On a health timeout the device first tries
+   the narrowest safe recovery: WiFi disconnect/reconnect for WiFi, MQTT client
+   restart for MQTT, and capability/state-machine grace windows for camera,
+   BLE, and sensor work. Only if a subsystem remains unhealthy after repeated
+   warnings does the firmware escalate to a whole-device restart.
+4. **Operator-visible telemetry:** Watchdog warnings are published to the
+   device status topic as `{"event":"watchdog_warning",...}` when MQTT is
+   available, and normal health/status telemetry includes a `watchdog` object
+   with task-WDT enablement, last reset reason, safe-guard state, per-subsystem
+   ages, warning counts, and recovery counts.
+5. **Safe guards for critical sections:** OTA flash writes, OTA metadata/NVS
+   writes, other NVS erase/write paths, and lock solenoid actuation suspend
+   aggressive watchdog escalation while they are in progress. The task watchdog
+   is still fed during these guarded windows so a legitimate long flash write or
+   lock pulse is not interrupted mid-operation. Once the critical section exits,
+   subsystem timers are refreshed and normal timeout escalation resumes.
+
+The intended operations posture is: warnings should be investigated as soon as
+OMS shows them, but a single transient radio/broker/sensor stall should recover
+without human intervention and without disturbing a safe lock or OTA state.
+
 ## OTA firmware updates
 
 OTA is dispatched over MQTT, not pulled. After enrollment the device

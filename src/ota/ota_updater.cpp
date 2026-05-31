@@ -2,6 +2,7 @@
 
 #include <ArduinoJson.h>
 #include <Update.h>
+#include "watchdog/watchdog_manager.h"
 #include <WiFiClientSecure.h>
 #include <WiFiClient.h>
 #include <WiFi.h>
@@ -373,6 +374,8 @@ bool OtaUpdater::apply(const Spec& spec) {
         return false;
     }
 
+    ForgeKeyWatchdog::CriticalSection watchdogSafeFlash("ota_flash_write");
+
     mbedtls_sha256_context sha;
     mbedtls_sha256_init(&sha);
     mbedtls_sha256_starts(&sha, /*is224=*/0);
@@ -402,6 +405,7 @@ bool OtaUpdater::apply(const Spec& spec) {
                 notify("failed", spec.version.c_str(), -1, "read_timeout");
                 return false;
             }
+            ForgeKeyWatchdog::markHealthy(ForgeKeyWatchdog::Subsystem::OTA);
             delay(5);
             continue;
         }
@@ -422,6 +426,7 @@ bool OtaUpdater::apply(const Spec& spec) {
         mbedtls_sha256_update(&sha, buf, n);
         received += n;
         lastDataMs = millis();
+        ForgeKeyWatchdog::markHealthy(ForgeKeyWatchdog::Subsystem::OTA);
 
         // Emit a status ping every ~10% of progress. Cheap (one MQTT publish)
         // and lets OMS show a meaningful progress bar without flooding the bus.

@@ -12,6 +12,7 @@ idf_component_register(
          "forgekey_time.c"
          "command_validation.c"
          "firmware_verify.c"
+         "watchdog_manager.c"
          "boards/lock_board_manifest.c"
          "power/power_manager.c"
     INCLUDE_DIRS "."

@@ -24,6 +24,7 @@
 #include "esp_timer.h"
 
 #include "mqtt_client.h"
+#include "watchdog_manager.h"
 
 static const char* TAG = "MQTT";
 
@@ -91,8 +92,12 @@ static int64_t retry_backoff_ms(uint8_t attempts) {
 }
 
 static void persist_critical_queue(void) {
+    forgekey_watchdog_suspend("mqtt_outbox_nvs");
     nvs_handle_t nvs;
-    if (nvs_open(kQueueNamespace, NVS_READWRITE, &nvs) != ESP_OK) return;
+    if (nvs_open(kQueueNamespace, NVS_READWRITE, &nvs) != ESP_OK) {
+        forgekey_watchdog_resume();
+        return;
+    }
     nvs_erase_all(nvs);
     uint8_t count = 0;
     for (size_t i = 0; i < s_outbound_count && count < MQTT_OUTBOUND_QUEUE_SIZE; ++i) {
@@ -111,6 +116,7 @@ static void persist_critical_queue(void) {
     nvs_set_u8(nvs, "count", count);
     nvs_commit(nvs);
     nvs_close(nvs);
+    forgekey_watchdog_resume();
 }
 
 static void load_critical_queue(void) {
@@ -560,6 +566,19 @@ esp_err_t mqtt_handler_publish_state_payload(const char* payload) {
 
 const char* mqtt_handler_get_capabilities_topic(void) {
     return s_capabilities_topic;
+}
+
+bool mqtt_handler_restart(void) {
+    char broker_host[sizeof(s_broker_host)];
+    char cert[sizeof(s_client_cert_pem)];
+    char key[sizeof(s_client_key_pem)];
+    snprintf(broker_host, sizeof(broker_host), "%s", s_broker_host);
+    snprintf(cert, sizeof(cert), "%s", s_client_cert_pem);
+    snprintf(key, sizeof(key), "%s", s_client_key_pem);
+    int port = s_broker_port;
+    bool use_tls = s_use_tls;
+    mqtt_handler_end();
+    return mqtt_handler_begin(broker_host, port, cert, key, use_tls);
 }
 
 void mqtt_handler_end(void) {
