@@ -13,6 +13,7 @@
 
 #include "../../mqtt/mqtt_client.h"
 #include "../../provisioning/device_config.h"
+#include "../../config/ble_desired_state.h"
 
 // Beacon advertising: 100ms on, 2460ms off (~10% duty cycle)
 #ifndef BLE_BEACON_INTERVAL_MS
@@ -37,6 +38,7 @@ namespace {
 bool g_active = false;
 bool g_continuous = false;
 bool g_enabled = true;
+unsigned long g_lastTick = 0;
 
 BLEAdvertising* pAdvertising = nullptr;
 bool g_advertising = false;
@@ -149,7 +151,10 @@ void setupFn() {
     getMajorMinor();
     buildIbeaconData();
 
-    BLEDevice::init("ForgeKey");
+    const ble_desired_state::BleConfig& cfg = ble_desired_state::current();
+    g_enabled = cfg.beaconEnabled;
+    String deviceName = String("ForgeKey-") + cfg.siteNamespace;
+    BLEDevice::init(deviceName.c_str());
 
     // Set advertising parameters
     pAdvertising = BLEDevice::getAdvertising();
@@ -162,6 +167,11 @@ void setupFn() {
 
 void tickFn() {
     unsigned long now = millis();
+    const ble_desired_state::BleConfig& cfg = ble_desired_state::current();
+    g_enabled = cfg.beaconEnabled;
+    g_lastTick = now;
+
+    if (!g_enabled && g_advertising) stopAdv();
 
     // Duty cycle: advertise for BLE_BEACON_ADV_ON_MS every BLE_BEACON_INTERVAL_MS
     if (!g_advertising && g_enabled) {
@@ -173,6 +183,18 @@ void tickFn() {
             stopAdv();
         }
     }
+}
+
+void appendHealthJson(String& out) {
+    out += "{\"status\":\"";
+    out += g_enabled ? (g_active ? "ok" : "unsupported") : "disabled";
+    out += "\",\"last_tick_age_ms\":";
+    out += String(g_lastTick ? (millis() - g_lastTick) : 0);
+    out += ",\"last_error\":null,\"metrics\":{\"advertising\":";
+    out += g_advertising ? "true" : "false";
+    out += ",\"continuous\":";
+    out += g_continuous ? "true" : "false";
+    out += "}}";
 }
 
 }  // namespace BleBeacon

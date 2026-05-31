@@ -19,6 +19,7 @@
 
 #include "../../mqtt/mqtt_client.h"
 #include "../../provisioning/device_config.h"
+#include "../../config/ble_desired_state.h"
 
 #ifndef BLE_RELAY_QUEUE_SIZE
 #define BLE_RELAY_QUEUE_SIZE 20
@@ -46,6 +47,8 @@ namespace {
 
 bool g_active = false;
 bool g_enabled = true;
+unsigned long g_lastTick = 0;
+char g_lastError[32] = {0};
 
 // Peer table
 struct Peer {
@@ -156,6 +159,7 @@ void pushToPeer(int peerIdx) {
         g_bleClient->disconnect();
         delete g_bleClient;
         g_bleClient = nullptr;
+        snprintf(g_lastError, sizeof(g_lastError), "service_missing");
         return;
     }
 
@@ -165,6 +169,7 @@ void pushToPeer(int peerIdx) {
         g_bleClient->disconnect();
         delete g_bleClient;
         g_bleClient = nullptr;
+        snprintf(g_lastError, sizeof(g_lastError), "char_missing");
         return;
     }
 
@@ -245,6 +250,8 @@ bool detectFn() {
 
 void setupFn() {
     g_active = true;
+    const ble_desired_state::BleConfig& cfg = ble_desired_state::current();
+    g_enabled = cfg.relayEnabled;
 
     BLEDevice::init("ForgeKey-Relay");
 
@@ -262,7 +269,7 @@ void setupFn() {
     advertising->setScanResponse(true);
     advertising->setMinPreferred(0x06);
     advertising->setMaxPreferred(0x0C);
-    advertising->start();
+    if (g_enabled) advertising->start();
 
     Serial.println("[CAP/ble_relay] initialized (queue_size=" + String(BLE_RELAY_QUEUE_SIZE) +
                    ", peer_timeout=" + String(BLE_RELAY_PEER_TIMEOUT_MS / 1000) + "s, msg_ttl=" +
@@ -271,6 +278,9 @@ void setupFn() {
 
 void tickFn() {
     unsigned long now = millis();
+    const ble_desired_state::BleConfig& cfg = ble_desired_state::current();
+    g_enabled = cfg.relayEnabled;
+    g_lastTick = now;
 
     // Prune stale peers
     for (int i = g_peerCount - 1; i >= 0; i--) {
@@ -309,6 +319,20 @@ void tickFn() {
             }
         }
     }
+}
+
+void appendHealthJson(String& out) {
+    out += "{\"status\":\"";
+    out += g_enabled ? (g_active ? "ok" : "unsupported") : "disabled";
+    out += "\",\"last_tick_age_ms\":";
+    out += String(g_lastTick ? (millis() - g_lastTick) : 0);
+    out += ",\"last_error\":";
+    if (g_lastError[0]) { out += "\""; out += g_lastError; out += "\""; } else { out += "null"; }
+    out += ",\"metrics\":{\"peer_count\":";
+    out += String(g_peerCount);
+    out += ",\"queue_count\":";
+    out += String(g_queueCount);
+    out += "}}";
 }
 
 }  // namespace BleRelay

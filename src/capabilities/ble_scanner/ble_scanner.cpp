@@ -16,6 +16,7 @@
 
 #include "../../mqtt/mqtt_client.h"
 #include "../../provisioning/device_config.h"
+#include "../../config/ble_desired_state.h"
 
 #ifndef BLE_SCAN_INTERVAL_MS
 #define BLE_SCAN_INTERVAL_MS 60000UL
@@ -53,6 +54,18 @@ bool g_enabled = true;
 unsigned long g_lastScan = 0;
 unsigned long g_scanStart = 0;
 bool g_scanning = false;
+unsigned long g_scanEpoch = 0;
+unsigned long g_lastTick = 0;
+uint32_t g_scanCount = 0;
+uint32_t g_filteredCount = 0;
+int g_rssiMin = 0;
+int g_rssiMax = 0;
+long g_rssiTotal = 0;
+int g_lastDeviceCount = 0;
+int g_lastRssiMin = 0;
+int g_lastRssiMax = 0;
+long g_lastRssiAvg = 0;
+char g_lastError[32] = {0};
 
 // Deduplication ring buffer: stores last N MACs with timestamps
 struct MacEntry {
@@ -67,6 +80,7 @@ int g_macRingCount = 0;
 // Current scan results
 struct BleDevice {
     char mac[13];
+    char publicId[24];
     int8_t rssi;
     bool isIbeacon;
     char uuid[37];  // 32 hex + hyphens + null
@@ -104,6 +118,23 @@ void addMacToRing(const char* mac) {
     if (g_macRingCount < BLE_DEDUP_WINDOW) {
         g_macRingCount++;
     }
+}
+
+void markFiltered(const char* reason) {
+    (void)reason;
+    g_filteredCount++;
+}
+
+void noteRssi(int rssi) {
+    if (g_deviceCount == 0) {
+        g_rssiMin = rssi;
+        g_rssiMax = rssi;
+        g_rssiTotal = rssi;
+        return;
+    }
+    if (rssi < g_rssiMin) g_rssiMin = rssi;
+    if (rssi > g_rssiMax) g_rssiMax = rssi;
+    g_rssiTotal += rssi;
 }
 
 bool isForgeKeyBeacon(const char* uuid) {
@@ -145,21 +176,26 @@ class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
         strncpy(mac, macStr.c_str(), 12);
         mac[12] = '\0';
 
-        // Filter: own MAC, RSSI threshold
-        if (g_ownMac[0] && strcmp(mac, g_ownMac) == 0) return;
-        if (advertisedDevice.getRSSI() < BLE_SCAN_RSSI_THRESHOLD) return;
-        if (g_deviceCount >= BLE_MAX_DEVICES) return;
+        const ble_desired_state::BleConfig& cfg = ble_desired_state::current();
+        int rssi = advertisedDevice.getRSSI();
 
-        // Check dedup window
-        if (macInRing(mac)) return;
+        // Filter: own MAC, RSSI threshold, policy lists, capacity, dedup window.
+        if (g_ownMac[0] && strcmp(mac, g_ownMac) == 0) { markFiltered("own_mac"); return; }
+        if (rssi < cfg.rssiThreshold) { markFiltered("rssi_threshold"); return; }
+        if (!ble_desired_state::macAllowed(mac)) { markFiltered("policy_list"); return; }
+        if (g_deviceCount >= BLE_MAX_DEVICES) { markFiltered("capacity"); return; }
+        if (macInRing(mac)) { markFiltered("dedup"); return; }
 
         addMacToRing(mac);
+        noteRssi(rssi);
 
         // Store device
         BleDevice* dev = &g_devices[g_deviceCount];
         strncpy(dev->mac, mac, 12);
         dev->mac[12] = '\0';
-        dev->rssi = advertisedDevice.getRSSI();
+        String publicId = ble_desired_state::publicDeviceId(mac, g_scanEpoch);
+        snprintf(dev->publicId, sizeof(dev->publicId), "%s", publicId.c_str());
+        dev->rssi = rssi;
         dev->isIbeacon = false;
         dev->uuid[0] = '\0';
         dev->major = 0;
@@ -204,16 +240,28 @@ void setupFn() {
     pBLEScan->setInterval(100);
     pBLEScan->setWindow(37);
 
-    Serial.printf("[CAP/ble_scanner] initialized (interval=%lus duration=%ds rssi_threshold=%d max_devices=%d)\n",
-                  (unsigned long)(BLE_SCAN_INTERVAL_MS / 1000), BLE_SCAN_DURATION_S,
-                  BLE_SCAN_RSSI_THRESHOLD, BLE_MAX_DEVICES);
+    const ble_desired_state::BleConfig& cfg = ble_desired_state::current();
+    g_enabled = cfg.scannerEnabled;
+    Serial.printf("[CAP/ble_scanner] initialized (enabled=%d interval=%lus duration=%ds rssi_threshold=%d max_devices=%d)\n",
+                  (int)g_enabled, (unsigned long)(cfg.scanIntervalMs / 1000), cfg.scanDurationS,
+                  cfg.rssiThreshold, BLE_MAX_DEVICES);
 }
 
 void tickFn() {
     unsigned long now = millis();
+    const ble_desired_state::BleConfig& cfg = ble_desired_state::current();
+    g_enabled = cfg.scannerEnabled;
+    g_lastTick = now;
+    if (!g_enabled && g_scanning) {
+        g_scanning = false;
+        BLEDevice::getScan()->stop();
+        g_lastScan = now;
+        snprintf(g_lastError, sizeof(g_lastError), "disabled_mid_scan");
+        return;
+    }
 
     // Check if scan duration has elapsed
-    if (g_scanning && (now - g_scanStart >= (BLE_SCAN_DURATION_S * 1000UL))) {
+    if (g_scanning && (now - g_scanStart >= ((unsigned long)cfg.scanDurationS * 1000UL))) {
         g_scanning = false;
         BLEDevice::getScan()->stop();
         Serial.printf("[CAP/ble_scanner] scan complete: %d devices found\n", g_deviceCount);
@@ -226,7 +274,8 @@ void tickFn() {
             for (int i = 0; i < g_deviceCount; i++) {
                 BleDevice* dev = &g_devices[i];
                 JsonObject entry = devices.createNestedObject();
-                entry["mac"] = dev->mac;
+                entry["id"] = dev->publicId;
+                if (cfg.rawMacEnabled) entry["mac"] = dev->mac;
                 entry["rssi"] = dev->rssi;
 
                 if (dev->isIbeacon) {
@@ -244,6 +293,9 @@ void tickFn() {
             }
 
             doc["count"] = g_deviceCount;
+            doc["filtered_count"] = g_filteredCount;
+            doc["identity_mode"] = cfg.rawMacEnabled ? "raw" : cfg.identityMode;
+            doc["site_namespace"] = cfg.siteNamespace;
             doc["timestamp"] = now;
 
             String json;
@@ -253,24 +305,58 @@ void tickFn() {
                 Serial.printf("[CAP/ble_scanner] published: %d devices (%u bytes)\n",
                               g_deviceCount, (unsigned)json.length());
             } else {
+                snprintf(g_lastError, sizeof(g_lastError), "publish_failed");
                 Serial.println("[CAP/ble_scanner] failed to publish BLE devices");
             }
         }
 
+        g_lastDeviceCount = g_deviceCount;
+        g_lastRssiMin = g_deviceCount ? g_rssiMin : 0;
+        g_lastRssiMax = g_deviceCount ? g_rssiMax : 0;
+        g_lastRssiAvg = g_deviceCount ? (g_rssiTotal / g_deviceCount) : 0;
+
         // Reset for next scan
         g_deviceCount = 0;
+        g_filteredCount = 0;
+        g_rssiTotal = 0;
         g_lastScan = now;
         return;
     }
 
     // Trigger scan if interval has elapsed and not currently scanning
-    if (!g_scanning && g_enabled && (now - g_lastScan >= BLE_SCAN_INTERVAL_MS)) {
+    if (!g_scanning && g_enabled && (now - g_lastScan >= cfg.scanIntervalMs)) {
         g_scanning = true;
         g_scanStart = now;
         g_deviceCount = 0;
-        BLEDevice::getScan()->start(BLE_SCAN_DURATION_S, false);
-        Serial.printf("[CAP/ble_scanner] scan started (duration=%ds)\n", BLE_SCAN_DURATION_S);
+        g_filteredCount = 0;
+        g_rssiTotal = 0;
+        g_scanEpoch = now;
+        g_scanCount++;
+        BLEDevice::getScan()->start(cfg.scanDurationS, false);
+        Serial.printf("[CAP/ble_scanner] scan started (duration=%ds)\n", cfg.scanDurationS);
     }
+}
+
+void appendHealthJson(String& out) {
+    out += "{\"status\":\"";
+    out += g_enabled ? (g_active ? "ok" : "unsupported") : "disabled";
+    out += "\",\"last_tick_age_ms\":";
+    out += String(g_lastTick ? (millis() - g_lastTick) : 0);
+    out += ",\"last_error\":";
+    if (g_lastError[0]) { out += "\""; out += g_lastError; out += "\""; } else { out += "null"; }
+    out += ",\"metrics\":{\"scan_count\":";
+    out += String(g_scanCount);
+    out += ",\"filtered_count\":";
+    out += String(g_filteredCount);
+    out += ",\"last_device_count\":";
+    out += String(g_lastDeviceCount);
+    out += ",\"rssi_min\":";
+    out += String(g_lastRssiMin);
+    out += ",\"rssi_max\":";
+    out += String(g_lastRssiMax);
+    out += ",\"rssi_avg\":";
+    out += String(g_lastRssiAvg);
+    out += "}}";
 }
 
 }  // namespace BleScanner

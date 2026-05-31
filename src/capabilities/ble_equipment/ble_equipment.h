@@ -9,6 +9,7 @@ bool isActive();
 
 // Runtime enable/disable. Returns previous state.
 bool setEnabled(bool on);
+void appendHealthJson(String& out);
 
 // Clear all equipment tags (for forget_ble command).
 void clearTags();
