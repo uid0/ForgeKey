@@ -170,9 +170,16 @@ supervisor shows locked but door is ajar).
 - `timestamp`: Server epoch seconds at JWT issue time
 
 The device validates:
-1. JWT signature matches `FORGEKEY_LOCK_JWT_SECRET`
-2. `timestamp` is within `FORGEKEY_LOCK_CMD_TIMESTAMP_TOLERANCE_S` (60s) of device clock
-3. JWT `exp` field has not passed
+1. JWT/signature authenticator matches the active OMS command public key (or the legacy lock token validator for older unlock payloads).
+2. The UTC wall clock is valid before evaluating `issued_at`, `expires_at`, `timestamp`, or JWT `exp`.
+3. `timestamp`/`issued_at` is within the configured skew window and any expiry has not passed.
+4. `command_id` and `nonce` have not already been accepted by the replay cache.
+
+If `clock_valid` is false, wall-clock signed commands are rejected with
+`clock_invalid`. A server-provided challenge/nonce flow may bypass wall-clock
+freshness only when the signed envelope includes `auth_flow: "challenge"` (or
+`"nonce"`), `challenge`, or `server_nonce`; in that case the signed one-time
+challenge and replay cache provide freshness.
 
 ### From XIAO to Django (Telemetry)
 
@@ -185,6 +192,11 @@ The device validates:
   "secure": true,
   "item_present": true,
   "uptime": 3600,
+  "clock_valid": true,
+  "ntp_synced": true,
+  "epoch_time": 1715150000,
+  "last_ntp_sync_age_s": 8,
+  "uptime_ms": 3600000,
   "firmware_version": "0.1.0",
   "build_target": "esp32c6-lock",
   "framework": "esp-idf",
@@ -206,6 +218,24 @@ The device validates:
 | `"door_close"` | Door closed and latch engaged |
 | `"alarm_timeout"` | Alarm condition cleared |
 | `"unknown"` | Default / initial |
+
+## Time requirements and clock health
+
+The ESP32-C6 lock has no trusted RTC. After WiFi connects it starts SNTP in UTC
+through `esp32c6-lock/main/forgekey_time.{h,c}` using `pool.ntp.org` and
+`time.nist.gov`. The module tracks:
+
+- `clock_valid`: epoch is plausible and the last SNTP sync age is within the
+  configured max age (default 24h).
+- `ntp_synced`: SNTP has set the wall clock at least once this boot.
+- `epoch_time`: timezone-neutral Unix epoch seconds.
+- `last_ntp_sync_age_s`: monotonic age of the last sync.
+- `uptime_ms`: monotonic uptime for state-machine timing.
+
+MQTT telemetry, status snapshots, health/OTA status, command acknowledgements,
+and `/api/status` include these fields. The lock state machine continues to use
+monotonic time for pulses, debounce, and alarms; wall-clock time is only used
+for TLS and signed-command freshness/expiry.
 
 ## Embedded Web Page
 
@@ -277,10 +307,10 @@ pio run
 1. **JWT Secret:** `FORGEKEY_LOCK_JWT_SECRET` must be changed before any
    production deployment. The default value is intentionally unsafe.
 
-2. **HMAC Verification:** The ESP32-C6 lock firmware verifies HS256 JWT
-   signatures with mbedTLS HMAC-SHA256 in `esp32c6-lock/main/lock_state.c`.
-   Valid tokens still depend on the device clock being NTP-synced because the
-   firmware enforces both timestamp tolerance and token expiry.
+2. **Signed command verification:** The ESP32-C6 lock firmware validates signed
+   command envelopes, rejects replayed `command_id`/`nonce` values, and refuses
+   wall-clock freshness checks while `clock_valid` is false unless the command
+   uses a signed server challenge/nonce flow.
 
 3. **Solenoid Safety:** The solenoid pulse is short (default 1.5s) to prevent
    coil overheating. The latch supervisor feedback ensures the bolt actually

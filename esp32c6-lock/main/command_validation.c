@@ -1,6 +1,7 @@
 #include "command_validation.h"
 
 #include "lock_state.h"
+#include "forgekey_time.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,6 +52,14 @@ static bool parse_epoch(cJSON* item, time_t* out) {
     if (!parsed || *parsed != '\0') return false;
     *out = mktime(&tm_value);
     return *out > 0;
+}
+
+static bool uses_server_challenge_flow(cJSON* doc) {
+    const char* auth_flow = json_string(doc, "auth_flow");
+    const char* challenge = json_string(doc, "challenge");
+    const char* server_nonce = json_string(doc, "server_nonce");
+    return strcmp(auth_flow, "challenge") == 0 || strcmp(auth_flow, "nonce") == 0 ||
+           nonempty(challenge) || nonempty(server_nonce);
 }
 
 static bool replay_seen(const char* command_id, const char* nonce) {
@@ -149,12 +158,21 @@ command_validation_result_t command_validation_validate(cJSON* doc, const char* 
         r.error = "invalid_timestamp";
         return r;
     }
-    time_t now = time(NULL);
-    if (expires <= issued || (now > 0 && now > expires)) {
+    const bool challenge_flow = uses_server_challenge_flow(doc);
+    time_t now = forgekey_time_epoch_now();
+    if (expires <= issued) {
         r.error = "expired";
         return r;
     }
-    if (now > 0 && issued > now + 300) {
+    if (!forgekey_time_clock_valid() && !challenge_flow) {
+        r.error = "clock_invalid";
+        return r;
+    }
+    if (forgekey_time_clock_valid() && now > expires) {
+        r.error = "expired";
+        return r;
+    }
+    if (forgekey_time_clock_valid() && issued > now + 300) {
         r.error = "issued_in_future";
         return r;
     }

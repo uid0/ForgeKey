@@ -1,6 +1,7 @@
 #include "embedded_web.h"
 #include "lock_capability.h"
 #include "lock_device.h"
+#include "../time/time_sync.h"
 #include "lock_config.h"
 #include <WebServer.h>
 #include <WiFi.h>
@@ -184,7 +185,7 @@ static void handleRoot() {
 }
 
 static void handleApiStatus() {
-    StaticJsonDocument<256> doc;
+    StaticJsonDocument<384> doc;
     doc["state"] = LockCapability::getStateName();
     doc["mac"] = WiFi.macAddress();
 
@@ -196,6 +197,7 @@ static void handleApiStatus() {
     doc["latch_locked"] = tel.latch_locked;
     doc["ir_broken"] = tel.ir_broken;
     doc["mortise_active"] = tel.mortise_active;
+    ForgeKeyTime::addJson(doc.as<JsonObject>());
 
     String json;
     serializeJson(doc, json);

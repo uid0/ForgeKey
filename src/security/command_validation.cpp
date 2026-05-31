@@ -2,6 +2,7 @@
 
 #include "oms_command_pubkey.h"
 #include "../provisioning/register.h"
+#include "../time/time_sync.h"
 
 #include <mbedtls/base64.h>
 #include <mbedtls/bignum.h>
@@ -207,7 +208,7 @@ String canonicalSigningInput(JsonVariantConst doc) {
     return input;
 }
 
-bool validateJwt(JsonVariantConst doc, const String& deviceMac, const char* token, const char*& error) {
+bool validateJwt(JsonVariantConst doc, const String& deviceMac, const char* token, bool challengeFlow, const char*& error) {
     String jwt(token);
     int firstDot = jwt.indexOf('.');
     int secondDot = jwt.indexOf('.', firstDot + 1);
@@ -254,11 +255,17 @@ bool validateJwt(JsonVariantConst doc, const String& deviceMac, const char* toke
         return false;
     }
 
-    time_t now = time(nullptr);
+    time_t now = ForgeKeyTime::epochNow();
     time_t exp = 0;
-    if (parseEpoch(claims["exp"], exp) && now > 0 && now > exp) {
-        error = "expired";
-        return false;
+    if (parseEpoch(claims["exp"], exp)) {
+        if (!ForgeKeyTime::clockValid() && !challengeFlow) {
+            error = "clock_invalid";
+            return false;
+        }
+        if (ForgeKeyTime::clockValid() && now > exp) {
+            error = "expired";
+            return false;
+        }
     }
 
     uint8_t signature[80];
@@ -279,6 +286,16 @@ bool validateDetachedSignature(JsonVariantConst doc, const char* signatureText) 
     String input = canonicalSigningInput(doc);
     return verifyEs256RawSignature(reinterpret_cast<const uint8_t*>(input.c_str()),
                                    input.length(), signature, signatureLen);
+}
+
+bool usesServerChallengeFlow(JsonVariantConst doc) {
+    const char* authFlow = doc["auth_flow"] | "";
+    const char* challenge = doc["challenge"] | "";
+    const char* serverNonce = doc["server_nonce"] | "";
+    return strcmp(authFlow, "challenge") == 0 ||
+           strcmp(authFlow, "nonce") == 0 ||
+           nonEmpty(challenge) ||
+           nonEmpty(serverNonce);
 }
 
 }  // namespace
@@ -324,12 +341,21 @@ Result validate(JsonVariantConst doc, const String& deviceMac) {
         result.error = "invalid_timestamp";
         return result;
     }
-    time_t now = time(nullptr);
-    if (expiresAt <= issuedAt || (now > 0 && now > expiresAt)) {
+    const bool challengeFlow = usesServerChallengeFlow(doc);
+    time_t now = ForgeKeyTime::epochNow();
+    if (expiresAt <= issuedAt) {
         result.error = "expired";
         return result;
     }
-    if (now > 0 && issuedAt > now + kIssuedAtFutureSkewS) {
+    if (!ForgeKeyTime::clockValid() && !challengeFlow) {
+        result.error = "clock_invalid";
+        return result;
+    }
+    if (ForgeKeyTime::clockValid() && now > expiresAt) {
+        result.error = "expired";
+        return result;
+    }
+    if (ForgeKeyTime::clockValid() && issuedAt > now + kIssuedAtFutureSkewS) {
         result.error = "issued_in_future";
         return result;
     }
@@ -340,7 +366,7 @@ Result validate(JsonVariantConst doc, const String& deviceMac) {
 
     const char* authError = "invalid_signature";
     bool authenticated = nonEmpty(jwt)
-        ? validateJwt(doc, deviceMac, jwt, authError)
+        ? validateJwt(doc, deviceMac, jwt, challengeFlow, authError)
         : validateDetachedSignature(doc, signature);
     if (!authenticated) {
         result.error = authError;

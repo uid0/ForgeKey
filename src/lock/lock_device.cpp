@@ -1,4 +1,5 @@
 #include "lock_device.h"
+#include "../time/time_sync.h"
 #include <WiFi.h>
 #include <ArduinoJson.h>
 #include <mbedtls/base64.h>
@@ -166,15 +167,19 @@ bool validateJwt(const char* token, long timestamp, const char* expectedCmd) {
     const char* claimMac = doc["mac"] | "";
     const char* claimCmd = doc["cmd"] | "";
 
-    long now = time(nullptr);
-    if (claimTimestamp > 0 && now > 0) {
+    long now = ForgeKeyTime::epochNow();
+    if ((claimTimestamp > 0 || expiry > 0) && !ForgeKeyTime::clockValid()) {
+        Serial.println("[LOCK] signed command rejected: clock invalid");
+        return false;
+    }
+    if (claimTimestamp > 0) {
         long diff = labs(now - claimTimestamp);
         if (diff > FORGEKEY_LOCK_CMD_TIMESTAMP_TOLERANCE_S) {
             Serial.printf("[LOCK] signed command timestamp drift=%ld exceeds tolerance\n", diff);
             return false;
         }
     }
-    if (expiry > 0 && now > 0 && now > expiry) {
+    if (expiry > 0 && now > expiry) {
         Serial.println("[LOCK] signed command expired");
         return false;
     }
