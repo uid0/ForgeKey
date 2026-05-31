@@ -56,6 +56,10 @@ public:
                                int progress,
                                const char* error);
     bool subscribeFirmware(MessageHandler handler);
+    // Force a fresh firmware-topic subscription so brokers that deliver the
+    // latest retained dispatch on SUBSCRIBE can be polled during the
+    // post-restart rapid OTA check window.
+    bool refreshFirmwareSubscription();
     bool subscribeConfig(MessageHandler handler);
     bool subscribeCommand(MessageHandler handler);
     // Publish blink on/off transition on statusTopic. Payload: {"blink":"on"}

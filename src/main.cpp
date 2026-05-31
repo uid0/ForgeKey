@@ -58,6 +58,11 @@ constexpr size_t kDebugLevelMax = 8;
 constexpr size_t kDebugTagMax = 16;
 constexpr size_t kDebugMessageMax = 160;
 constexpr size_t kBufferedDebugLogCount = 24;
+constexpr unsigned long kOtaRapidCheckDurationMs = 15UL * 60UL * 1000UL;
+constexpr unsigned long kOtaRapidCheckIntervalMs = 60UL * 1000UL;
+
+unsigned long g_otaRapidCheckUntilMs = 0;
+unsigned long g_nextOtaRapidCheckMs = 0;
 
 struct BufferedDebugLog {
     unsigned long timestampMs;
@@ -114,6 +119,39 @@ void emitDebugLog(const char* level, const char* tag, const char* message) {
     if (!mqttClient.publishLog(timestampMs, level, tag, message)) {
         bufferDebugLog(timestampMs, level, tag, message);
     }
+}
+
+bool timeReached(unsigned long nowMs, unsigned long targetMs) {
+    return (long)(nowMs - targetMs) >= 0;
+}
+
+void extendOtaRapidChecking(const char* reason) {
+    unsigned long now = millis();
+    unsigned long newDeadline = now + kOtaRapidCheckDurationMs;
+    if (g_otaRapidCheckUntilMs == 0 || timeReached(now, g_otaRapidCheckUntilMs) ||
+        timeReached(newDeadline, g_otaRapidCheckUntilMs)) {
+        g_otaRapidCheckUntilMs = newDeadline;
+    }
+    g_nextOtaRapidCheckMs = now;
+    Serial.printf("ota: rapid checking active for ~15 minutes (%s)\n",
+                  reason ? reason : "scheduled");
+}
+
+void tickOtaRapidChecking(bool mqttConnected) {
+    if (g_otaRapidCheckUntilMs == 0) return;
+
+    unsigned long now = millis();
+    if (timeReached(now, g_otaRapidCheckUntilMs)) {
+        g_otaRapidCheckUntilMs = 0;
+        Serial.println("ota: rapid checking window ended");
+        return;
+    }
+    if (!mqttConnected || !timeReached(now, g_nextOtaRapidCheckMs)) return;
+
+    if (mqttClient.refreshFirmwareSubscription()) {
+        debugPrint("INFO", "OTA", "Rapid firmware check refreshed subscription");
+    }
+    g_nextOtaRapidCheckMs = now + kOtaRapidCheckIntervalMs;
 }
 }  // namespace
 
@@ -514,6 +552,8 @@ static void onConfigMessage(const char* topic, const uint8_t* payload, unsigned 
 }
 
 static void onFirmwareDispatch(const char* topic, const uint8_t* payload, unsigned int length) {
+    static String lastRapidDispatchKey;
+
     debugPrintf("INFO", "OTA", "Dispatch on %s (%u bytes)", topic, length);
     OtaUpdater::Spec spec;
     if (!otaUpdater.parse(payload, length, spec)) {
@@ -522,6 +562,19 @@ static void onFirmwareDispatch(const char* topic, const uint8_t* payload, unsign
     }
     debugPrintf("INFO", "OTA", "Target version %s mandatory=%d",
                 spec.version.c_str(), (int)spec.mandatory);
+
+    if (spec.version == FORGEKEY_FIRMWARE_VERSION) {
+        debugPrintf("INFO", "OTA", "Ignoring current firmware version %s",
+                    spec.version.c_str());
+        return;
+    }
+
+    String rapidDispatchKey = spec.version + ":" + spec.sha256;
+    if (rapidDispatchKey != lastRapidDispatchKey) {
+        lastRapidDispatchKey = rapidDispatchKey;
+        extendOtaRapidChecking("new firmware dispatch received");
+    }
+
     mqttClient.publishFirmwareStatus("received", spec.version.c_str(), -1, nullptr);
 #ifndef FORGEKEY_LOCK
 #if !defined(FORGEKEY_TEMPERATURE_SENSOR) && !defined(FORGEKEY_EPAPER)
@@ -677,6 +730,7 @@ void setup() {
 
     provisioning.begin();
     otaUpdater.begin();
+    extendOtaRapidChecking("restart");
     otaUpdater.setStatusCallback([](const char* state,
                                     const char* version,
                                     int progress,
@@ -865,6 +919,8 @@ void loop() {
             StatusLed::triggerMessageFlash();
         }
     }
+
+    tickOtaRapidChecking(mqttConnected);
 
     CapabilityRegistry::tickAll();
 
