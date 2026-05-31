@@ -65,6 +65,17 @@ reads LOW. When the beam is broken (item removed), D4 reads HIGH.
 > **Note:** Adjust `FORGEKEY_LOCK_IR_BEAM_BROKEN` macro if your IR module
 > inverts the logic. Check the module's datasheet.
 
+### Repeatable hardware artifacts
+
+The source-controlled hardware pack for this build is
+[`hardware/cabinet-lock/`](hardware/cabinet-lock/). It includes:
+
+- [`pin-manifest.json`](hardware/cabinet-lock/pin-manifest.json) for the solenoid gate, reed switch, IR beam, mortise switch, latch supervisor, power rails, and protection components.
+- [`wiring.svg`](hardware/cabinet-lock/wiring.svg) for rendered wiring review.
+- [`bom.md`](hardware/cabinet-lock/bom.md) for MOSFET, flyback diode, resistors, sensors, solenoid, and supply ratings.
+- [`harness-notes.md`](hardware/cabinet-lock/harness-notes.md) for connector pinouts and acceptance tests.
+- [`wokwi/`](hardware/cabinet-lock/wokwi/) for a GPIO-level simulation, with limitations documented in [`simulation-limitations.md`](hardware/cabinet-lock/simulation-limitations.md).
+
 ### Mortise switch wiring
 
 The physical key override switch is wired between D5 and GND with `INPUT_PULLUP`.

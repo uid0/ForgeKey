@@ -12,6 +12,13 @@ Area occupancy counting using XIAO ESP32-S3 Sense and camera.
 - Seeed XIAO ESP32-S3 Sense (OV3660 camera, 8MB PSRAM)
 - USB-C cable for power/programming
 
+Repeatable manufacturing artifacts are in [`hardware/people-counter/`](hardware/people-counter/):
+
+- [`pin-manifest.json`](hardware/people-counter/pin-manifest.json) captures the camera, SCCB, power, and status-LED pin assignments.
+- [`wiring.svg`](hardware/people-counter/wiring.svg) renders the camera/power wiring for reviews.
+- [`bom.md`](hardware/people-counter/bom.md) and [`harness-notes.md`](hardware/people-counter/harness-notes.md) cover the Sense board, camera, mounting, and acceptance checks.
+- [`simulation-limitations.md`](hardware/people-counter/simulation-limitations.md) documents why Wokwi cannot model the OV3660/PSRAM/TFLite path.
+
 ## Configuration
 
 Edit `src/main.cpp` with your settings:

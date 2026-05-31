@@ -39,6 +39,18 @@ different XIAO module later.
 | MISO   | D9        |
 | MOSI   | D10       |
 
+### Repeatable hardware artifacts
+
+The source-controlled hardware pack for this device class is
+[`hardware/epaper-display/`](hardware/epaper-display/). It includes the
+machine-readable [`pin-manifest.json`](hardware/epaper-display/pin-manifest.json),
+rendered [`wiring.svg`](hardware/epaper-display/wiring.svg),
+[`bom.md`](hardware/epaper-display/bom.md),
+[`harness-notes.md`](hardware/epaper-display/harness-notes.md), and
+[`simulation-limitations.md`](hardware/epaper-display/simulation-limitations.md).
+The manifest documents ePaper SPI/control wiring plus the battery/power note
+that SKU 6416 does not expose a battery ADC line to the XIAO socket.
+
 ## Build + flash
 
 ```bash

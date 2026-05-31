@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "author": "ForgeKey",
+  "editor": "wokwi",
+  "parts": [
+    {"type": "board-esp32-c3-devkitm-1", "id": "esp", "top": 0, "left": 0, "attrs": {}},
+    {"type": "wokwi-led", "id": "solenoid_led", "top": -40, "left": 310, "attrs": {"color": "red", "label": "solenoid driver indicator"}},
+    {"type": "wokwi-resistor", "id": "r_solenoid", "top": 30, "left": 280, "attrs": {"value": "220"}},
+    {"type": "wokwi-pushbutton", "id": "reed", "top": 105, "left": 320, "attrs": {"label": "reed closed"}},
+    {"type": "wokwi-pushbutton", "id": "ir", "top": 175, "left": 320, "attrs": {"label": "IR broken"}},
+    {"type": "wokwi-pushbutton", "id": "mortise", "top": 245, "left": 320, "attrs": {"label": "mortise"}},
+    {"type": "wokwi-pushbutton", "id": "latch", "top": 315, "left": 320, "attrs": {"label": "latch locked"}}
+  ],
+  "connections": [
+    ["esp:0", "r_solenoid:1", "green", ["h0"]],
+    ["r_solenoid:2", "solenoid_led:A", "green", ["h0"]],
+    ["solenoid_led:C", "esp:GND.1", "black", ["h0"]],
+    ["esp:1", "reed:1.l", "blue", ["h0"]],
+    ["reed:2.l", "esp:GND.1", "black", ["h0"]],
+    ["esp:4", "ir:1.l", "blue", ["h0"]],
+    ["ir:2.l", "esp:GND.1", "black", ["h0"]],
+    ["esp:5", "mortise:1.l", "blue", ["h0"]],
+    ["mortise:2.l", "esp:GND.1", "black", ["h0"]],
+    ["esp:6", "latch:1.l", "blue", ["h0"]],
+    ["latch:2.l", "esp:GND.1", "black", ["h0"]]
+  ],
+  "dependencies": {}
+}
