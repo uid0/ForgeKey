@@ -246,18 +246,29 @@ back to the previous partition automatically.
 
 NVS namespace `forgekey`:
 
+Production builds open this namespace from the encrypted production NVS
+partition defined in `partitions/forgekey_secure_ota.csv`; development builds
+continue to use the default development NVS partition. See
+`docs/SECURITY_BASELINE.md` for the manufacturing and key-handling baseline.
+
 | Key | Type | Description |
 |-----|------|-------------|
 | `boots` | uint32 | Persistent boot counter |
 | `dev_id` | str | OMS-assigned device id |
 | `fw_topic` | str | OTA dispatch MQTT topic |
-| `p_topic` | str | Occupancy publish MQTT topic |
-| `jwt` | str | Bearer for HTTPS uploads + MQTT auth |
+| `p_topic` | str | Occupancy/status publish MQTT topic |
+| `c_cert` | str | Per-device MQTT/HTTPS client certificate issued by OMS |
+| `c_key` | str | Per-device private key generated on-device during enrollment |
+| `cmd_pub` | str | OMS command public key/cache for signed device commands |
+| `b_host` | str | OMS-assigned MQTT broker hostname |
+| `b_port` | uint16 | OMS-assigned MQTT broker TLS port |
+| `b_tls` | bool | Whether the MQTT broker policy requires TLS |
 | `prov_tok` | str | OTA-rotated provisioning token (overrides compile-time default) |
 
 A factory reset (re-registration) is `provisioning.clear()` from the field —
-or an over-the-air firmware that wipes the namespace. `clear()` deliberately
-preserves `boots` and `prov_tok` so a rotated token survives re-registration.
+or an over-the-air firmware that wipes the credential keys. `clear()`
+deliberately preserves `boots` and `prov_tok` so a rotated token survives
+re-registration.
 
 ## Credential rotation
 

@@ -32,6 +32,17 @@
 static const char* TAG = "PROV";
 
 #define NVS_NAMESPACE "forgekey"
+#ifdef CONFIG_FORGEKEY_PRODUCTION_SECURITY
+#define FORGEKEY_SECURE_NVS_PARTITION "nvs"
+#endif
+
+static esp_err_t forgekey_nvs_open(nvs_open_mode_t open_mode, nvs_handle_t* out_handle) {
+#ifdef FORGEKEY_SECURE_NVS_PARTITION
+    return nvs_open_from_partition(FORGEKEY_SECURE_NVS_PARTITION, NVS_NAMESPACE, open_mode, out_handle);
+#else
+    return nvs_open(NVS_NAMESPACE, open_mode, out_handle);
+#endif
+}
 #define NVS_KEY_DEV_ID    "dev_id"
 #define NVS_KEY_FW_TOPIC  "fw_topic"
 #define NVS_KEY_P_TOPIC   "p_topic"
@@ -283,7 +294,7 @@ static size_t url_encode(const char* src, char* dst, size_t dst_len) {
 
 void provisioning_begin(void) {
     nvs_handle_t nvs_handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+    esp_err_t err = forgekey_nvs_open(NVS_READWRITE, &nvs_handle);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Failed to open NVS namespace: %s", esp_err_to_name(err));
         s_boot_count = 0;
@@ -369,7 +380,7 @@ prov_credentials_t provisioning_credentials(void) {
 
 bool provisioning_persist(const prov_credentials_t* creds) {
     nvs_handle_t nvs_handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+    esp_err_t err = forgekey_nvs_open(NVS_READWRITE, &nvs_handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to open NVS for persist");
         return false;
@@ -397,7 +408,7 @@ bool provisioning_persist(const prov_credentials_t* creds) {
 
 void provisioning_clear(void) {
     nvs_handle_t nvs_handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+    esp_err_t err = forgekey_nvs_open(NVS_READWRITE, &nvs_handle);
     if (err != ESP_OK) return;
 
     nvs_erase_key(nvs_handle, NVS_KEY_DEV_ID);
@@ -420,7 +431,7 @@ void provisioning_clear(void) {
 const char* provisioning_active_token(void) {
     static char stored_token[256];
     nvs_handle_t nvs_handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+    esp_err_t err = forgekey_nvs_open(NVS_READWRITE, &nvs_handle);
     if (err != ESP_OK) {
         return FORGEKEY_PROVISIONING_TOKEN;
     }
@@ -440,7 +451,7 @@ bool provisioning_set_token(const char* token) {
     if (!token || token[0] == '\0') return false;
 
     nvs_handle_t nvs_handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+    esp_err_t err = forgekey_nvs_open(NVS_READWRITE, &nvs_handle);
     if (err != ESP_OK) return false;
 
     nvs_set_str(nvs_handle, NVS_KEY_PROV_TOK, token);
