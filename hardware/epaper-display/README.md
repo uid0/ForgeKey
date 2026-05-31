@@ -18,5 +18,6 @@ uses the Seeed driver-board pin map selected by `BOARD_SCREEN_COMBO=502` and
 - Use XIAO board labels, not raw GPIO numbers, when inspecting the Seeed driver
   board: RST D0, CS D1, BUSY D2, DC D3, SCK D8, MISO D9, MOSI D10.
 - The board includes a LiPo charger and battery, but this SKU does not route a
-  battery ADC line to the XIAO socket; OMS battery telemetry remains a firmware
-  placeholder until the hardware changes.
+  battery ADC line to the XIAO socket; stock firmware reports
+  `battery.available=false` until a hardware revision or field divider mod adds
+  an ADC sense path.

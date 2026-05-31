@@ -19,8 +19,14 @@ to. Builds against the `seeed_xiao_epaper` PlatformIO env.
   via the on-board LED1/LED2/LED3
 - **Battery ADC**: **not exposed** to the XIAO socket on the SKU
   6416 driver board (verified against the official schematic PDF).
-  The OMS battery endpoint receives a placeholder 100% until the
-  hardware design routes a divider or a future revision adds one.
+  The stock firmware reports `battery.available=false` in health
+  telemetry instead of a placeholder percentage. A hardware spin or
+  field mod can route `BAT_4V2` through a divider to an ADC-capable
+  XIAO pin and define `FORGEKEY_EPAPER_BATTERY_ADC_PIN`,
+  `FORGEKEY_EPAPER_BATTERY_DIVIDER_NUM`,
+  `FORGEKEY_EPAPER_BATTERY_DIVIDER_DEN`,
+  `FORGEKEY_EPAPER_BATTERY_EMPTY_MV`, and
+  `FORGEKEY_EPAPER_BATTERY_FULL_MV` to enable voltage/percent reporting.
 
 ### Pin map (driver-board → XIAO socket)
 
@@ -68,28 +74,33 @@ the PlatformIO registry.
 ## First-boot flow (flash once, walk away)
 
 No manual NVS provisioning. The intended bring-up is "flash the
-firmware, mount the panel, do the rest from OMS." This does **not**
-yet include remote firmware reflashing for the ePaper SKU: the current
-ePaper build skips the MAC/MQTT provisioning and OTA stack used by the
-people-counter and temperature-sensor firmware.
+firmware, mount the panel, do the rest from OMS." The ePaper SKU still
+skips the MAC/MQTT enrollment used by the people-counter and
+temperature-sensor firmware, but it now uses display_id-keyed HTTPS
+polling for remote OTA, desired wake cadence, commands, health, and
+content.
 
 1. **No display_id in NVS** (fresh board) → firmware generates a
    v4 UUID from `esp_random()`, persists it to NVS at namespace
    `epaper`, key `did`. Same UUID survives subsequent boots.
 2. **WiFi connects** via either the captive portal or a
    `secrets_local.h` predefined network.
-3. **Wake-cycle**: GET `/api/forgekey/epaper/<did>/image.png`. The
+3. **Wake-cycle control**: GET `/api/forgekey/epaper/<did>/firmware.json`
+   and apply any signed OTA spec whose policy matches this hardware,
+   then GET `/api/forgekey/epaper/<did>/desired.json` for `wake_min`
+   and one-shot commands.
+4. **Content fetch**: GET `/api/forgekey/epaper/<did>/image.png`. The
    server auto-creates an unbound `EPaperDisplay` row on first
    contact and responds 409.
-4. On **409**, panel paints a bind QR encoding
+5. On **409**, panel paints a bind QR encoding
    `<oms-base-url>/forgekey/epaper/bind?did=<uuid>`. A staff
    member scans with a phone, picks an asset from the mobile bind
    page, POSTs to the OMS `/bind/` endpoint. The page is
    staff-JWT gated.
-5. Next wake-cycle: GET `image.png` returns 200 with a fresh PNG.
+6. Next wake-cycle: GET `image.png` returns 200 with a fresh PNG.
    Firmware decodes via PNGdec (per-scanline thresholding of the
    RGB565 conversion's green channel) and full-paints the panel.
-6. Subsequent wakes that hit a matching ETag return 304; panel
+7. Subsequent wakes that hit a matching ETag return 304; panel
    keeps its current paint and uses adaptive deep-sleep backoff so
    repeatedly quiet displays poll less often.
 
@@ -100,42 +111,87 @@ Other responses:
 - Other (transport / decode failure) → keep current paint, retry
   next wake.
 
-After a wake cycle, the firmware persists its ETag/backoff state and
-deep-sleeps. The active cadence starts from `DEFAULT_WAKE_INTERVAL_MIN`
-minutes (default 60), repeated 304/no-change wakes double toward a
-12-hour quiet cap, and HTTP/transport failures retry on a shorter
-15→30→60→120→240 minute ladder. The firmware only occasionally POSTs
-`/api/forgekey/epaper/<did>/battery/` with the placeholder 100%
-(SKU 6416 has no battery sense exposed to the XIAO socket — see
-above), avoiding a second HTTP request on most wakes.
+After a wake cycle, the firmware persists its ETag/backoff state,
+POSTs `/api/forgekey/epaper/<did>/health/`, and deep-sleeps. The
+active cadence starts from `DEFAULT_WAKE_INTERVAL_MIN` minutes (default
+60) or the last OMS `wake_min` desired-state value. Repeated 304/no-change
+wakes double from that configured value toward a 12-hour quiet cap, and
+HTTP/transport failures retry on a shorter 15→30→60→120→240 minute ladder.
 
 ## OMS contract
 
 | Method | Path                                          | Response                                                        |
 |--------|-----------------------------------------------|-----------------------------------------------------------------|
-| GET    | `/api/forgekey/epaper/<did>/image.png`        | 200 PNG + `ETag`; 304 on matching `If-None-Match`; 409 unbound; 404 retired |
+| GET    | `/api/forgekey/epaper/<did>/firmware.json`    | 200 signed OTA dispatch JSON; 204/404 no update. Polled once per wake before content. |
+| POST   | `/api/forgekey/epaper/<did>/firmware/status/` | OTA lifecycle status (`received`, `rejected`, `downloading`, `verifying`, `rebooting`, `failed`) plus OTA slot health. |
+| GET    | `/api/forgekey/epaper/<did>/desired.json`     | 200 desired state; 204/404 no changes. Supports `wake_min`, `force_refresh`, `retired`, `identify`, `factory_reset`, and `command`/`commands` objects. |
+| POST   | `/api/forgekey/epaper/<did>/command/status/`  | Best-effort command acknowledgement with `command`, optional `command_id`, and `state`. |
+| GET    | `/api/forgekey/epaper/<did>/image.png`        | 200 PNG + `ETag`; 304 on matching `If-None-Match`; 409 unbound; 404 retired. |
 | POST   | `/api/forgekey/epaper/<did>/bind/`            | Staff JWT. Body `{"asset_id": "..."}`. Called by the mobile bind page, NOT by firmware. |
-| POST   | `/api/forgekey/epaper/<did>/battery/`         | Body `{"percent": 0..100}`. 200 on persist; 400/404 on error.   |
+| POST   | `/api/forgekey/epaper/<did>/health/`          | Per-wake health fields listed below; replaces placeholder battery-only telemetry. |
 
-`image.png` and `battery/` are `AllowAny` — the firmware carries no
-JWT. The PNG content is information already visible on the panel
-mounted to the asset, so the exposure surface is narrow.
+`image.png`, `firmware.json`, `desired.json`, command status, firmware
+status, and health are display_id-keyed HTTPS endpoints so the panel can
+stay off MQTT for battery life. The PNG content is information already
+visible on the panel mounted to the asset, so the exposure surface is
+narrow; OTA images remain protected by the signed firmware spec and
+on-device signature verification.
 
-## Open TODOs
+### Desired-state and command schema
 
-- **OMS-managed cadence UI** — firmware reads a `wake_min` NVS override,
-  but OMS still needs a dashboard/control path to tune it per panel.
-- **Remote ePaper OTA** — adaptive wake backoff only changes how often
-  the panel checks display content. It does not re-enable the skipped
-  MQTT OTA path. Remote reflashing needs a display_id-keyed HTTPS OTA
-  polling endpoint (or a deliberately short MQTT awake window) plus OMS
-  support to publish signed firmware specs for this device class.
-- **Battery sense path** if a future board revision adds an ADC
-  line, or if operators hand-solder a divider onto `BAT_4V2`.
-- **MQTT command pathway** (force-refresh, etc.) — the ePaper
-  device class deliberately skips the MAC-based MQTT enrollment
-  used by other ForgeKey devices, so any command pathway needs a
-  display_id-keyed alternative.
+`desired.json` may return a direct desired object or wrap it under
+`{"desired": {...}}`. Recognized values:
+
+```json
+{
+  "desired": {
+    "wake_min": 60,
+    "force_refresh": true,
+    "retired": false,
+    "identify": false,
+    "factory_reset": false
+  },
+  "command": {"id": "cmd-123", "name": "identify"}
+}
+```
+
+Commands may use `name`, `command`, `cmd`, or `action`; supported names
+are `force_refresh`, `retire`, `unretire`/`activate`, `identify`, and
+`factory_reset`. Boolean desired values are accepted for state convergence;
+command acknowledgements are emitted for command objects or desired objects
+that include `command_id`. `force_refresh` clears the persisted ETag before fetching
+`image.png`; `retire` persists a local retired flag and paints the retired
+card; `identify` paints an identification card for one cycle;
+`factory_reset` acknowledges, paints a reset card, clears ePaper NVS and
+WiFiManager credentials, then reboots into setup.
+
+### Health payload
+
+Each wake POSTs `/health/` after rendering and before deep sleep. OMS should
+persist at least these ePaper-specific fields:
+
+- `last_image_etag`
+- `unchanged_count`
+- `failure_count`
+- `wake_interval_min`
+- `configured_wake_min`
+- `render_status`
+- `cycle_result`
+- `last_http_status`
+- `retired`
+- `battery.available`, `battery.source`, `battery.reason` or
+  `battery.voltage_mv`/`battery.percent` when ADC sensing is compiled in
+
+The firmware also appends existing OTA slot health and board-manifest health
+fields to the same payload.
+
+## Remaining TODOs
+
+- **OMS UI/API plumbing** for publishing `desired.json` values and consuming
+  `/health/` and `/command/status/` for operator visibility.
+- **Battery sense hardware** if a future board revision adds an ADC line, or
+  if operators hand-solder a divider onto `BAT_4V2` and compile the ADC
+  build flags documented above.
 
 ## Swap workflow
 

@@ -24,9 +24,10 @@
 //   POST /api/forgekey/epaper/<display_id>/bind/
 //        - Staff-JWT endpoint; firmware never calls it. The QR painted
 //          on 409 sends staff to the mobile bind page that does.
-//   POST /api/forgekey/epaper/<display_id>/battery/
-//        - Body: {"percent": 0..100}
-//        - 200 on persist; 400 malformed; 404 unknown id.
+//   GET  /api/forgekey/epaper/<display_id>/desired.json
+//        - 200 JSON desired state/commands; 204/404 means no changes.
+//   POST /api/forgekey/epaper/<display_id>/health/
+//        - Body: ePaper health, render, wake, HTTP, and battery telemetry.
 //
 // The display_id is a UUID the firmware generates on first boot and
 // keeps in NVS. The server auto-creates an unbound row on first
@@ -36,10 +37,10 @@
 //
 // Battery telemetry note: the panel does NOT route a battery ADC line
 // to the XIAO socket (verified against the Seeed driver-board schematic
-// PDF). The firmware reports 100% as a placeholder until either Seeed
-// publishes a battery-sense path or operators wire a divider onto the
-// `BAT_4V2` net by hand. Operators rely on the on-board charger LEDs
-// for visual "swap me" signalling.
+// PDF). The default firmware therefore reports an explicit
+// battery.available=false health object. If a hardware spin or field mod
+// wires BAT_4V2 through a divider, define FORGEKEY_EPAPER_BATTERY_ADC_PIN
+// plus divider calibration build flags to enable voltage telemetry.
 //
 // OTA note: ePaper skips MQTT but still participates in fleet OTA by
 // polling a display_id-keyed HTTPS policy endpoint once per wake before
@@ -56,6 +57,7 @@
 #include <PNGdec.h>
 #include <Preferences.h>
 #include <WiFi.h>
+#include <WiFiManager.h>
 #include <esp_random.h>
 #include <esp_sleep.h>
 #include <qrcode.h>
@@ -86,8 +88,8 @@ constexpr const char *kNvsKeyDisplayId = "did";
 constexpr const char *kNvsKeyEtag = "etag";
 constexpr const char *kNvsKeyUnchangedCount = "unch";
 constexpr const char *kNvsKeyFailureCount = "fail";
-constexpr const char *kNvsKeyBatteryPostSkips = "bskip";
 constexpr const char *kNvsKeyWakeIntervalMin = "wake_min";
+constexpr const char *kNvsKeyRetired = "retired";
 
 // Panel geometry. The Seeed_GFX driver reports these too, but they're
 // the cleanest place to put the size assumptions the QR / PNG paint
@@ -111,12 +113,10 @@ constexpr uint32_t kMaxErrorWakeIntervalMin = 4 * 60;
 constexpr uint32_t kSetupRetryWakeIntervalMin = 5;
 constexpr uint32_t kRetiredWakeIntervalMin = 12 * 60;
 constexpr size_t kMaxOtaPolicyBytes = 4096;
+constexpr size_t kMaxDesiredStateBytes = 4096;
 
-// The SKU 6416 board cannot report real battery voltage, so the battery
-// endpoint is a low-value heartbeat for this hardware. Send it occasionally
-// instead of paying for a second HTTP request on every wake. Default to this
-// threshold on new firmware so upgraded panels report once, then decay.
-constexpr uint32_t kBatteryPostEveryWakeCycles = 24;
+// Health is the only per-wake POST. Battery fields ride in that payload,
+// so the old placeholder battery-only heartbeat is retired.
 
 // QR code parameters. Version 5 (37x37 modules) at ECC level M holds
 // up to 106 bytes — fits our typical bind URL of ~90 chars with
@@ -141,19 +141,38 @@ String g_displayId;
 String g_lastEtag;
 uint32_t g_consecutiveUnchanged = 0;
 uint32_t g_consecutiveFailures = 0;
-uint32_t g_batteryPostSkips = kBatteryPostEveryWakeCycles;
 uint32_t g_configuredWakeIntervalMin = DEFAULT_WAKE_INTERVAL_MIN;
+uint32_t g_lastScheduledWakeIntervalMin = DEFAULT_WAKE_INTERVAL_MIN;
+int g_lastHttpStatus = 0;
+String g_renderStatus = "boot";
+bool g_retiredByCommand = false;
 bool g_ranThisBoot = false;
 
 // PNG-decode callback can't capture state, so the decoder writes
 // straight into the namespace-global panel above.
 PNG g_png;
 
-// XIAO 7.5" ePaper Panel SKU 6416 has no battery voltage-divider line
-// broken out to the XIAO socket — see the schematic. Until somebody
-// solders a divider onto `BAT_4V2`, the POST is a placeholder so the
-// OMS row carries *some* telemetry rather than nothing.
-constexpr uint8_t kPlaceholderBatteryPercent = 100;
+// Optional battery ADC hardware. The stock SKU 6416 has no battery sense
+// route to the XIAO socket, so these compile-time flags are intentionally
+// absent by default and health reports battery.available=false. A field mod
+// may wire BAT_4V2 through a divider to an ADC-capable XIAO pin and define:
+//   FORGEKEY_EPAPER_BATTERY_ADC_PIN=<gpio>
+//   FORGEKEY_EPAPER_BATTERY_DIVIDER_NUM=<top+bottom ohms>
+//   FORGEKEY_EPAPER_BATTERY_DIVIDER_DEN=<bottom ohms>
+//   FORGEKEY_EPAPER_BATTERY_EMPTY_MV=<default 3300>
+//   FORGEKEY_EPAPER_BATTERY_FULL_MV=<default 4200>
+#ifndef FORGEKEY_EPAPER_BATTERY_EMPTY_MV
+#define FORGEKEY_EPAPER_BATTERY_EMPTY_MV 3300
+#endif
+#ifndef FORGEKEY_EPAPER_BATTERY_FULL_MV
+#define FORGEKEY_EPAPER_BATTERY_FULL_MV 4200
+#endif
+#ifndef FORGEKEY_EPAPER_BATTERY_DIVIDER_NUM
+#define FORGEKEY_EPAPER_BATTERY_DIVIDER_NUM 2
+#endif
+#ifndef FORGEKEY_EPAPER_BATTERY_DIVIDER_DEN
+#define FORGEKEY_EPAPER_BATTERY_DIVIDER_DEN 1
+#endif
 
 // ---- URL helpers ---------------------------------------------------
 
@@ -281,6 +300,222 @@ void paintBindQrCard(const String &displayId) {
     g_panel.drawString("MAC: " + WiFi.macAddress(), 40, footerY + 60);
 
     g_panel.update();
+}
+
+
+void paintIdentifyCard() {
+    paintMessageCard(
+        "Identify panel",
+        "This ePaper display is being identified from OMS.",
+        ("display_id: " + g_displayId).c_str());
+}
+
+void paintFactoryResetCard() {
+    paintMessageCard(
+        "Factory reset",
+        "Clearing display identity and WiFi credentials.",
+        "The setup portal will start after reboot.");
+}
+
+uint32_t clampWakeInterval(uint32_t minutes);
+
+// ---- Desired-state / command polling -------------------------------
+
+struct DesiredState {
+    bool forceRefresh = false;
+    bool retire = false;
+    bool unretire = false;
+    bool identify = false;
+    bool factoryReset = false;
+    bool hasCommand = false;
+    String commandId;
+};
+
+const char *commandName(const DesiredState &desired) {
+    if (desired.factoryReset) return "factory_reset";
+    if (desired.retire) return "retire";
+    if (desired.unretire) return "unretire";
+    if (desired.identify) return "identify";
+    if (desired.forceRefresh) return "force_refresh";
+    return "none";
+}
+
+void postCommandStatus(const DesiredState &desired, const char *state, const char *error = nullptr) {
+    if (WiFi.status() != WL_CONNECTED || g_displayId.length() == 0) return;
+    if (strcmp(commandName(desired), "none") == 0) return;
+    if (!desired.hasCommand && desired.commandId.length() == 0) return;
+
+    HTTPClient http;
+    const String url = absUrl(String("/api/forgekey/epaper/" + g_displayId + "/command/status/").c_str());
+    http.begin(url);
+    http.addHeader("Content-Type", "application/json");
+
+    JsonDocument body;
+    body["command"] = commandName(desired);
+    body["state"] = state;
+    if (desired.commandId.length() > 0) body["command_id"] = desired.commandId;
+    if (error && *error) body["error"] = error;
+    String payload;
+    serializeJson(body, payload);
+
+    const int code = http.POST(payload);
+    http.end();
+    if (code < 200 || code >= 300) {
+        Serial.printf("[epaper] command status POST failed (code=%d)\n", code);
+    }
+}
+
+void applyWakeCadence(uint32_t wakeMin) {
+    const uint32_t clamped = clampWakeInterval(wakeMin);
+    if (clamped == g_configuredWakeIntervalMin) return;
+    g_configuredWakeIntervalMin = clamped;
+    Preferences prefs;
+    prefs.begin(kNvsNamespace, /*readonly=*/false);
+    prefs.putUInt(kNvsKeyWakeIntervalMin, g_configuredWakeIntervalMin);
+    prefs.end();
+    Serial.printf("[epaper] OMS wake_min set to %u minute(s)\n", g_configuredWakeIntervalMin);
+}
+
+const char *firstCommandString(JsonVariantConst src,
+                               const char *key1,
+                               const char *key2,
+                               const char *key3 = nullptr,
+                               const char *key4 = nullptr) {
+    const char *keys[] = {key1, key2, key3, key4};
+    for (const char *key : keys) {
+        if (key == nullptr) continue;
+        JsonVariantConst value = src[key];
+        if (value.is<const char *>()) {
+            const char *text = value.as<const char *>();
+            if (text && *text) return text;
+        }
+    }
+    return "";
+}
+
+void parseCommandObject(JsonVariantConst src, DesiredState &desired) {
+    if (src.isNull()) return;
+    desired.hasCommand = true;
+    const char *id = firstCommandString(src, "id", "command_id");
+    if (id && *id) desired.commandId = id;
+    const char *name = firstCommandString(src, "name", "command", "cmd", "action");
+    if (strcmp(name, "force_refresh") == 0 || strcmp(name, "refresh") == 0) {
+        desired.forceRefresh = true;
+    } else if (strcmp(name, "retire") == 0) {
+        desired.retire = true;
+    } else if (strcmp(name, "unretire") == 0 || strcmp(name, "activate") == 0) {
+        desired.unretire = true;
+    } else if (strcmp(name, "identify") == 0) {
+        desired.identify = true;
+    } else if (strcmp(name, "factory_reset") == 0 || strcmp(name, "factory-reset") == 0) {
+        desired.factoryReset = true;
+    }
+}
+
+DesiredState pollDesiredState() {
+    DesiredState desired;
+    if (WiFi.status() != WL_CONNECTED || g_displayId.length() == 0) return desired;
+
+    HTTPClient http;
+    const String url = absUrl(String("/api/forgekey/epaper/" + g_displayId + "/desired.json").c_str());
+    http.begin(url);
+    http.addHeader("Accept", "application/json");
+    const int code = http.GET();
+    if (code == 204 || code == 404) {
+        http.end();
+        Serial.printf("[epaper] no desired-state changes (code=%d)\n", code);
+        return desired;
+    }
+    if (code != 200) {
+        http.end();
+        Serial.printf("[epaper] desired-state fetch failed (code=%d)\n", code);
+        return desired;
+    }
+    const int contentLength = http.getSize();
+    if (contentLength > static_cast<int>(kMaxDesiredStateBytes)) {
+        http.end();
+        Serial.printf("[epaper] desired-state length unusable (len=%d)\n", contentLength);
+        return desired;
+    }
+    const String body = http.getString();
+    http.end();
+
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, body);
+    if (err) {
+        Serial.printf("[epaper] desired-state JSON parse failed: %s\n", err.c_str());
+        return desired;
+    }
+
+    JsonVariantConst root = doc.as<JsonVariantConst>();
+    JsonVariantConst desiredObj = root;
+    if (!root["desired"].isNull()) {
+        desiredObj = root["desired"];
+    }
+    if (!desiredObj["wake_min"].isNull()) {
+        applyWakeCadence(desiredObj["wake_min"].as<uint32_t>());
+    }
+    if (!desiredObj["force_refresh"].isNull() && desiredObj["force_refresh"].as<bool>()) {
+        desired.forceRefresh = true;
+    }
+    if (!desiredObj["retired"].isNull()) {
+        if (desiredObj["retired"].as<bool>()) desired.retire = true;
+        else desired.unretire = true;
+    }
+    if (!desiredObj["retire"].isNull() && desiredObj["retire"].as<bool>()) desired.retire = true;
+    if (!desiredObj["identify"].isNull() && desiredObj["identify"].as<bool>()) desired.identify = true;
+    if (!desiredObj["factory_reset"].isNull() && desiredObj["factory_reset"].as<bool>()) desired.factoryReset = true;
+    const char *commandId = desiredObj["command_id"] | "";
+    if (commandId && *commandId) {
+        desired.commandId = commandId;
+        desired.hasCommand = true;
+    }
+
+    JsonVariantConst command = root["command"];
+    if (!command.isNull()) parseCommandObject(command, desired);
+    JsonVariantConst commands = root["commands"];
+    if (commands.is<JsonArrayConst>()) {
+        JsonArrayConst commandArray = commands.as<JsonArrayConst>();
+        if (commandArray.size() > 0) {
+            parseCommandObject(commandArray[0], desired);
+        }
+    }
+
+    if (strcmp(commandName(desired), "none") != 0) {
+        Serial.printf("[epaper] desired command=%s id=%s\n",
+                      commandName(desired), desired.commandId.c_str());
+    }
+    return desired;
+}
+
+void persistRetiredFlag(bool retired) {
+    g_retiredByCommand = retired;
+    Preferences prefs;
+    prefs.begin(kNvsNamespace, /*readonly=*/false);
+    prefs.putBool(kNvsKeyRetired, retired);
+    prefs.end();
+}
+
+void clearImageCache() {
+    g_lastEtag = "";
+    g_consecutiveUnchanged = 0;
+    Preferences prefs;
+    prefs.begin(kNvsNamespace, /*readonly=*/false);
+    prefs.remove(kNvsKeyEtag);
+    prefs.putUInt(kNvsKeyUnchangedCount, 0);
+    prefs.end();
+}
+
+void factoryResetAndRestart() {
+    Preferences prefs;
+    if (prefs.begin(kNvsNamespace, /*readonly=*/false)) {
+        prefs.clear();
+        prefs.end();
+    }
+    WiFiManager wm;
+    wm.resetSettings();
+    delay(250);
+    ESP.restart();
 }
 
 // ---- PNG decode ----------------------------------------------------
@@ -416,6 +651,8 @@ void pollOtaPolicy() {
 //   "error"       transport / decode failure — keep current paint.
 const char *fetchImage() {
     if (WiFi.status() != WL_CONNECTED) {
+        g_renderStatus = "wifi_error";
+        g_lastHttpStatus = 0;
         Serial.println("[epaper] skipping image fetch — WiFi not connected");
         return "error";
     }
@@ -432,22 +669,27 @@ const char *fetchImage() {
     http.collectHeaders(trackedHeaders, 1);
 
     const int code = http.GET();
+    g_lastHttpStatus = code;
     if (code == 304) {
+        g_renderStatus = "unchanged";
         Serial.println("[epaper] image unchanged (304) — skipping redraw");
         http.end();
         return "unchanged";
     }
     if (code == 409) {
+        g_renderStatus = "bind";
         Serial.println("[epaper] display unbound (409) — painting bind QR");
         http.end();
         return "bind";
     }
     if (code == 404) {
+        g_renderStatus = "retired";
         Serial.println("[epaper] display retired (404)");
         http.end();
         return "retired";
     }
     if (code != 200) {
+        g_renderStatus = "http_error";
         Serial.printf("[epaper] image fetch failed (code=%d)\n", code);
         http.end();
         return "error";
@@ -476,6 +718,7 @@ const char *fetchImage() {
 
     WiFiClient *stream = http.getStreamPtr();
     if (stream == nullptr) {
+        g_renderStatus = "stream_error";
         Serial.println("[epaper] PNG stream null");
         free(body);
         http.end();
@@ -505,25 +748,84 @@ const char *fetchImage() {
 
     const bool painted = paintFromPng(body, static_cast<size_t>(contentLength));
     free(body);
+    g_renderStatus = painted ? "rendered" : "render_failed";
     return painted ? "ok" : "error";
 }
 
-bool postBattery(uint8_t percent) {
-    if (WiFi.status() != WL_CONNECTED) {
+int readBatteryVoltageMv() {
+#if defined(FORGEKEY_EPAPER_BATTERY_ADC_PIN)
+    const int sensedMv = analogReadMilliVolts(FORGEKEY_EPAPER_BATTERY_ADC_PIN);
+    return (sensedMv * FORGEKEY_EPAPER_BATTERY_DIVIDER_NUM) /
+           FORGEKEY_EPAPER_BATTERY_DIVIDER_DEN;
+#else
+    return -1;
+#endif
+}
+
+int batteryPercentFromMv(int mv) {
+    if (mv < 0) return -1;
+    if (mv <= FORGEKEY_EPAPER_BATTERY_EMPTY_MV) return 0;
+    if (mv >= FORGEKEY_EPAPER_BATTERY_FULL_MV) return 100;
+    return ((mv - FORGEKEY_EPAPER_BATTERY_EMPTY_MV) * 100) /
+           (FORGEKEY_EPAPER_BATTERY_FULL_MV - FORGEKEY_EPAPER_BATTERY_EMPTY_MV);
+}
+
+bool postHealth(const char *cycleResult) {
+    if (WiFi.status() != WL_CONNECTED || g_displayId.length() == 0) {
         return false;
     }
     HTTPClient http;
-    String url = absUrl(String("/api/forgekey/epaper/" + g_displayId + "/battery/").c_str());
+    const String url = absUrl(String("/api/forgekey/epaper/" + g_displayId + "/health/").c_str());
     http.begin(url);
     http.addHeader("Content-Type", "application/json");
-    JsonDocument body;
-    body["percent"] = percent;
-    String payload;
-    serializeJson(body, payload);
+
+    String payload = "{";
+    payload += "\"display_id\":\"" + g_displayId + "\"";
+    payload += ",\"firmware_version\":\"";
+    payload += FORGEKEY_FIRMWARE_VERSION;
+    payload += "\"";
+    payload += ",\"last_image_etag\":";
+    if (g_lastEtag.length() > 0) {
+        JsonDocument etagDoc;
+        etagDoc["etag"] = g_lastEtag;
+        String etagJson;
+        serializeJson(etagDoc["etag"], etagJson);
+        payload += etagJson;
+    } else {
+        payload += "null";
+    }
+    payload += ",\"unchanged_count\":" + String(g_consecutiveUnchanged);
+    payload += ",\"failure_count\":" + String(g_consecutiveFailures);
+    payload += ",\"wake_interval_min\":" + String(g_lastScheduledWakeIntervalMin);
+    payload += ",\"configured_wake_min\":" + String(g_configuredWakeIntervalMin);
+    payload += ",\"render_status\":\"" + g_renderStatus + "\"";
+    payload += ",\"cycle_result\":\"";
+    payload += cycleResult ? cycleResult : "";
+    payload += "\"";
+    payload += ",\"last_http_status\":" + String(g_lastHttpStatus);
+    payload += ",\"retired\":" + String(g_retiredByCommand ? "true" : "false");
+
+    const int batteryMv = readBatteryVoltageMv();
+    payload += ",\"battery\":{";
+    if (batteryMv >= 0) {
+        payload += "\"available\":true";
+        payload += ",\"voltage_mv\":" + String(batteryMv);
+        payload += ",\"percent\":" + String(batteryPercentFromMv(batteryMv));
+        payload += ",\"source\":\"adc\"";
+    } else {
+        payload += "\"available\":false";
+        payload += ",\"source\":\"unavailable\"";
+        payload += ",\"reason\":\"sku_6416_no_battery_adc_to_xiao_socket\"";
+    }
+    payload += "}";
+    OtaUpdater::appendHealthJson(payload);
+    BoardManifest::appendHealthJson(payload, CapabilityRegistry::head());
+    payload += "}";
+
     const int code = http.POST(payload);
     http.end();
-    if (code != 200) {
-        Serial.printf("[epaper] battery POST failed (code=%d)\n", code);
+    if (code < 200 || code >= 300) {
+        Serial.printf("[epaper] health POST failed (code=%d)\n", code);
         return false;
     }
     return true;
@@ -557,7 +859,6 @@ void persistWakeState() {
     prefs.putString(kNvsKeyEtag, g_lastEtag);
     prefs.putUInt(kNvsKeyUnchangedCount, g_consecutiveUnchanged);
     prefs.putUInt(kNvsKeyFailureCount, g_consecutiveFailures);
-    prefs.putUInt(kNvsKeyBatteryPostSkips, g_batteryPostSkips);
     prefs.end();
 }
 
@@ -568,10 +869,10 @@ void loadFromNvs() {
     g_lastEtag = prefs.getString(kNvsKeyEtag, String(""));
     g_consecutiveUnchanged = prefs.getUInt(kNvsKeyUnchangedCount, 0);
     g_consecutiveFailures = prefs.getUInt(kNvsKeyFailureCount, 0);
-    g_batteryPostSkips = prefs.getUInt(kNvsKeyBatteryPostSkips,
-                                       kBatteryPostEveryWakeCycles);
     g_configuredWakeIntervalMin = clampWakeInterval(
         prefs.getUInt(kNvsKeyWakeIntervalMin, DEFAULT_WAKE_INTERVAL_MIN));
+    g_lastScheduledWakeIntervalMin = g_configuredWakeIntervalMin;
+    g_retiredByCommand = prefs.getBool(kNvsKeyRetired, false);
     prefs.end();
 }
 
@@ -610,29 +911,6 @@ uint32_t nextWakeIntervalForResult(const char *result) {
     return saturatingDoubledInterval(kErrorBaseWakeIntervalMin,
                                      exponent,
                                      kMaxErrorWakeIntervalMin);
-}
-
-bool isBatteryHeartbeatEligible(const char *result) {
-    // Only spend the extra request after a successful image check. If the
-    // GET failed, a second POST is likely to fail too and costs battery
-    // without improving the displayed state. Bind/retired panels also do
-    // not need placeholder battery telemetry while waiting for staff action.
-    return strcmp(result, "ok") == 0 || strcmp(result, "unchanged") == 0;
-}
-
-bool shouldPostBatteryThisWake(const char *result) {
-    if (!isBatteryHeartbeatEligible(result)) {
-        return false;
-    }
-    if (g_batteryPostSkips >= kBatteryPostEveryWakeCycles) {
-        return true;
-    }
-    ++g_batteryPostSkips;
-    return g_batteryPostSkips >= kBatteryPostEveryWakeCycles;
-}
-
-void markBatteryPostAttempted() {
-    g_batteryPostSkips = 0;
 }
 
 void requestDeepSleep(uint32_t minutes) {
@@ -676,39 +954,61 @@ void tickFn() {
 
     Serial.println("[epaper] starting wake cycle");
     pollOtaPolicy();
-    const char *result = fetchImage();
-    if (strcmp(result, "bind") == 0) {
-        paintBindQrCard(g_displayId);
-    } else if (strcmp(result, "retired") == 0) {
-        paintRetiredCard();
+    DesiredState desired = pollDesiredState();
+    postCommandStatus(desired, "received");
+
+    const char *result = "error";
+    if (desired.factoryReset) {
+        g_renderStatus = "factory_reset";
+        postCommandStatus(desired, "applied");
+        paintFactoryResetCard();
+        postHealth("factory_reset");
+        factoryResetAndRestart();
+        return;
     }
-    // "ok", "unchanged", and "error" all leave the panel in its
-    // current state (paintFromPng already flushed on success; 304 and
-    // transport errors keep the prior render). Any non-transport response
-    // proves the post-OTA image can boot, join WiFi, and talk to OMS, so it
-    // is safe to mark a pending OTA slot valid before deep sleep.
+    if (desired.unretire) {
+        persistRetiredFlag(false);
+        postCommandStatus(desired, "applied");
+    }
+    if (desired.retire) {
+        persistRetiredFlag(true);
+        g_renderStatus = "retired";
+        result = "retired";
+        paintRetiredCard();
+        postCommandStatus(desired, "applied");
+    } else if (desired.identify) {
+        g_renderStatus = "identify";
+        result = "ok";
+        paintIdentifyCard();
+        postCommandStatus(desired, "applied");
+    } else if (g_retiredByCommand) {
+        g_renderStatus = "retired";
+        result = "retired";
+        paintRetiredCard();
+    } else {
+        if (desired.forceRefresh) {
+            clearImageCache();
+            postCommandStatus(desired, "applied");
+        }
+        result = fetchImage();
+        if (strcmp(result, "bind") == 0) {
+            paintBindQrCard(g_displayId);
+        } else if (strcmp(result, "retired") == 0) {
+            paintRetiredCard();
+        }
+    }
+
+    // "ok", "unchanged", command-rendered cards, and server-side retired/bind
+    // states all prove the post-OTA image can boot, join WiFi, and talk to OMS,
+    // so it is safe to mark a pending OTA slot valid before deep sleep.
     if (strcmp(result, "error") != 0) {
         otaUpdater.markStableIfPending();
     }
 
     const uint32_t nextWakeMinutes = nextWakeIntervalForResult(result);
-
-    // See header — no ADC line on this board variant; placeholder until
-    // either Seeed publishes a path or somebody wires a divider. Avoid
-    // spending an extra HTTP POST on every wake for placeholder telemetry.
-    if (shouldPostBatteryThisWake(result)) {
-        Serial.println("[epaper] posting placeholder battery heartbeat");
-        postBattery(kPlaceholderBatteryPercent);
-        markBatteryPostAttempted();
-    } else if (isBatteryHeartbeatEligible(result)) {
-        Serial.printf("[epaper] skipping battery heartbeat (%u/%u wake cycles)\n",
-                      g_batteryPostSkips,
-                      kBatteryPostEveryWakeCycles);
-    } else {
-        Serial.printf("[epaper] skipping battery heartbeat for result=%s\n", result);
-    }
-
+    g_lastScheduledWakeIntervalMin = nextWakeMinutes;
     persistWakeState();
+    postHealth(result);
     requestDeepSleep(nextWakeMinutes);
 }
 

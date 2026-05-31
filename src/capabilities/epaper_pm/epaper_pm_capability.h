@@ -8,21 +8,27 @@
 // One panel = one Seeed XIAO + 7.5" ePaper combo (SKU 6416) bound to a
 // single asset in OMS. Firmware lifecycle is asymmetric to the other
 // ForgeKey devices: instead of staying online and ticking, the e-paper
-// panel runs a single wake-cycle then deep-sleeps for
-// FORGEKEY_EPAPER_WAKE_INTERVAL_MINUTES. During each wake-cycle:
+// panel runs a single wake-cycle then deep-sleeps for the OMS-managed
+// wake_min cadence (or DEFAULT_WAKE_INTERVAL_MIN before OMS overrides it).
+// During each wake-cycle:
 //
 //   1. WiFi connect (uses the shared wifi_setup / captive portal path).
-//   2. HTTP GET /api/forgekey/epaper/<display_id>/image.png with
+//   2. HTTP GET /api/forgekey/epaper/<display_id>/firmware.json for
+//      signed display_id-keyed OTA policy (no MQTT awake window needed).
+//   3. HTTP GET /api/forgekey/epaper/<display_id>/desired.json for OMS
+//      wake_min and commands (force_refresh, retire, identify,
+//      factory_reset).
+//   4. HTTP GET /api/forgekey/epaper/<display_id>/image.png with
 //      `If-None-Match: <last-etag-from-NVS>`. On 304 skip the redraw;
 //      on 200 decode the PNG and push it to the panel; on 404/409
-//      paint a "display not bound" card.
-//   3. Occasionally HTTP POST /api/forgekey/epaper/<display_id>/battery/
-//      with a placeholder 100% — the SKU 6416 driver board does NOT
-//      route a battery voltage-divider line to the XIAO socket, so a
-//      real reading is impossible without a hardware mod. The endpoint
-//      stays declared on the OMS side for future device classes, but the
-//      firmware skips most placeholder POSTs to save battery.
-//   4. Persist the new ETag/backoff counters to NVS, request deep sleep.
+//      paint retired/bind cards.
+//   5. HTTP POST /api/forgekey/epaper/<display_id>/health/ with ETag,
+//      unchanged/failure counts, wake interval, render status, last HTTP
+//      status, OTA slot health, board manifest, and battery telemetry.
+//      The stock SKU 6416 reports battery.available=false because no
+//      battery ADC line reaches the XIAO socket; a hardware divider can be
+//      enabled with FORGEKEY_EPAPER_BATTERY_ADC_PIN build flags.
+//   6. Persist the new ETag/backoff counters to NVS, request deep sleep.
 //
 // The display_id is the same UUID the OMS admin sees on the
 // EPaperDisplay row; it's provisioned during device enrollment and
@@ -50,8 +56,8 @@ bool detectFn();
 // display_id from NVS, and arm the deep-sleep wake reason. Idempotent.
 void setupFn();
 
-// Runs the full wake cycle (HTTP GET image → render as needed →
-// occasional battery heartbeat → adaptive deep sleep request). Designed
+// Runs the full wake cycle (OTA/desired-state polling → render as needed →
+// health telemetry → adaptive deep sleep request). Designed
 // to be called once per main loop in a
 // build that does not use the long-running tick model.
 void tickFn();
