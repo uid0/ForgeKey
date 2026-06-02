@@ -74,6 +74,7 @@
 #include "../../provisioning/device_config.h"
 #include "../../ota/ota_updater.h"
 #include "../../boards/board_manifest.h"
+#include "../../power/power_manager.h"
 #include "../registry.h"
 #include "../../mqtt/mqtt_client.h"
 
@@ -607,12 +608,58 @@ void postOtaStatus(const char *state, const char *version, int progress, const c
     }
 }
 
+// Gate values for the wake-time OTA pre-flight. Skipping a check costs a
+// pulled-from-config integer compare; aborting an in-flight flash from a
+// dying battery bricks a panel until someone walks up with a USB cable, so
+// the asymmetry justifies pre-checking.
+//   - kOtaMinBatteryPercent: skip if the panel reports under this. Stock
+//     SKU 6416 doesn't route battery to the XIAO socket, so this only fires
+//     on hardware-modded panels (FORGEKEY_BATTERY_ADC_PIN). Unmeasurable
+//     battery (mv < 0) falls through.
+//   - kOtaMinRssiDbm: skip if WiFi signal is weaker than this. A weak link
+//     mostly costs wall-clock during the multi-MB download, but a mid-flash
+//     disconnect that times out triggers Update.abort() which leaves the
+//     pending slot invalid and reboot rolls back — so we still want it
+//     rare. -85 dBm is the marginal-to-unusable boundary for ESP32-C3.
+static constexpr int kOtaMinBatteryPercent = 30;
+static constexpr int kOtaMinRssiDbm = -85;
+
 void pollOtaPolicy() {
     if (WiFi.status() != WL_CONNECTED || g_displayId.length() == 0) return;
     otaUpdater.setStatusCallback(postOtaStatus);
 
+    // Battery floor — only applies when the build can actually read battery.
+    const PowerManager::BatteryConfig &batt = BoardManifest::batteryConfig();
+    const int batteryMv = PowerManager::batteryVoltageMv(batt);
+    if (batteryMv >= 0) {
+        const int batteryPct = PowerManager::batteryPercentFromMv(batteryMv, batt);
+        if (batteryPct < kOtaMinBatteryPercent) {
+            Serial.printf(
+                "[epaper] OTA check skipped: battery %d%% < %d%% — bricking "
+                "risk on a mid-flash power loss\n",
+                batteryPct, kOtaMinBatteryPercent);
+            return;
+        }
+    }
+
+    // RSSI floor — a marginal link is fine for the small image fetch
+    // (which is the next wake-cycle step) but risky for a multi-MB
+    // firmware download. Skip and try again next wake.
+    const int rssi = WiFi.RSSI();
+    if (rssi != 0 && rssi < kOtaMinRssiDbm) {
+        Serial.printf(
+            "[epaper] OTA check skipped: RSSI %d dBm < %d dBm — multi-MB "
+            "download likely to stall mid-flash\n",
+            rssi, kOtaMinRssiDbm);
+        return;
+    }
+
     HTTPClient http;
-    const String url = absUrl(String("/api/forgekey/epaper/" + g_displayId + "/firmware.json").c_str());
+    // Hits the OMS firmware-check endpoint added in oms PR #673. Passing
+    // ?current=<running_version> lets the server immediately 204 us when
+    // no update is staged for this display, avoiding the parse round-trip.
+    const String url = absUrl(
+        String("/api/forgekey/epaper/" + g_displayId + "/firmware-check/?current=" + FORGEKEY_FIRMWARE_VERSION).c_str());
     http.begin(url);
     http.addHeader("Accept", "application/json");
     const int code = http.GET();
