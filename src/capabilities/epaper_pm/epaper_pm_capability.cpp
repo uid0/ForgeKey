@@ -92,6 +92,15 @@ constexpr const char *kNvsKeyUnchangedCount = "unch";
 constexpr const char *kNvsKeyFailureCount = "fail";
 constexpr const char *kNvsKeyWakeIntervalMin = "wake_min";
 constexpr const char *kNvsKeyRetired = "retired";
+// Minutes the panel has been running its existing image since the last
+// full-screen ghosting refresh. The whole point of the persisted counter
+// is to survive deep sleep — globals get zeroed.
+constexpr const char *kNvsKeyMinSinceFull = "min_full";
+// The interval the prior wake scheduled us to sleep. Stored so this wake
+// can add the right elapsed time to the ghosting counter — the configured
+// wake-min isn't enough because the adaptive cadence can double it under
+// long unchanged streaks.
+constexpr const char *kNvsKeyLastSchedMin = "sched_min";
 
 // Panel geometry. The Seeed_GFX driver reports these too, but they're
 // the cleanest place to put the size assumptions the QR / PNG paint
@@ -114,6 +123,12 @@ constexpr uint32_t kErrorBaseWakeIntervalMin = 15;
 constexpr uint32_t kMaxErrorWakeIntervalMin = 4 * 60;
 constexpr uint32_t kSetupRetryWakeIntervalMin = 5;
 constexpr uint32_t kRetiredWakeIntervalMin = 12 * 60;
+// E-paper ghosting builds up while the same image stays on screen. Once
+// a day, do a full white→black→white sweep (each `update()` is a full
+// panel refresh) before repainting the actual content — clears latent
+// pixels and resets contrast. Operator can also force this immediately
+// via desired.full_refresh / command "full_refresh".
+constexpr uint32_t kFullRefreshIntervalMin = 24 * 60;
 constexpr size_t kMaxOtaPolicyBytes = 4096;
 constexpr size_t kMaxDesiredStateBytes = 4096;
 
@@ -155,6 +170,7 @@ uint32_t g_consecutiveUnchanged = 0;
 uint32_t g_consecutiveFailures = 0;
 uint32_t g_configuredWakeIntervalMin = DEFAULT_WAKE_INTERVAL_MIN;
 uint32_t g_lastScheduledWakeIntervalMin = DEFAULT_WAKE_INTERVAL_MIN;
+uint32_t g_minutesSinceFullRefresh = 0;
 int g_lastHttpStatus = 0;
 String g_renderStatus = "boot";
 bool g_retiredByCommand = false;
@@ -221,6 +237,23 @@ void persistDisplayId(const String &did) {
 }
 
 // ---- Panel paint helpers -------------------------------------------
+
+// White → black → white sweep. Each `g_panel.update()` is a full panel
+// refresh on the UC8179 (~3-5s and blocks until done), so no extra
+// delays are needed between transitions. Caller is responsible for
+// clearing the image-cache etag and refetching the content so the next
+// `fetchImage()` repaints the actual work-order rather than returning
+// 304 Not Modified and leaving the panel blank.
+void runGhostingRefresh() {
+    Serial.println("[epaper] running daily ghosting refresh (white→black→white)");
+    g_panel.setRotation(0);
+    g_panel.fillScreen(TFT_WHITE);
+    g_panel.update();
+    g_panel.fillScreen(TFT_BLACK);
+    g_panel.update();
+    g_panel.fillScreen(TFT_WHITE);
+    g_panel.update();
+}
 
 void paintMessageCard(const char *title, const char *line1, const char *line2 = nullptr) {
     g_panel.setRotation(0);
@@ -336,6 +369,7 @@ uint32_t clampWakeInterval(uint32_t minutes);
 
 struct DesiredState {
     bool forceRefresh = false;
+    bool fullRefresh = false;
     bool retire = false;
     bool unretire = false;
     bool identify = false;
@@ -349,6 +383,7 @@ const char *commandName(const DesiredState &desired) {
     if (desired.retire) return "retire";
     if (desired.unretire) return "unretire";
     if (desired.identify) return "identify";
+    if (desired.fullRefresh) return "full_refresh";
     if (desired.forceRefresh) return "force_refresh";
     return "none";
 }
@@ -415,6 +450,8 @@ void parseCommandObject(JsonVariantConst src, DesiredState &desired) {
     const char *name = firstCommandString(src, "name", "command", "cmd", "action");
     if (strcmp(name, "force_refresh") == 0 || strcmp(name, "refresh") == 0) {
         desired.forceRefresh = true;
+    } else if (strcmp(name, "full_refresh") == 0 || strcmp(name, "ghosting_refresh") == 0) {
+        desired.fullRefresh = true;
     } else if (strcmp(name, "retire") == 0) {
         desired.retire = true;
     } else if (strcmp(name, "unretire") == 0 || strcmp(name, "activate") == 0) {
@@ -471,6 +508,9 @@ DesiredState pollDesiredState() {
     }
     if (!desiredObj["force_refresh"].isNull() && desiredObj["force_refresh"].as<bool>()) {
         desired.forceRefresh = true;
+    }
+    if (!desiredObj["full_refresh"].isNull() && desiredObj["full_refresh"].as<bool>()) {
+        desired.fullRefresh = true;
     }
     if (!desiredObj["retired"].isNull()) {
         if (desiredObj["retired"].as<bool>()) desired.retire = true;
@@ -841,6 +881,7 @@ bool postHealth(const char *cycleResult) {
     payload += ",\"failure_count\":" + String(g_consecutiveFailures);
     payload += ",\"wake_interval_min\":" + String(g_lastScheduledWakeIntervalMin);
     payload += ",\"configured_wake_min\":" + String(g_configuredWakeIntervalMin);
+    payload += ",\"min_since_full_refresh\":" + String(g_minutesSinceFullRefresh);
     payload += ",\"render_status\":\"" + g_renderStatus + "\"";
     payload += ",\"cycle_result\":\"";
     payload += cycleResult ? cycleResult : "";
@@ -890,6 +931,8 @@ void persistWakeState() {
     prefs.putString(kNvsKeyEtag, g_lastEtag);
     prefs.putUInt(kNvsKeyUnchangedCount, g_consecutiveUnchanged);
     prefs.putUInt(kNvsKeyFailureCount, g_consecutiveFailures);
+    prefs.putUInt(kNvsKeyMinSinceFull, g_minutesSinceFullRefresh);
+    prefs.putUInt(kNvsKeyLastSchedMin, g_lastScheduledWakeIntervalMin);
     prefs.end();
 }
 
@@ -902,7 +945,9 @@ void loadFromNvs() {
     g_consecutiveFailures = prefs.getUInt(kNvsKeyFailureCount, 0);
     g_configuredWakeIntervalMin = clampWakeInterval(
         prefs.getUInt(kNvsKeyWakeIntervalMin, DEFAULT_WAKE_INTERVAL_MIN));
-    g_lastScheduledWakeIntervalMin = g_configuredWakeIntervalMin;
+    g_lastScheduledWakeIntervalMin =
+        prefs.getUInt(kNvsKeyLastSchedMin, g_configuredWakeIntervalMin);
+    g_minutesSinceFullRefresh = prefs.getUInt(kNvsKeyMinSinceFull, 0);
     g_retiredByCommand = prefs.getBool(kNvsKeyRetired, false);
     prefs.end();
 }
@@ -987,6 +1032,11 @@ void tickFn() {
     g_ranThisBoot = true;
 
     Serial.println("[epaper] starting wake cycle");
+    // The interval we just slept (loaded from NVS in setupFn) is the
+    // elapsed time since the previous wake stamped the counter. Add it
+    // before any command-driven branch so a force-reset or fullRefresh
+    // both consume + reset the same accumulator.
+    g_minutesSinceFullRefresh += g_lastScheduledWakeIntervalMin;
     pollOtaPolicy();
     DesiredState desired = pollDesiredState();
     postCommandStatus(desired, "received");
@@ -1023,6 +1073,20 @@ void tickFn() {
         if (desired.forceRefresh) {
             clearImageCache();
             postCommandStatus(desired, "applied");
+        }
+        const bool ghostingDue = desired.fullRefresh ||
+                                 g_minutesSinceFullRefresh >= kFullRefreshIntervalMin;
+        if (ghostingDue) {
+            runGhostingRefresh();
+            // The black/white sweep wiped what was on the panel, so the
+            // server's etag no longer matches our actual paint state —
+            // drop the cache to force a 200 + repaint instead of a 304
+            // that would leave the panel white.
+            clearImageCache();
+            g_minutesSinceFullRefresh = 0;
+            if (desired.fullRefresh) {
+                postCommandStatus(desired, "applied");
+            }
         }
         result = fetchImage();
         if (strcmp(result, "bind") == 0) {
