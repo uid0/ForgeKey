@@ -59,6 +59,20 @@
     "support_mode": {
       "type": "object",
       "additionalProperties": true
+    },
+    "channel": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "1-based power relay channel for power_set/relay_set commands."
+    },
+    "relay": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Alias for channel on power relay commands."
+    },
+    "on": {
+      "type": "boolean",
+      "description": "Desired relay output state for power_set/relay_set commands."
     }
   },
   "required": [
