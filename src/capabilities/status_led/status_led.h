@@ -3,22 +3,30 @@
 
 #include <Arduino.h>
 
-// Onboard-LED status capability. Always-detected on the XIAO ESP32-S3 (the
-// orange LED on GPIO 21 is built in to the board), so detect() returns true
-// unconditionally. Future hardware (e.g. an external NeoPixel, or boards
-// without an onboard LED) can override the detect probe.
+// Onboard-LED status capability. It implements the shared ForgeKey operator
+// state semantics documented in docs/STATUS_SEMANTICS.md so people-counter,
+// temperature, ePaper, and lock-class firmware use the same visual language.
 //
 // main() drives state transitions; the capability owns the timer state and
 // blink-pattern lookup so the loop in main.cpp doesn't have to.
 namespace StatusLed {
 
 enum class State {
-    Boot,            // initial fast blink on power-up
-    WifiConnecting,  // slow blink while WiFi/portal is in progress
-    Provisioning,    // after WiFi, before MQTT connected
-    Normal,          // short blink every few seconds (steady-state OK)
-    Error,           // fast blink (something's wrong)
-    MqttConnected,   // brief flurry on (re)connect, then back to Normal
+    Booting,        // initial fast blink on power-up
+    Provisioning,   // captive portal / WiFi / OMS enrollment in progress
+    Connected,      // steady-state OK
+    Degraded,       // running, but broker/network/sensor path needs attention
+    Ota,            // OTA download / verify / reboot window
+    Error,          // blocking fault that needs operator attention
+    Identify,       // operator locate override
+    Retired,        // signed retire command accepted; identity is being cleared
+    FactoryReset,   // signed factory reset accepted; local credentials are being wiped
+
+    // Backward-compatible aliases for older call sites and downstream forks.
+    Boot = Booting,
+    WifiConnecting = Provisioning,
+    Normal = Connected,
+    MqttConnected = Connected,
 };
 
 // Request a state transition. Safe to call from anywhere; the capability's

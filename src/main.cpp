@@ -22,6 +22,7 @@
 #include "capabilities/status_led/status_led.h"
 #include "boards/board_manifest.h"
 #include "power/power_manager.h"
+#include "support/local_status_web.h"
 
 #ifndef FORGEKEY_DISABLE_BLE_SCANNER
 #include "capabilities/ble_scanner/ble_scanner.h"
@@ -72,9 +73,13 @@ constexpr size_t kDebugMessageMax = 160;
 constexpr size_t kBufferedDebugLogCount = 24;
 constexpr unsigned long kOtaRapidCheckDurationMs = 15UL * 60UL * 1000UL;
 constexpr unsigned long kOtaRapidCheckIntervalMs = 60UL * 1000UL;
+constexpr unsigned long kSupportModeDefaultDurationMs = 15UL * 60UL * 1000UL;
+constexpr unsigned long kSupportModeMaxDurationMs = 60UL * 60UL * 1000UL;
 
 unsigned long g_otaRapidCheckUntilMs = 0;
 unsigned long g_nextOtaRapidCheckMs = 0;
+unsigned long g_supportModeUntilMs = 0;
+unsigned long g_lastSupportHeartbeatMs = 0;
 
 struct BufferedDebugLog {
     unsigned long timestampMs;
@@ -165,6 +170,62 @@ void tickOtaRapidChecking(bool mqttConnected) {
     }
     g_nextOtaRapidCheckMs = now + kOtaRapidCheckIntervalMs;
 }
+
+bool supportModeActive() {
+    if (g_supportModeUntilMs == 0) return false;
+    if (timeReached(millis(), g_supportModeUntilMs)) {
+        g_supportModeUntilMs = 0;
+        Serial.setDebugOutput(false);
+        return false;
+    }
+    return true;
+}
+
+unsigned long supportModeRemainingS() {
+    if (!supportModeActive()) return 0;
+    return (g_supportModeUntilMs - millis() + 999UL) / 1000UL;
+}
+
+void setSupportModeDuration(unsigned long durationS) {
+    unsigned long maxDurationS = kSupportModeMaxDurationMs / 1000UL;
+    if (durationS == 0) durationS = kSupportModeDefaultDurationMs / 1000UL;
+    if (durationS > maxDurationS) durationS = maxDurationS;
+    unsigned long durationMs = durationS * 1000UL;
+    g_supportModeUntilMs = millis() + durationMs;
+    g_lastSupportHeartbeatMs = 0;
+    Serial.setDebugOutput(true);
+}
+
+void stopSupportMode() {
+    g_supportModeUntilMs = 0;
+    Serial.setDebugOutput(false);
+}
+
+void appendSupportModeJson(String& payload) {
+    payload += ",\"support_mode\":{";
+    payload += "\"active\":";
+    payload += supportModeActive() ? "true" : "false";
+    payload += ",\"remaining_s\":";
+    payload += String(supportModeRemainingS());
+    payload += ",\"buffered_log_count\":";
+    payload += String((unsigned)g_bufferedDebugLogCount);
+    payload += ",\"local_status_web\":";
+    payload += LocalStatusWeb::active() ? "true" : "false";
+    payload += "}";
+}
+
+void tickSupportMode(bool mqttConnected) {
+    if (!supportModeActive()) return;
+    unsigned long now = millis();
+    if (g_lastSupportHeartbeatMs != 0 && now - g_lastSupportHeartbeatMs < 30000UL) return;
+    g_lastSupportHeartbeatMs = now;
+    if (mqttConnected) {
+        debugPrintf("DEBUG", "SUPPORT",
+                    "support mode active remaining_s=%lu heap=%lu rssi=%d buffered_logs=%u",
+                    supportModeRemainingS(), (unsigned long)ESP.getFreeHeap(), WiFi.RSSI(),
+                    (unsigned)g_bufferedDebugLogCount);
+    }
+}
 }  // namespace
 
 void debugPrint(const char* level, const char* tag, const char* msg) {
@@ -198,7 +259,7 @@ static void setBlinkActive(bool on) {
 #define IDENTIFY_DEFAULT_DURATION_S 30
 #endif
 
-static void publishStatusSnapshot(const char* requestedCmd, const char* commandId) {
+static String buildStatusSnapshotPayload(const char* requestedCmd, const char* commandId) {
     // Used for {"cmd":"status"} and {"cmd":"ping"} acks. We normalize
     // cmd_ack to "status" for both so OMS/UI callers can treat ping as a
     // status alias while still seeing which command triggered the snapshot.
@@ -277,7 +338,17 @@ static void publishStatusSnapshot(const char* requestedCmd, const char* commandI
     ForgeKeyBuildMetadata::appendJson(payload);
     OtaUpdater::appendHealthJson(payload);
     ForgeKeyWatchdog::appendHealthJson(payload);
+    appendSupportModeJson(payload);
     payload += "}";
+    return payload;
+}
+
+static String buildLocalStatusSnapshot() {
+    return buildStatusSnapshotPayload("local_status_web", "");
+}
+
+static void publishStatusSnapshot(const char* requestedCmd, const char* commandId) {
+    String payload = buildStatusSnapshotPayload(requestedCmd, commandId);
     mqttClient.publishStatus(payload.c_str());
     StatusLed::triggerMessageFlash();
 }
@@ -389,6 +460,32 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
         StatusLed::triggerMessageFlash();
         debugPrintf("INFO", "CMD", "identify -> %lus (was_off=%d)",
                     durationS, (int)wasOff);
+        return;
+    }
+    if (strcmp(cmd, "support_mode") == 0 || strcmp(cmd, "support") == 0 ||
+        strcmp(cmd, "run_diagnostics") == 0) {
+        const char* action = doc["action"] | (strcmp(cmd, "run_diagnostics") == 0 ? "start" : "status");
+        if (strcmp(action, "start") == 0 || strcmp(action, "on") == 0) {
+            unsigned long durationS = doc["duration_s"] | (unsigned long)(kSupportModeDefaultDurationMs / 1000UL);
+            setSupportModeDuration(durationS);
+            debugPrintf("INFO", "SUPPORT", "support mode enabled for %lus", supportModeRemainingS());
+        } else if (strcmp(action, "stop") == 0 || strcmp(action, "off") == 0) {
+            stopSupportMode();
+            debugPrint("INFO", "SUPPORT", "support mode disabled");
+        }
+        JsonDocument ack;
+        ack["cmd_ack"] = cmd;
+        ack["command_id"] = commandId;
+        ack["ok"] = true;
+        ack["active"] = supportModeActive();
+        ack["remaining_s"] = supportModeRemainingS();
+        ack["free_heap"] = (unsigned long)ESP.getFreeHeap();
+        ack["rssi"] = WiFi.RSSI();
+        ack["local_status_web"] = LocalStatusWeb::active();
+        String j;
+        serializeJson(ack, j);
+        mqttClient.publishStatus(j.c_str());
+        StatusLed::triggerMessageFlash();
         return;
     }
     if (strcmp(cmd, "status") == 0 || strcmp(cmd, "ping") == 0) {
@@ -873,7 +970,7 @@ void setup() {
     debugPrintf("INFO", "MAIN", "Capabilities: %d/%d active",
                 CapabilityRegistry::activeCount(), CapabilityRegistry::count());
 
-    StatusLed::requestState(StatusLed::State::WifiConnecting);
+    StatusLed::requestState(StatusLed::State::Provisioning);
     debugPrint("INFO", "WIFI", "Connecting to WiFi...");
     if (!WifiSetup::connectOrPortal()) {
         debugPrint("ERROR", "WIFI", "Portal failed, restarting");
@@ -945,6 +1042,7 @@ void setup() {
                                     const char* version,
                                     int progress,
                                     const char* error) {
+        StatusLed::requestState(error && *error ? StatusLed::State::Error : StatusLed::State::Ota);
         mqttClient.publishFirmwareStatus(state, version, progress, error);
     });
 
@@ -960,7 +1058,7 @@ void setup() {
         debugPrint("INFO", "PROV", "Already provisioned");
     }
 
-    StatusLed::requestState(StatusLed::State::Normal);
+    StatusLed::requestState(StatusLed::State::Connected);
 
     DeviceCredentials creds = provisioning.credentials();
     // Resolve broker connection info: NVS (set by enrollment response) wins
@@ -1062,6 +1160,8 @@ void setup() {
     mqttClient.setStatusTopic(statusTopic.c_str());
     mqttClient.subscribeCommand(onCommandMessage);
 
+    LocalStatusWeb::begin(macAddress, buildLocalStatusSnapshot);
+
 #ifdef FORGEKEY_LOCK
     // Lock verbs (unlock / lockout / clear_lockout / init_ack) flow in on
     // the same forgekey/<mac>/command topic as operator commands. JWT
@@ -1104,7 +1204,7 @@ void loop() {
         // status_led's tick() preserves the operator blink override across
         // this transition (a reconnect during identify shouldn't silently stop
         // the blink), so we can request the burst unconditionally.
-        StatusLed::requestState(StatusLed::State::MqttConnected);
+        StatusLed::requestState(StatusLed::State::Connected);
     } else if (!mqttConnected && mqttWasConnected) {
         // Log the underlying state so we can distinguish broker-initiated vs
         // network-initiated drops. Time since last successful publish helps
@@ -1116,6 +1216,7 @@ void loop() {
                     "MQTT disconnected: last_state=%d since_last_publish_ms=%s",
                     mqttClient.lastConnectRc(),
                     (lastPub == 0) ? "never" : String(sinceMs).c_str());
+        StatusLed::requestState(StatusLed::State::Degraded);
     }
     mqttWasConnected = mqttConnected;
 
@@ -1133,6 +1234,8 @@ void loop() {
     }
 
     tickOtaRapidChecking(mqttConnected);
+    tickSupportMode(mqttConnected);
+    LocalStatusWeb::tick();
 
     CapabilityRegistry::tickAll();
 #if !defined(FORGEKEY_TEMPERATURE_SENSOR) && !defined(FORGEKEY_EPAPER)
