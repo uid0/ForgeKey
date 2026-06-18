@@ -69,6 +69,22 @@ The older Arduino cabinet-lock prototype remains under `src/lock/` as a referenc
 but it is excluded from the default Arduino builds and is no longer the primary
 lock implementation.
 
+## Makefile Shortcuts
+
+Common development and verification commands are wrapped in the repository
+`Makefile`:
+
+```bash
+make help          # list available targets
+make verify-host   # host tests, schema validation, and docs link checks
+make pio-build     # all PlatformIO firmware environments
+make lock-build    # ESP-IDF cabinet-lock build
+make verify        # host checks plus firmware builds
+```
+
+The Makefile does not replace the underlying tools; it standardizes the command
+spelling used in docs, CI notes, and operator handoffs.
+
 ## Predefined Dev Networks (optional)
 
 On boot ForgeKey first tries up to two predefined WiFi networks via

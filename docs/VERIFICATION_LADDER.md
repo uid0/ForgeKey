@@ -9,8 +9,8 @@ full required set before merging to `main`.
 Run on any developer machine; no ESP toolchain or hardware is required.
 
 ```bash
-python -m pip install -r requirements-dev.txt
-python -m pytest -m "not hil"
+make install-dev
+make test-host
 ```
 
 Coverage:
@@ -25,8 +25,8 @@ Coverage:
 ## Rung 1: schema and documentation checks
 
 ```bash
-python scripts/validate_schemas.py
-python scripts/check_docs_links.py
+make schemas
+make docs-check
 ```
 
 These checks validate JSON Schema syntax, enforce one documented
@@ -36,7 +36,7 @@ on network access.
 ## Rung 2: simulator contracts
 
 ```bash
-python -m pytest tests/simulator
+make test-simulator
 ```
 
 The simulator tests verify that each supported Wokwi-compatible variant has a
@@ -54,16 +54,14 @@ build and HIL rungs.
 ## Rung 3: firmware builds
 
 ```bash
-pio run
+make pio-build
 ```
 
 Builds all PlatformIO environments, including the people-counter, temperature,
 ePaper, and production variants declared in `platformio.ini`.
 
 ```bash
-cd esp32c6-lock
-. "$IDF_PATH/export.sh"
-idf.py build
+make lock-build
 ```
 
 Builds the standalone ESP-IDF cabinet-lock firmware.
@@ -73,7 +71,7 @@ Builds the standalone ESP-IDF cabinet-lock firmware.
 Use real devices and capture a smoke evidence JSON file, then run:
 
 ```bash
-FORGEKEY_HIL_EVIDENCE=/path/to/smoke_evidence.json python -m pytest -m hil
+make test-hil HIL_EVIDENCE=/path/to/smoke_evidence.json
 ```
 
 The evidence file must mark each required smoke check as `pass`:
@@ -117,12 +115,10 @@ Smoke procedure:
 Before merging to `main`, the PR owner must provide evidence for:
 
 ```bash
-python -m pytest -m "not hil"
-python scripts/validate_schemas.py
-python scripts/check_docs_links.py
-pio run
-cd esp32c6-lock && . "$IDF_PATH/export.sh" && idf.py build
-FORGEKEY_HIL_EVIDENCE=/path/to/smoke_evidence.json python -m pytest -m hil
+make verify-host
+make pio-build
+make lock-build
+make test-hil HIL_EVIDENCE=/path/to/smoke_evidence.json
 ```
 
 HIL may be waived only for documentation-only changes that do not alter firmware,
