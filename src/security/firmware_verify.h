@@ -18,6 +18,24 @@ namespace firmware_verify {
 bool verifySignature(const uint8_t* sha256Digest, size_t digestLen,
                      const uint8_t* signatureDer, size_t signatureLen);
 
+// Chain-verifying variant: trust the leaf cert iff it's signed by the
+// FORGEKEY_INTERNAL_CA_PEM root, carries CODE_SIGNING ExtendedKeyUsage,
+// and is within its validity window; THEN verify the binary signature
+// against the leaf's public key (not the burned-in firmware pubkey).
+//
+// Use this when the MQTT firmware-dispatch payload carries a `signing_cert`
+// field — that signals the OMS operator has rotated to a CA-issued leaf
+// signer. When the field is absent, callers should fall back to
+// verifySignature() (which trusts the burned-in pubkey) so devices in
+// the field during the rollout don't brick.
+//
+// Returns true iff every link passes. Any failure (parse error, untrusted
+// signer, expired leaf, wrong EKU, signature mismatch) returns false;
+// callers MUST treat false as "abort the OTA".
+bool verifySignatureChained(const uint8_t* sha256Digest, size_t digestLen,
+                            const uint8_t* signatureDer, size_t signatureLen,
+                            const char* leafCertPem);
+
 // Decode base64 (standard alphabet, optional padding). Writes up to *outLen
 // bytes; sets *outLen to the number of bytes actually written. Returns false
 // on malformed input.

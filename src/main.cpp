@@ -20,6 +20,9 @@
 
 #include "capabilities/registry.h"
 #include "capabilities/status_led/status_led.h"
+#ifdef FORGEKEY_POWER_RELAY
+#include "capabilities/power_relay/power_relay.h"
+#endif
 #include "boards/board_manifest.h"
 #include "power/power_manager.h"
 #include "support/local_status_web.h"
@@ -304,7 +307,13 @@ static String buildStatusSnapshotPayload(const char* requestedCmd, const char* c
     PowerManager::appendHealthJson(payload, BoardManifest::batteryConfig());
     payload += ",\"ble_config\":";
     ble_desired_state::appendConfigJson(payload);
-    payload += ",\"capability_health\":{\"ble\":{";
+    payload += ",\"capability_health\":{";
+#ifdef FORGEKEY_POWER_RELAY
+    payload += "\"power_relay\":";
+    PowerRelay::appendHealthJson(payload);
+    payload += ",";
+#endif
+    payload += "\"ble\":{";
     bool bleHealthAdded = false;
 #ifndef FORGEKEY_DISABLE_BLE_SCANNER
     payload += "\"scanner\":";
@@ -525,6 +534,16 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
 #endif
         return;
     }
+#ifdef FORGEKEY_POWER_RELAY
+    if (strcmp(cmd, "power_set") == 0 || strcmp(cmd, "relay_set") == 0) {
+        String ackJson;
+        PowerRelay::setFromCommand(doc.as<JsonVariantConst>(), commandId, ackJson);
+        mqttClient.publishStatus(ackJson.c_str());
+        StatusLed::triggerMessageFlash();
+        debugPrintf("INFO", "POWER", "power command -> %s", ackJson.c_str());
+        return;
+    }
+#endif
     if (strcmp(cmd, "restart") == 0) {
         // Ack first so the operator UI can register the device acknowledged
         // the command, then briefly delay to flush the publish through the

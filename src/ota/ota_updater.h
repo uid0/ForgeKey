@@ -10,6 +10,12 @@ public:
         String url;
         String sha256;       // 64 hex chars
         String signature;    // base64-encoded ECDSA(P-256) DER over the raw image
+        // PEM-encoded CA-issued leaf cert that signs `signature`. Optional
+        // — when empty, apply() falls back to the burned-in firmware pubkey
+        // (firmware_pubkey.h). When set, the leaf must chain to
+        // forgekey_ca.h's CA root and carry the CODE_SIGNING EKU. See
+        // firmware_verify::verifySignatureChained.
+        String signingCert;
         String version;
         bool mandatory = false;
 

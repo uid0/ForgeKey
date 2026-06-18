@@ -21,6 +21,7 @@
 #include "security/oms_ca.h"
 #include "security/firmware_verify.h"
 #include "provisioning/device_config.h"
+#include "provisioning/register.h"
 #include "capabilities/registry.h"
 #include "build/build_metadata.h"
 
@@ -173,11 +174,12 @@ bool OtaUpdater::parse(const uint8_t* payload, unsigned int length, Spec& out) {
     JsonVariantConst policy = doc["policy"];
     if (policy.isNull()) policy = doc.as<JsonVariantConst>();
 
-    out.url       = firstString(doc, policy, "url");
-    out.sha256    = firstString(doc, policy, "sha256");
-    out.signature = firstString(doc, policy, "signature");
-    out.version   = firstString(doc, policy, "version");
-    out.mandatory = firstBool(doc, policy, "mandatory", false);
+    out.url         = firstString(doc, policy, "url");
+    out.sha256      = firstString(doc, policy, "sha256");
+    out.signature   = firstString(doc, policy, "signature");
+    out.signingCert = firstString(doc, policy, "signing_cert");
+    out.version     = firstString(doc, policy, "version");
+    out.mandatory   = firstBool(doc, policy, "mandatory", false);
     out.minimumVersion = firstString(policy, doc, "minimum_version");
     out.maximumVersion = firstString(policy, doc, "maximum_version");
     out.hardwareTarget = firstString(policy, doc, "hardware_target");
@@ -308,6 +310,21 @@ bool OtaUpdater::apply(const Spec& spec) {
     if (tls) {
         secureClient.setCACert(kOmsCaPem);
         secureClient.setTimeout(20);
+        // Present the device's CA-issued client cert + key when available, so
+        // the OMS mTLS firmware-download listener (oms PR #667) accepts us.
+        // Harmless when OMS is still serving the legacy token-auth listener:
+        // that endpoint doesn't request a client cert, so the leaf is never
+        // sent. Provisioning may not yet have completed on a freshly-flashed
+        // device — skip in that case and rely on the token / JWT path the
+        // dispatcher's URL already carries.
+        const DeviceCredentials& creds = provisioning.credentials();
+        if (creds.clientCertificatePem.length() > 0 &&
+            creds.clientPrivateKeyPem.length() > 0) {
+            secureClient.setCertificate(creds.clientCertificatePem.c_str());
+            secureClient.setPrivateKey(creds.clientPrivateKeyPem.c_str());
+            Serial.printf("ota: presenting mTLS client cert (%u bytes)\n",
+                          (unsigned)creds.clientCertificatePem.length());
+        }
         client = &secureClient;
     } else {
         client = &plainClient;
@@ -471,6 +488,13 @@ bool OtaUpdater::apply(const Spec& spec) {
     // A mismatch here means either the binary was tampered with in transit (and
     // collided on SHA-256, which is implausible) or the dispatcher used a key the
     // device doesn't trust — either way we refuse the swap.
+    //
+    // When the dispatch payload carries `signing_cert`, OMS has rotated to a
+    // CA-issued leaf signer (see oms PR #666): verify the cert chains to the
+    // burned-in internal CA + carries CODE_SIGNING EKU, then verify the
+    // binary signature under the *leaf's* pubkey. When it doesn't,
+    // fall back to the embedded firmware pubkey path — both rolling-out
+    // devices and OMS deployments without a CA stay supported.
     {
         uint8_t sigBuf[128];  // ECDSA(P-256) DER is ≤ 72 bytes; 128 is comfortable headroom
         size_t sigLen = sizeof(sigBuf);
@@ -481,7 +505,16 @@ bool OtaUpdater::apply(const Spec& spec) {
             notify("failed", spec.version.c_str(), -1, "bad_base64_signature");
             return false;
         }
-        if (!firmware_verify::verifySignature(digest, 32, sigBuf, sigLen)) {
+        bool sigOk;
+        if (spec.signingCert.length() > 0) {
+            Serial.printf("ota: chained verify (leaf cert %u bytes)\n",
+                          (unsigned)spec.signingCert.length());
+            sigOk = firmware_verify::verifySignatureChained(
+                digest, 32, sigBuf, sigLen, spec.signingCert.c_str());
+        } else {
+            sigOk = firmware_verify::verifySignature(digest, 32, sigBuf, sigLen);
+        }
+        if (!sigOk) {
             Serial.println("ota: signature verification failed — abort");
             Update.abort();
             updating = false;
