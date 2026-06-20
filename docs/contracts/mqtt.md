@@ -46,6 +46,7 @@ and include it inside payloads when the schema allows additive fields.
 | `status_light` | `forgekey/<mac>/status_light/status` | Device → OMS | [`forgekey.status.v1`](../schemas/status.v1.schema.json) | Reports current indicator state and capability metadata until a dedicated status-light schema is introduced. |
 | `tool_controller` | `forgekey/<mac>/tool/status` | Device → OMS | [`forgekey.status.v1`](../schemas/status.v1.schema.json) | Reports enablement/metering state as additive status fields until a dedicated tool schema is introduced. |
 | `accessory_controller` | `forgekey/<mac>/accessory/status` | Device → OMS | [`forgekey.status.v1`](../schemas/status.v1.schema.json) | Reports accessory relay/runout state as additive status fields until a dedicated accessory schema is introduced. |
+| `power_relay` | `forgekey/<mac>/status` | Device → OMS | [`forgekey.status.v1`](../schemas/status.v1.schema.json) | Reports relay channel state and aggregate BL0942 voltage/current/power/energy under additive `power_relay` fields. |
 
 ## Command verbs by class
 
@@ -59,6 +60,7 @@ and include it inside payloads when the schema allows additive fields.
 | `status_light` | `set_indicator` | `blink`, `set_pattern` |
 | `tool_controller` | `enable`, `disable` | `set_metering_mode` |
 | `accessory_controller` | `enable`, `disable` | `set_runout_timer` |
+| `power_relay` | `power_set`, `relay_set` | `status` |
 
 Unsupported verbs MUST be acknowledged with `command_unsupported`. Authenticated
 but unauthorized verbs MUST be acknowledged with `command_unauthorized`. Devices

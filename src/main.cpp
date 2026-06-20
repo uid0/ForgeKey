@@ -40,7 +40,11 @@
 #include "capabilities/ble_equipment/ble_equipment.h"
 #endif
 
-#if !defined(FORGEKEY_TEMPERATURE_SENSOR) && !defined(FORGEKEY_EPAPER)
+#if !defined(FORGEKEY_TEMPERATURE_SENSOR) && !defined(FORGEKEY_EPAPER) && !defined(FORGEKEY_POWER_RELAY)
+#define FORGEKEY_HAS_PEOPLE_COUNTER_PIPELINE 1
+#endif
+
+#ifdef FORGEKEY_HAS_PEOPLE_COUNTER_PIPELINE
 // People-counter build pulls in the camera-based occupancy capability and
 // uses a per-device photo for first-boot OMS enrollment.
 #include "capabilities/people_counter/people_counter.h"
@@ -519,7 +523,7 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
         publishCommandRejectAck("capture", commandId, "capability_unsupported");
         debugPrint("WARN", "CMD", "capture rejected: capability unsupported on this build");
         return;
-#elif !defined(FORGEKEY_TEMPERATURE_SENSOR) && !defined(FORGEKEY_EPAPER)
+#elif defined(FORGEKEY_HAS_PEOPLE_COUNTER_PIPELINE)
         if (PeopleCounter::isActive() && PeopleCounter::requestOneShotCapture()) {
             { JsonDocument ack; ack["cmd_ack"]="capture"; ack["command_id"]=commandId; ack["queued"]=true; String j; serializeJson(ack,j); mqttClient.publishStatus(j.c_str()); }
             StatusLed::triggerMessageFlash();
@@ -866,7 +870,7 @@ static void onFirmwareDispatch(const char* topic, const uint8_t* payload, unsign
 
     mqttClient.publishFirmwareStatus("received", spec.version.c_str(), -1, nullptr);
 #ifndef FORGEKEY_LOCK
-#if !defined(FORGEKEY_TEMPERATURE_SENSOR) && !defined(FORGEKEY_EPAPER)
+#ifdef FORGEKEY_HAS_PEOPLE_COUNTER_PIPELINE
     if (!spec.mandatory) {
         // Best-effort: defer if a photo upload was very recent.
         if (millis() - photoUploader.lastUploadMs() < 5000) {
@@ -920,7 +924,7 @@ static bool runProvisioning() {
 #ifdef FORGEKEY_LOCK
     // Lock builds have no camera — enroll with empty photo body.
     debugPrint("INFO", "PROV", "Enrolling with OMS (no photo: lock build)");
-#elif !defined(FORGEKEY_TEMPERATURE_SENSOR) && !defined(FORGEKEY_EPAPER)
+#elif defined(FORGEKEY_HAS_PEOPLE_COUNTER_PIPELINE)
     if (PeopleCounter::isActive() &&
         PeopleCounter::captureProvisioningPhoto(&jpeg, &jpegLen)) {
         havePhoto = true;
@@ -1190,7 +1194,7 @@ void setup() {
 #endif
 
 #ifndef FORGEKEY_LOCK
-#if !defined(FORGEKEY_TEMPERATURE_SENSOR) && !defined(FORGEKEY_EPAPER)
+#ifdef FORGEKEY_HAS_PEOPLE_COUNTER_PIPELINE
     photoUploader.begin(OMS_HOST, OMS_PORT, macAddress);
     photoUploader.setClientIdentity(creds.clientCertificatePem,
                                     creds.clientPrivateKeyPem);
@@ -1257,7 +1261,7 @@ void loop() {
     LocalStatusWeb::tick();
 
     CapabilityRegistry::tickAll();
-#if !defined(FORGEKEY_TEMPERATURE_SENSOR) && !defined(FORGEKEY_EPAPER)
+#ifdef FORGEKEY_HAS_PEOPLE_COUNTER_PIPELINE
     ForgeKeyWatchdog::markHealthy(ForgeKeyWatchdog::Subsystem::Camera);
 #endif
     ForgeKeyWatchdog::markHealthy(ForgeKeyWatchdog::Subsystem::Sensors);

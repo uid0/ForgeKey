@@ -44,6 +44,10 @@
     "mac": {
       "type": "string"
     },
+    "power_relay": {
+      "type": "object",
+      "additionalProperties": true
+    },
     "clock_valid": {
       "type": "boolean"
     },

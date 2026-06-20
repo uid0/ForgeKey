@@ -37,6 +37,24 @@
     "detail": {
       "type": "string"
     },
+    "channel": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "on": {
+      "type": "boolean"
+    },
+    "channels": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "power_relay": {
+      "type": "object",
+      "additionalProperties": true
+    },
     "wifi_detail": {
       "type": "string"
     },

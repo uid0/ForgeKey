@@ -34,6 +34,17 @@
     "duration_s": {
       "type": "integer"
     },
+    "channel": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "relay": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "on": {
+      "type": "boolean"
+    },
     "action": {
       "type": "string"
     },
