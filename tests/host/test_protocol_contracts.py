@@ -31,6 +31,10 @@ def parse_command(payload: bytes) -> dict:
         duration = int(doc.get("duration_s", 30))
         if not 1 <= duration <= 300:
             raise ValueError("duration_s out of range")
+    elif cmd in {"set_indicator", "set_pattern"}:
+        indicator = doc.get("indicator") or doc.get("state") or doc.get("pattern")
+        if indicator not in {"ok", "attention", "error", "busy", "off", "auto"}:
+            raise ValueError("unsupported indicator")
     elif cmd in {"ota", "update_firmware"}:
         if not isinstance(doc.get("url"), str) and not isinstance(doc.get("policy"), dict):
             raise ValueError("ota command missing url or policy")
@@ -134,11 +138,17 @@ def test_command_parsing_accepts_supported_identify_command() -> None:
     assert doc["cmd"] == "identify"
 
 
+def test_command_parsing_accepts_indicator_command() -> None:
+    doc = parse_command(b'{"schema_version":"forgekey.command.v1","cmd":"set_indicator","indicator":"attention"}')
+    assert doc["indicator"] == "attention"
+
+
 @pytest.mark.parametrize(
     "payload",
     [
         b"{}",
         b'{"schema_version":"forgekey.command.v1","cmd":"identify","duration_s":0}',
+        b'{"schema_version":"forgekey.command.v1","cmd":"set_indicator","indicator":"sparkle"}',
         b'{"schema_version":"forgekey.command.v1","cmd":"unlock_forever"}',
     ],
 )

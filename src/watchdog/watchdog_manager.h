@@ -20,6 +20,7 @@ using RecoveryCallback = bool (*)(Subsystem subsystem, const char* reason);
 
 void begin();
 void setRecoveryCallback(RecoveryCallback callback);
+void setEnabled(Subsystem subsystem, bool enabled);
 void markHealthy(Subsystem subsystem);
 void markBusy(Subsystem subsystem);
 void markIdle(Subsystem subsystem);

@@ -43,7 +43,7 @@ and include it inside payloads when the schema allows additive fields.
 | `cabinet_lock` | `forgekey/<mac>/lock/command` | OMS → device | [`forgekey.command.v1`](../schemas/command.v1.schema.json) | Alias for lock deployments that separate lock ACLs; same envelope and ack rules as the shared command topic. |
 | `epaper_display` | `forgekey/<mac>/epaper/status` | Device → OMS | [`forgekey.epaper.v1`](../schemas/epaper.v1.schema.json) | Render/update state, current image ID, and display health. |
 | `epaper_display` | `forgekey/<mac>/epaper/battery` | Device → OMS | [`forgekey.epaper_battery.v1`](../schemas/epaper_battery.v1.schema.json) | Battery voltage is millivolts; percentage is optional and bounded 0-100. |
-| `status_light` | `forgekey/<mac>/status_light/status` | Device → OMS | [`forgekey.status.v1`](../schemas/status.v1.schema.json) | Reports current indicator state and capability metadata until a dedicated status-light schema is introduced. |
+| `indicator` | `forgekey/<mac>/indicator/status` | Device → OMS | [`forgekey.status.v1`](../schemas/status.v1.schema.json) | Reports current indicator state and capability metadata until a dedicated indicator schema is introduced. |
 | `tool_controller` | `forgekey/<mac>/tool/status` | Device → OMS | [`forgekey.status.v1`](../schemas/status.v1.schema.json) | Reports enablement/metering state as additive status fields until a dedicated tool schema is introduced. |
 | `accessory_controller` | `forgekey/<mac>/accessory/status` | Device → OMS | [`forgekey.status.v1`](../schemas/status.v1.schema.json) | Reports accessory relay/runout state as additive status fields until a dedicated accessory schema is introduced. |
 | `power_relay` | `forgekey/<mac>/status` | Device → OMS | [`forgekey.status.v1`](../schemas/status.v1.schema.json) | Reports relay channel state and aggregate BL0942 voltage/current/power/energy under additive `power_relay` fields. |
@@ -57,10 +57,17 @@ and include it inside payloads when the schema allows additive fields.
 | `temperature_sensor` | `sample` | `set_sample_interval`, `calibrate_sensor` |
 | `cabinet_lock` | `unlock`, `lockout`, `clear_lockout`, `emergency_unlock` | `commission`, `init_ack` |
 | `epaper_display` | `refresh` | `clear_screen`, `set_image`, `sleep` |
-| `status_light` | `set_indicator` | `blink`, `set_pattern` |
+| `indicator` | `set_indicator` | `blink`, `set_pattern` |
 | `tool_controller` | `enable`, `disable` | `set_metering_mode` |
 | `accessory_controller` | `enable`, `disable` | `set_runout_timer` |
 | `power_relay` | `power_set`, `relay_set` | `status` |
+
+`indicator` devices accept `set_indicator` / `set_pattern` with an
+`indicator`, `state`, or `pattern` string. Supported values are `ok`,
+`attention`, `error`, `busy`, `off`, and `auto`; aliases include `available`,
+`warning`, `critical`, `reserved`, `green`, `yellow`, `red`, `blue`, and
+`clear`. Optional `duration_s` auto-returns the matrix to normal device status
+after the requested window.
 
 Unsupported verbs MUST be acknowledged with `command_unsupported`. Authenticated
 but unauthorized verbs MUST be acknowledged with `command_unauthorized`. Devices

@@ -159,6 +159,7 @@ ForgeKey ships three device variants from one tree:
 |---|---|---|
 | `seeed_xiao_esp32s3` | `people-counter` | Camera-based occupancy counting |
 | `seeed_xiao_esp32s3_temperature` | `temperature-sensor` | DHT 21 temperature/humidity |
+| `seeed_xiao_esp32s3_asset_indicator` | `indicator` | Asset-mounted RGB matrix status indicator |
 | `esp32c6-lock/` (`idf.py build`) | `cabinet-lock` | Cabinet lock on ESP32-C6 / ESP-IDF |
 | `seeed_xiao_epaper` | `epaper-display` | Preventive-maintenance e-paper display on XIAO ESP32-C3 |
 

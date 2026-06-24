@@ -6,6 +6,7 @@
 
 #include "../capability.h"
 #include "status_led.h"
+#include "../status_matrix/status_matrix.h"
 #include "../../boards/board_manifest.h"
 
 namespace StatusLed {
@@ -128,6 +129,7 @@ unsigned long g_blinkOverrideExpiresMs = 0;
 bool g_blinkOverrideExpiredFlag = false;
 
 void triggerMessageFlash() {
+    StatusMatrix::triggerMessageFlash();
     if (!ledAvailable() || g_blinkOverride) return;
     g_messageFlashActive = true;
     g_flashStartMs = millis();
@@ -152,8 +154,10 @@ bool setBlinkOverride(bool on) {
     g_blinkOverride = on;
     g_blinkOverrideExpiresMs = 0;  // explicit on/off cancels any timer
     if (on) {
+        StatusMatrix::setIdentifyOverride(true);
         applyPattern(PATTERN_BLINK_OVERRIDE);
     } else {
+        StatusMatrix::setIdentifyOverride(false);
         // Resume whatever the underlying state is. If a transition was queued
         // while the override was active, tickFn() will pick it up. Default to
         // Normal so we don't get stuck mid-Boot if the override outlasted the
@@ -168,6 +172,7 @@ bool setBlinkOverrideTimed(unsigned long durationMs) {
     bool wasOff = !g_blinkOverride;
     if (wasOff) {
         g_blinkOverride = true;
+        StatusMatrix::setIdentifyOverride(true);
         applyPattern(PATTERN_BLINK_OVERRIDE);
     }
     g_blinkOverrideExpiresMs = (durationMs > 0) ? (millis() + durationMs) : 0;
@@ -206,6 +211,7 @@ void tickFn() {
         g_blinkOverride = false;
         g_blinkOverrideExpiresMs = 0;
         g_blinkOverrideExpiredFlag = true;
+        StatusMatrix::setIdentifyOverride(false);
         applyPattern(patternFor(g_state == State::Booting ? State::Connected : g_state));
     }
 
@@ -213,6 +219,7 @@ void tickFn() {
         g_haveTransition = false;
         g_state = g_pendingTransition;
         g_haveFollowup = false;
+        StatusMatrix::requestState(g_state);
         // Operator blink override beats MQTT-connected/normal transitions —
         // a reconnect during identify shouldn't silently stop the blink.
         if (!g_blinkOverride) {

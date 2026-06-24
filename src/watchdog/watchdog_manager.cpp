@@ -126,6 +126,19 @@ void setRecoveryCallback(RecoveryCallback callback) {
     g_recoveryCallback = callback;
 }
 
+void setEnabled(Subsystem subsystem, bool enabled) {
+    SubsystemState* state = stateFor(subsystem);
+    if (!state) return;
+    state->enabled = enabled;
+    if (enabled) {
+        markHealthy(subsystem);
+    } else {
+        state->firstOverdueMs = 0;
+        state->overdue = false;
+        state->busy = false;
+    }
+}
+
 void markHealthy(Subsystem subsystem) {
     SubsystemState* state = stateFor(subsystem);
     if (!state) return;

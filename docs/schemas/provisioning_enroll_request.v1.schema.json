@@ -17,7 +17,7 @@
         "temperature_sensor",
         "cabinet_lock",
         "epaper_display",
-        "status_light",
+        "indicator",
         "tool_controller",
         "accessory_controller"
       ]

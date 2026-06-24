@@ -23,6 +23,7 @@
 #ifdef FORGEKEY_POWER_RELAY
 #include "capabilities/power_relay/power_relay.h"
 #endif
+#include "capabilities/status_matrix/status_matrix.h"
 #include "boards/board_manifest.h"
 #include "power/power_manager.h"
 #include "support/local_status_web.h"
@@ -40,7 +41,7 @@
 #include "capabilities/ble_equipment/ble_equipment.h"
 #endif
 
-#if !defined(FORGEKEY_TEMPERATURE_SENSOR) && !defined(FORGEKEY_EPAPER) && !defined(FORGEKEY_POWER_RELAY)
+#if !defined(FORGEKEY_TEMPERATURE_SENSOR) && !defined(FORGEKEY_EPAPER) && !defined(FORGEKEY_ASSET_INDICATOR) && !defined(FORGEKEY_POWER_RELAY)
 #define FORGEKEY_HAS_PEOPLE_COUNTER_PIPELINE 1
 #endif
 
@@ -68,6 +69,7 @@
 // =========================================
 
 String macAddress;
+bool g_mqttEnabled = false;
 
 void debugPrint(const char* level, const char* tag, const char* msg);
 void debugPrintf(const char* level, const char* tag, const char* fmt, ...);
@@ -475,6 +477,29 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
                     durationS, (int)wasOff);
         return;
     }
+    if (strcmp(cmd, "set_indicator") == 0 || strcmp(cmd, "set_pattern") == 0) {
+        const char* indicator = doc["indicator"] | "";
+        if (!indicator || !*indicator) indicator = doc["state"] | "";
+        if (!indicator || !*indicator) indicator = doc["pattern"] | "";
+        unsigned long durationS = doc["duration_s"] | 0UL;
+        if (!StatusMatrix::setIndicator(indicator, durationS * 1000UL)) {
+            publishCommandRejectAck(cmd, commandId, "unsupported_indicator");
+            debugPrintf("WARN", "CMD", "%s rejected: unsupported indicator '%s'",
+                        cmd, indicator);
+            return;
+        }
+        JsonDocument ack;
+        ack["cmd_ack"] = cmd;
+        ack["command_id"] = commandId;
+        ack["indicator"] = indicator;
+        if (durationS > 0) ack["duration_s"] = durationS;
+        ack["ok"] = true;
+        String ackJson;
+        serializeJson(ack, ackJson);
+        mqttClient.publishStatus(ackJson.c_str());
+        debugPrintf("INFO", "CMD", "%s -> %s", cmd, indicator);
+        return;
+    }
     if (strcmp(cmd, "support_mode") == 0 || strcmp(cmd, "support") == 0 ||
         strcmp(cmd, "run_diagnostics") == 0) {
         const char* action = doc["action"] | (strcmp(cmd, "run_diagnostics") == 0 ? "start" : "status");
@@ -523,7 +548,7 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
         publishCommandRejectAck("capture", commandId, "capability_unsupported");
         debugPrint("WARN", "CMD", "capture rejected: capability unsupported on this build");
         return;
-#elif defined(FORGEKEY_HAS_PEOPLE_COUNTER_PIPELINE)
+#elif defined(FORGEKEY_HAS_PEOPLE_COUNTER_PIPELINE) && !defined(FORGEKEY_ASSET_INDICATOR)
         if (PeopleCounter::isActive() && PeopleCounter::requestOneShotCapture()) {
             { JsonDocument ack; ack["cmd_ack"]="capture"; ack["command_id"]=commandId; ack["queued"]=true; String j; serializeJson(ack,j); mqttClient.publishStatus(j.c_str()); }
             StatusLed::triggerMessageFlash();
@@ -870,7 +895,7 @@ static void onFirmwareDispatch(const char* topic, const uint8_t* payload, unsign
 
     mqttClient.publishFirmwareStatus("received", spec.version.c_str(), -1, nullptr);
 #ifndef FORGEKEY_LOCK
-#ifdef FORGEKEY_HAS_PEOPLE_COUNTER_PIPELINE
+#ifdef FORGEKEY_HAS_PEOPLE_COUNTER_PIPELINE && !defined(FORGEKEY_ASSET_INDICATOR)
     if (!spec.mandatory) {
         // Best-effort: defer if a photo upload was very recent.
         if (millis() - photoUploader.lastUploadMs() < 5000) {
@@ -924,7 +949,7 @@ static bool runProvisioning() {
 #ifdef FORGEKEY_LOCK
     // Lock builds have no camera — enroll with empty photo body.
     debugPrint("INFO", "PROV", "Enrolling with OMS (no photo: lock build)");
-#elif defined(FORGEKEY_HAS_PEOPLE_COUNTER_PIPELINE)
+#elif defined(FORGEKEY_HAS_PEOPLE_COUNTER_PIPELINE) && !defined(FORGEKEY_ASSET_INDICATOR)
     if (PeopleCounter::isActive() &&
         PeopleCounter::captureProvisioningPhoto(&jpeg, &jpegLen)) {
         havePhoto = true;
@@ -935,9 +960,9 @@ static bool runProvisioning() {
                    "Enrolling with OMS (no photo: people-counter capability not active)");
     }
 #else
-    // Temperature builds have no camera. The OMS enroll endpoint accepts a
+    // Non-imaging builds have no camera. The OMS enroll endpoint accepts a
     // zero-length photo part for non-imaging device kinds.
-    debugPrint("INFO", "PROV", "Enrolling with OMS (no photo: temperature build)");
+    debugPrint("INFO", "PROV", "Enrolling with OMS (no photo: non-imaging build)");
 #endif
 
     bool ok = provisioning.enrollDevice(OMS_HOST, OMS_PORT, macAddress,
@@ -954,6 +979,15 @@ void setup() {
     delay(1000);
     ForgeKeyWatchdog::begin();
     ForgeKeyWatchdog::setRecoveryCallback(recoverSubsystem);
+#if defined(FORGEKEY_TEMPERATURE_SENSOR) || defined(FORGEKEY_EPAPER) || defined(FORGEKEY_ASSET_INDICATOR)
+    ForgeKeyWatchdog::setEnabled(ForgeKeyWatchdog::Subsystem::Camera, false);
+#endif
+#ifdef FORGEKEY_DISABLE_BLE_SCANNER
+    ForgeKeyWatchdog::setEnabled(ForgeKeyWatchdog::Subsystem::BLE, false);
+#endif
+#ifndef FORGEKEY_LOCK
+    ForgeKeyWatchdog::setEnabled(ForgeKeyWatchdog::Subsystem::LockStateMachine, false);
+#endif
 
     debugPrint("INFO", "MAIN", "ForgeKey Starting...");
     debugPrintf("INFO", "MAIN", "Firmware version: %s", FORGEKEY_FIRMWARE_VERSION);
@@ -1073,6 +1107,13 @@ void setup() {
         debugPrint("INFO", "PROV", "First boot — enrolling with OMS");
         if (!runProvisioning()) {
             debugPrint("WARN", "PROV", "Enrollment failed; will retry on next boot");
+            StatusLed::requestState(StatusLed::State::Error);
+            ForgeKeyWatchdog::setEnabled(ForgeKeyWatchdog::Subsystem::MQTT, false);
+            LocalStatusWeb::begin(macAddress, buildLocalStatusSnapshot);
+            debugPrint("WARN", "MAIN",
+                       "Provisioning incomplete; MQTT disabled because no client certificate is available");
+            debugPrint("INFO", "MAIN", "Setup complete in provisioning-error mode");
+            return;
         } else {
             debugPrint("INFO", "PROV", "Enrollment successful");
             StatusLed::triggerMessageFlash();
@@ -1116,6 +1157,7 @@ void setup() {
                      creds.clientCertificatePem.c_str(),
                      creds.clientPrivateKeyPem.c_str(),
                      brokerUseTls);
+    g_mqttEnabled = true;
 
     // Validate the stored pings topic against the OMS contract before
     // applying it. A topic from an older firmware (leading '/') or from a
@@ -1194,7 +1236,7 @@ void setup() {
 #endif
 
 #ifndef FORGEKEY_LOCK
-#ifdef FORGEKEY_HAS_PEOPLE_COUNTER_PIPELINE
+#ifdef FORGEKEY_HAS_PEOPLE_COUNTER_PIPELINE && !defined(FORGEKEY_ASSET_INDICATOR)
     photoUploader.begin(OMS_HOST, OMS_PORT, macAddress);
     photoUploader.setClientIdentity(creds.clientCertificatePem,
                                     creds.clientPrivateKeyPem);
@@ -1220,7 +1262,7 @@ void loop() {
     static bool mqttWasConnected = false;
     static bool capabilitiesAnnounced = false;
 
-    bool mqttConnected = mqttClient.isConnected();
+    bool mqttConnected = g_mqttEnabled && mqttClient.isConnected();
     if (mqttConnected && !mqttWasConnected) {
         flushBufferedDebugLogs();
         debugPrint("INFO", "MQTT", "MQTT connected");
@@ -1261,7 +1303,7 @@ void loop() {
     LocalStatusWeb::tick();
 
     CapabilityRegistry::tickAll();
-#ifdef FORGEKEY_HAS_PEOPLE_COUNTER_PIPELINE
+#ifdef FORGEKEY_HAS_PEOPLE_COUNTER_PIPELINE && !defined(FORGEKEY_ASSET_INDICATOR)
     ForgeKeyWatchdog::markHealthy(ForgeKeyWatchdog::Subsystem::Camera);
 #endif
     ForgeKeyWatchdog::markHealthy(ForgeKeyWatchdog::Subsystem::Sensors);
@@ -1286,7 +1328,9 @@ void loop() {
     ForgeKeyTime::tick();
     WifiSetup::tickHealth();
 
-    mqttClient.loop();
-    ForgeKeyWatchdog::tick(mqttClient.isConnected());
+    if (g_mqttEnabled) {
+        mqttClient.loop();
+    }
+    ForgeKeyWatchdog::tick(g_mqttEnabled && mqttClient.isConnected());
     delay(10);
 }

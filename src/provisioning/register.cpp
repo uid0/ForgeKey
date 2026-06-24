@@ -10,10 +10,12 @@
 #include <mbedtls/entropy.h>
 #include <mbedtls/pk.h>
 #include <mbedtls/x509_csr.h>
+#include <stdlib.h>
 
 #include "security/oms_ca.h"
 #include "security/oms_command_pubkey.h"
 #include "../capabilities/status_led/status_led.h"
+#include "../capabilities/registry.h"
 #include "build/build_metadata.h"
 
 Provisioning provisioning;
@@ -75,11 +77,19 @@ bool generateDeviceKeyAndCsr(const String& mac,
                              String& publicKeyPem,
                              String& csrPem) {
     constexpr const char* kPersonalization = "forgekey-enroll";
-    unsigned char privateKeyBuf[2048];
-    unsigned char publicKeyBuf[1024];
-    unsigned char csrBuf[2048];
+    unsigned char* privateKeyBuf = static_cast<unsigned char*>(calloc(2048, 1));
+    unsigned char* publicKeyBuf = static_cast<unsigned char*>(calloc(1024, 1));
+    unsigned char* csrBuf = static_cast<unsigned char*>(calloc(2048, 1));
     char subjectName[64];
     snprintf(subjectName, sizeof(subjectName), "CN=forgekey-%s", mac.c_str());
+
+    if (!privateKeyBuf || !publicKeyBuf || !csrBuf) {
+        Serial.println("enroll: failed to allocate key/CSR buffers");
+        free(privateKeyBuf);
+        free(publicKeyBuf);
+        free(csrBuf);
+        return false;
+    }
 
     mbedtls_pk_context pk;
     mbedtls_pk_init(&pk);
@@ -111,14 +121,14 @@ bool generateDeviceKeyAndCsr(const String& mac,
         goto fail;
     }
 
-    rc = mbedtls_pk_write_key_pem(&pk, privateKeyBuf, sizeof(privateKeyBuf));
+    rc = mbedtls_pk_write_key_pem(&pk, privateKeyBuf, 2048);
     if (rc != 0) {
         Serial.printf("enroll: write_key_pem failed: -0x%04x\n", -rc);
         goto fail;
     }
     privateKeyPem = reinterpret_cast<const char*>(privateKeyBuf);
 
-    rc = mbedtls_pk_write_pubkey_pem(&pk, publicKeyBuf, sizeof(publicKeyBuf));
+    rc = mbedtls_pk_write_pubkey_pem(&pk, publicKeyBuf, 1024);
     if (rc != 0) {
         Serial.printf("enroll: write_pubkey_pem failed: -0x%04x\n", -rc);
         goto fail;
@@ -133,7 +143,7 @@ bool generateDeviceKeyAndCsr(const String& mac,
         goto fail;
     }
 
-    rc = mbedtls_x509write_csr_pem(&req, csrBuf, sizeof(csrBuf),
+    rc = mbedtls_x509write_csr_pem(&req, csrBuf, 2048,
                                    mbedtls_ctr_drbg_random, &ctrDrbg);
     if (rc != 0) {
         Serial.printf("enroll: write_csr_pem failed: -0x%04x\n", -rc);
@@ -145,6 +155,9 @@ bool generateDeviceKeyAndCsr(const String& mac,
     mbedtls_ctr_drbg_free(&ctrDrbg);
     mbedtls_entropy_free(&entropy);
     mbedtls_pk_free(&pk);
+    free(privateKeyBuf);
+    free(publicKeyBuf);
+    free(csrBuf);
     return true;
 
 fail:
@@ -152,6 +165,9 @@ fail:
     mbedtls_ctr_drbg_free(&ctrDrbg);
     mbedtls_entropy_free(&entropy);
     mbedtls_pk_free(&pk);
+    free(privateKeyBuf);
+    free(publicKeyBuf);
+    free(csrBuf);
     return false;
 }
 
@@ -364,6 +380,7 @@ bool Provisioning::enrollDevice(const char* host, uint16_t port,
     meta["firmware_version"] = FORGEKEY_FIRMWARE_VERSION;
     ForgeKeyBuildMetadata::addJson(meta.as<JsonObject>());
     meta["sensor_kind"]      = FORGEKEY_SENSOR_KIND;
+    meta["device_class"]     = FORGEKEY_SENSOR_KIND;
     meta["boot_count"]       = cachedBootCount;
     meta["free_heap"]        = ESP.getFreeHeap();
     meta["ip"]               = ipAddr;
@@ -373,6 +390,10 @@ bool Provisioning::enrollDevice(const char* host, uint16_t port,
     meta["manufacturing_record_id"] = FORGEKEY_MANUFACTURING_RECORD_ID;
     meta["support_url"] = FORGEKEY_SUPPORT_URL;
     meta["unique_chip_id"]   = uniqueChipId;
+    JsonArray capabilities = meta["capabilities"].to<JsonArray>();
+    for (Capability* c = CapabilityRegistry::head(); c; c = c->next) {
+        if (c->active) capabilities.add(c->id);
+    }
     if (flashIdErr == ESP_OK) {
         char flashMemoryIdHex[11];
         snprintf(flashMemoryIdHex, sizeof(flashMemoryIdHex), "0x%06lx",
@@ -509,6 +530,7 @@ bool Provisioning::enrollDevice(const char* host, uint16_t port,
                   code, statusLine.c_str(), (unsigned)body.length());
 
     if (code < 200 || code >= 300) {
+        Serial.printf("enroll: response body: %s\n", body.c_str());
         return false;
     }
 
@@ -516,6 +538,7 @@ bool Provisioning::enrollDevice(const char* host, uint16_t port,
     DeserializationError err = deserializeJson(resp, body);
     if (err) {
         Serial.printf("enroll: JSON parse error: %s\n", err.c_str());
+        Serial.printf("enroll: response body: %s\n", body.c_str());
         return false;
     }
 
@@ -570,6 +593,7 @@ bool Provisioning::enrollDevice(const char* host, uint16_t port,
         c.clientCertificatePem.length() == 0 ||
         c.clientPrivateKeyPem.length() == 0) {
         Serial.println("enroll: response missing device_id or client certificate bundle");
+        Serial.printf("enroll: response body: %s\n", body.c_str());
         return false;
     }
 

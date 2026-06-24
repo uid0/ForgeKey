@@ -219,6 +219,8 @@ if env is not None:
             variant = "people-counter"
         elif pioenv in ("seeed_xiao_esp32s3_temperature", "seeed_xiao_esp32s3_temperature_prod"):
             variant = "temperature-sensor"
+        elif pioenv in ("seeed_xiao_esp32s3_asset_indicator", "seeed_xiao_esp32s3_asset_indicator_prod"):
+            variant = "indicator"
         elif pioenv in ("seeed_xiao_epaper", "seeed_xiao_epaper_prod"):
             variant = "epaper-display"
         else:

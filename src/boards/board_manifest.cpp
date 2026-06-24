@@ -28,6 +28,10 @@ const int C3_ADC[] = {0, 1, 2, 3, 4};
 #define FORGEKEY_BUTTON_PIN (-1)
 #endif
 
+#ifndef FORGEKEY_RGB_MATRIX_PIN
+#define FORGEKEY_RGB_MATRIX_PIN (-1)
+#endif
+
 #ifndef FORGEKEY_MMWAVE_RX_PIN
 #define FORGEKEY_MMWAVE_RX_PIN (-1)
 #endif
@@ -92,6 +96,7 @@ const Board CURRENT_BOARD = {
 };
 #else
 const PinClaim CURRENT_PINS[] = {
+#if !defined(FORGEKEY_TEMPERATURE_SENSOR) && !defined(FORGEKEY_ASSET_INDICATOR)
     {10, "people_counter", "camera_xclk", PullExpectation::Driven, true, false},
     {13, "people_counter", "camera_pclk", PullExpectation::Driven, false, false},
     {38, "people_counter", "camera_vsync", PullExpectation::Driven, false, false},
@@ -106,12 +111,16 @@ const PinClaim CURRENT_PINS[] = {
     {48, "people_counter", "camera_d7", PullExpectation::Driven, false, false},
     {40, "people_counter", "camera_sda", PullExpectation::Driven, true, false},
     {39, "people_counter", "camera_scl", PullExpectation::Driven, true, false},
+#endif
     {FORGEKEY_STATUS_LED_PIN, "status_led", "onboard_led", PullExpectation::None, true, false},
 #if defined(FORGEKEY_TEMPERATURE_SENSOR)
     {FORGEKEY_DHT_PIN, "temperature_sensor", "dht_data", PullExpectation::External, false, false},
 #endif
 #if FORGEKEY_BUTTON_PIN >= 0
     {FORGEKEY_BUTTON_PIN, "button", "button", PullExpectation::PullUp, false, false},
+#endif
+#if FORGEKEY_RGB_MATRIX_PIN >= 0
+    {FORGEKEY_RGB_MATRIX_PIN, "status_matrix", "ws2812_data", PullExpectation::Driven, true, false},
 #endif
 #if FORGEKEY_MMWAVE_RX_PIN >= 0
     {FORGEKEY_MMWAVE_RX_PIN, "mmwave_presence", "uart_rx", PullExpectation::None, false, false},
@@ -121,7 +130,9 @@ const PinClaim CURRENT_PINS[] = {
 #endif
 };
 const BusManifest CURRENT_BUSES[] = {
+#if !defined(FORGEKEY_TEMPERATURE_SENSOR) && !defined(FORGEKEY_ASSET_INDICATOR)
     {"camera_sccb", "people_counter", 40, 39, kNoPin, kNoPin, kNoPin, kNoPin, kNoPin},
+#endif
 #if FORGEKEY_MMWAVE_RX_PIN >= 0 || FORGEKEY_MMWAVE_TX_PIN >= 0
     {"uart_mmwave", "mmwave_presence", kNoPin, kNoPin, kNoPin, kNoPin, kNoPin, FORGEKEY_MMWAVE_RX_PIN, FORGEKEY_MMWAVE_TX_PIN},
 #endif
@@ -212,6 +223,7 @@ bool capabilityAllowed(const char* capabilityId) {
     if (streq(capabilityId, "epaper_pm")) return true;
     if (streq(capabilityId, "status_led")) return FORGEKEY_STATUS_LED_PIN >= 0;
     if (streq(capabilityId, "button")) return FORGEKEY_BUTTON_PIN >= 0;
+    if (streq(capabilityId, "status_matrix")) return FORGEKEY_RGB_MATRIX_PIN >= 0;
     if (streq(capabilityId, "mmwave_presence")) return mmwaveConfigured();
     return !capabilityHasAnyPin(capabilityId);
 #else

@@ -63,6 +63,7 @@ ForgeKey is based off of the adaptable ESP32 series of chips.
 
 - `seeed_xiao_esp32s3` — people-counter firmware on Arduino / PlatformIO.
 - `seeed_xiao_esp32s3_temperature` — temperature-sensor firmware on Arduino / PlatformIO.
+- `seeed_xiao_esp32s3_asset_indicator` — indicator firmware for the XIAO 6x10 RGB matrix add-on.
 - `esp32c6-lock/` — cabinet-lock firmware on ESP-IDF for the ESP32-C6.
 
 The older Arduino cabinet-lock prototype remains under `src/lock/` as a reference,
