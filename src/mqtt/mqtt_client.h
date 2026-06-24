@@ -20,6 +20,7 @@
 #define FORGEKEY_SCHEMA_EPAPER_V1 "forgekey.epaper.v1"
 #define FORGEKEY_SCHEMA_BLE_V1 "forgekey.ble.v1"
 #define FORGEKEY_SCHEMA_DIAGNOSTICS_V1 "forgekey.diagnostics.v1"
+#define FORGEKEY_SCHEMA_ACCESS_REQUEST_V1 "forgekey.access_request.v1"
 
 class MqttClient {
 public:
@@ -109,6 +110,14 @@ public:
     // Topics: forgekey/<mac>/ble/equipment
     bool publishEquipmentEvent(const char* jsonPayload);
 
+    // Publish a badge_reader access-request event on
+    // forgekey/<mac>/access/request. The device is a pure sensor: it emits the
+    // credential, OMS authorizes and drives relay/lock/indicator. The contract
+    // calls for QoS 1; PubSubClient only does QoS 0, so this publishes best-
+    // effort and on failure enqueues to the NVS-persisted critical retry queue
+    // (retain=false — an access request is an event, never retained state).
+    bool publishAccessRequest(const char* jsonPayload);
+
     bool isConnected();
     void loop();
     bool restart();
@@ -143,6 +152,7 @@ private:
     String bleBeaconsTopic;     // beacon announcement (publish)
     String blePeersTopic;       // nearby ForgeKey peers (publish)
     String bleEquipmentTopic;   // equipment detect/lost events (publish)
+    String accessRequestTopic;  // badge_reader access-request events (publish)
     String clientCertificatePem;
     String clientPrivateKeyPem;
     String broker;

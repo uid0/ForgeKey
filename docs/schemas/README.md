@@ -30,6 +30,7 @@ inferring payload shape only from MQTT topic names or HTTP endpoints.
 | `forgekey.ota_artifact_manifest.v1` | `ota_artifact_manifest.v1.schema.json` | OMS | Device |
 | `forgekey.diagnostics_upload.v1` | `diagnostics_upload.v1.schema.json` | Device | OMS |
 | `forgekey.diagnostics_upload_result.v1` | `diagnostics_upload_result.v1.schema.json` | OMS | Device |
+| `forgekey.access_request.v1` | `access_request.v1.schema.json` | Device | OMS |
 
 ## Contract documents
 

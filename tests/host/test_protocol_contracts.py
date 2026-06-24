@@ -386,3 +386,135 @@ def test_telemetry_serialization_matches_status_schema() -> None:
     serialized = json.dumps(payload, separators=(",", ":"), sort_keys=True)
     restored = json.loads(serialized)
     assert restored == payload
+
+
+# --- badge_reader access-request contract --------------------------------------
+#
+# These mirror the firmware capability in
+# src/capabilities/badge_reader/badge_reader.cpp (UID hex formatting + the
+# debounce that collapses one tap into one event) and the access_request.v1
+# schema. The mock driver (FORGEKEY_BADGE_READER_MOCK) drives the same pipeline
+# on-device without hardware. Keep ACCESS_REQUEST_DEBOUNCE_MS in sync with
+# FORGEKEY_BADGE_READER_DEBOUNCE_MS.
+
+ACCESS_REQUEST_DEBOUNCE_MS = 2000
+
+
+def format_uid_hex(uid_bytes: bytes) -> str:
+    """Render a raw card UID as uppercase hex with no separators, matching the
+    firmware credential_id format (e.g. b'\\x04\\xa1\\xb2\\xc3\\xd4' -> '04A1B2C3D4')."""
+    return "".join(f"{b:02X}" for b in uid_bytes)
+
+
+class BadgeDebouncer:
+    """Reference model of the firmware badge debounce: a different UID always
+    publishes; the same UID only re-publishes once the window has elapsed since
+    the last event (so a card held on the reader = one event)."""
+
+    def __init__(self, window_ms: int = ACCESS_REQUEST_DEBOUNCE_MS) -> None:
+        self.window_ms = window_ms
+        self._last_uid: str | None = None
+        self._last_ms: int = 0
+
+    def should_publish(self, uid_hex: str, now_ms: int) -> bool:
+        if self._last_uid is None or uid_hex != self._last_uid:
+            return True
+        return (now_ms - self._last_ms) >= self.window_ms
+
+    def record(self, uid_hex: str, now_ms: int) -> None:
+        self._last_uid = uid_hex
+        self._last_ms = now_ms
+
+
+def build_access_request(
+    uid_bytes: bytes,
+    reader_id: str = "main",
+    timestamp: int | None = None,
+    nonce: str | None = None,
+) -> dict:
+    payload = {
+        "schema_version": "forgekey.access_request.v1",
+        "credential_type": "badge",
+        "credential_id": format_uid_hex(uid_bytes),
+        "reader_id": reader_id,
+    }
+    if timestamp is not None:  # firmware includes timestamp only when clock valid
+        payload["timestamp"] = timestamp
+    if nonce is not None:
+        payload["nonce"] = nonce
+    return payload
+
+
+def test_access_request_uid_hex_is_uppercase_zero_padded() -> None:
+    assert format_uid_hex(bytes([0x04, 0xA1, 0xB2, 0xC3, 0xD4])) == "04A1B2C3D4"
+    assert format_uid_hex(bytes([0x00, 0x0F])) == "000F"
+    assert format_uid_hex(bytes([0xDE, 0xAD, 0xBE, 0xEF])) == "DEADBEEF"
+    assert format_uid_hex(bytes([0x04, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66])) == "04112233445566"
+
+
+def test_access_request_schema_requires_core_credential_fields() -> None:
+    schema = load_schema("access_request.v1.schema.json")
+    required = set(schema.get("required", []))
+    assert {"schema_version", "credential_type", "credential_id"} <= required
+    assert schema["properties"]["schema_version"]["const"] == "forgekey.access_request.v1"
+    assert set(schema["properties"]["credential_type"]["enum"]) == {"badge", "otp"}
+
+
+def test_access_request_payload_validates_against_schema() -> None:
+    schema = load_schema("access_request.v1.schema.json")
+    payload = build_access_request(
+        bytes([0x04, 0xA1, 0xB2, 0xC3, 0xD4]), timestamp=1782289000, nonce="9f3a1c0042bead17"
+    )
+    assert_required_fields(schema, payload)
+    assert payload["credential_id"] == "04A1B2C3D4"
+    assert payload["credential_type"] in schema["properties"]["credential_type"]["enum"]
+    # Round-trips losslessly as compact JSON (the firmware serialization shape).
+    assert json.loads(json.dumps(payload, separators=(",", ":"))) == payload
+
+
+def test_access_request_payload_valid_without_timestamp_when_clock_invalid() -> None:
+    schema = load_schema("access_request.v1.schema.json")
+    payload = build_access_request(bytes([0xDE, 0xAD, 0xBE, 0xEF]))
+    assert "timestamp" not in payload  # omitted when the device clock is not valid
+    assert_required_fields(schema, payload)
+
+
+def test_access_request_debounce_collapses_duplicate_reads() -> None:
+    deb = BadgeDebouncer(window_ms=ACCESS_REQUEST_DEBOUNCE_MS)
+    uid = "04A1B2C3D4"
+    # First read publishes.
+    assert deb.should_publish(uid, 0)
+    deb.record(uid, 0)
+    # Same card re-read within the window is suppressed.
+    assert not deb.should_publish(uid, 50)
+    assert not deb.should_publish(uid, ACCESS_REQUEST_DEBOUNCE_MS - 1)
+    # Once the window elapses, a fresh tap publishes again.
+    assert deb.should_publish(uid, ACCESS_REQUEST_DEBOUNCE_MS)
+    deb.record(uid, ACCESS_REQUEST_DEBOUNCE_MS)
+    # A different card is never debounced against the previous one.
+    assert deb.should_publish("DEADBEEF", ACCESS_REQUEST_DEBOUNCE_MS + 10)
+
+
+def test_mock_card_presentation_emits_single_event() -> None:
+    """A card 'presented' to the mock (its UID returned on every 50 ms poll for a
+    present-window shorter than the debounce window) collapses to exactly one
+    access-request event; a later re-presentation after a gap produces a second.
+    This is the FORGEKEY_BADGE_READER_MOCK + capability debounce behaviour."""
+    deb = BadgeDebouncer(window_ms=ACCESS_REQUEST_DEBOUNCE_MS)
+    uid = "04A1B2C3D4"
+    events = 0
+    # 30 polls @ 50 ms = 1500 ms presentation (< 2000 ms debounce window).
+    for i in range(30):
+        now = i * 50
+        if deb.should_publish(uid, now):
+            deb.record(uid, now)
+            events += 1
+    assert events == 1
+    # Card removed for a gap longer than the window, then re-presented.
+    base = 1500 + 8000
+    for i in range(30):
+        now = base + i * 50
+        if deb.should_publish(uid, now):
+            deb.record(uid, now)
+            events += 1
+    assert events == 2

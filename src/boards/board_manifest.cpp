@@ -44,6 +44,19 @@ const int C3_ADC[] = {0, 1, 2, 3, 4};
 #define FORGEKEY_MMWAVE_BAUD 256000UL
 #endif
 
+// badge_reader (credential reader) is present when a reader driver flag is set.
+// Only the PN532 reference driver claims physical pins (I2C); the mock driver
+// uses none. Defaults mirror the PN532 driver and are overridable per build env.
+#if defined(FORGEKEY_BADGE_READER_PN532) || defined(FORGEKEY_BADGE_READER_MOCK)
+#define FORGEKEY_HAS_BADGE_READER 1
+#endif
+#ifndef FORGEKEY_BADGE_READER_I2C_SDA
+#define FORGEKEY_BADGE_READER_I2C_SDA 5
+#endif
+#ifndef FORGEKEY_BADGE_READER_I2C_SCL
+#define FORGEKEY_BADGE_READER_I2C_SCL 6
+#endif
+
 #ifndef FORGEKEY_BATTERY_ADC_PIN
 #define FORGEKEY_BATTERY_ADC_PIN (-1)
 #endif
@@ -96,7 +109,7 @@ const Board CURRENT_BOARD = {
 };
 #else
 const PinClaim CURRENT_PINS[] = {
-#if !defined(FORGEKEY_TEMPERATURE_SENSOR) && !defined(FORGEKEY_ASSET_INDICATOR)
+#if !defined(FORGEKEY_TEMPERATURE_SENSOR) && !defined(FORGEKEY_ASSET_INDICATOR) && !defined(FORGEKEY_HAS_BADGE_READER)
     {10, "people_counter", "camera_xclk", PullExpectation::Driven, true, false},
     {13, "people_counter", "camera_pclk", PullExpectation::Driven, false, false},
     {38, "people_counter", "camera_vsync", PullExpectation::Driven, false, false},
@@ -128,13 +141,20 @@ const PinClaim CURRENT_PINS[] = {
 #if FORGEKEY_MMWAVE_TX_PIN >= 0
     {FORGEKEY_MMWAVE_TX_PIN, "mmwave_presence", "uart_tx", PullExpectation::None, true, false},
 #endif
+#if defined(FORGEKEY_BADGE_READER_PN532)
+    {FORGEKEY_BADGE_READER_I2C_SDA, "badge_reader", "pn532_sda", PullExpectation::External, true, false},
+    {FORGEKEY_BADGE_READER_I2C_SCL, "badge_reader", "pn532_scl", PullExpectation::External, true, false},
+#endif
 };
 const BusManifest CURRENT_BUSES[] = {
-#if !defined(FORGEKEY_TEMPERATURE_SENSOR) && !defined(FORGEKEY_ASSET_INDICATOR)
+#if !defined(FORGEKEY_TEMPERATURE_SENSOR) && !defined(FORGEKEY_ASSET_INDICATOR) && !defined(FORGEKEY_HAS_BADGE_READER)
     {"camera_sccb", "people_counter", 40, 39, kNoPin, kNoPin, kNoPin, kNoPin, kNoPin},
 #endif
 #if FORGEKEY_MMWAVE_RX_PIN >= 0 || FORGEKEY_MMWAVE_TX_PIN >= 0
     {"uart_mmwave", "mmwave_presence", kNoPin, kNoPin, kNoPin, kNoPin, kNoPin, FORGEKEY_MMWAVE_RX_PIN, FORGEKEY_MMWAVE_TX_PIN},
+#endif
+#if defined(FORGEKEY_BADGE_READER_PN532)
+    {"i2c_badge_reader", "badge_reader", FORGEKEY_BADGE_READER_I2C_SDA, FORGEKEY_BADGE_READER_I2C_SCL, kNoPin, kNoPin, kNoPin, kNoPin, kNoPin},
 #endif
 };
 const Board CURRENT_BOARD = {
@@ -225,11 +245,13 @@ bool capabilityAllowed(const char* capabilityId) {
     if (streq(capabilityId, "button")) return FORGEKEY_BUTTON_PIN >= 0;
     if (streq(capabilityId, "status_matrix")) return FORGEKEY_RGB_MATRIX_PIN >= 0;
     if (streq(capabilityId, "mmwave_presence")) return mmwaveConfigured();
+    if (streq(capabilityId, "badge_reader")) return badgeReaderConfigured();
     return !capabilityHasAnyPin(capabilityId);
 #else
     if (streq(capabilityId, "status_led")) return FORGEKEY_STATUS_LED_PIN >= 0;
     if (streq(capabilityId, "button")) return FORGEKEY_BUTTON_PIN >= 0;
     if (streq(capabilityId, "mmwave_presence")) return mmwaveConfigured();
+    if (streq(capabilityId, "badge_reader")) return badgeReaderConfigured();
     return true;
 #endif
 }
@@ -241,6 +263,13 @@ bool mmwaveConfigured() { return FORGEKEY_MMWAVE_RX_PIN >= 0 && FORGEKEY_MMWAVE_
 int mmwaveRxPin() { return FORGEKEY_MMWAVE_RX_PIN; }
 int mmwaveTxPin() { return FORGEKEY_MMWAVE_TX_PIN; }
 uint32_t mmwaveBaud() { return (uint32_t)FORGEKEY_MMWAVE_BAUD; }
+bool badgeReaderConfigured() {
+#ifdef FORGEKEY_HAS_BADGE_READER
+    return true;
+#else
+    return false;
+#endif
+}
 const PowerManager::BatteryConfig& batteryConfig() { return current().battery; }
 
 bool checkActiveCapabilityPins(Capability* head) {

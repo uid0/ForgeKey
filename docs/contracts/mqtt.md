@@ -47,6 +47,37 @@ and include it inside payloads when the schema allows additive fields.
 | `tool_controller` | `forgekey/<mac>/tool/status` | Device → OMS | [`forgekey.status.v1`](../schemas/status.v1.schema.json) | Reports enablement/metering state as additive status fields until a dedicated tool schema is introduced. |
 | `accessory_controller` | `forgekey/<mac>/accessory/status` | Device → OMS | [`forgekey.status.v1`](../schemas/status.v1.schema.json) | Reports accessory relay/runout state as additive status fields until a dedicated accessory schema is introduced. |
 | `power_relay` | `forgekey/<mac>/status` | Device → OMS | [`forgekey.status.v1`](../schemas/status.v1.schema.json) | Reports relay channel state and aggregate BL0942 voltage/current/power/energy under additive `power_relay` fields. |
+| `badge_reader` | `forgekey/<mac>/access/request` | Device → OMS | [`forgekey.access_request.v1`](../schemas/access_request.v1.schema.json) | Credential-read event. `credential_id` is the card UID as uppercase hex; `timestamp` is epoch seconds when the clock is valid. The device debounces repeated reads of the same UID so one tap = one event. QoS 1 (critical, retried locally); never retained. OMS subscribes `forgekey/+/access/request`. |
+
+## Access-control interlock (badge_reader)
+
+The `badge_reader` capability is a **pure sensor**: it reads an RFID/NFC
+credential and publishes a `forgekey.access_request.v1` event on
+`forgekey/<mac>/access/request`. It makes **no access decision** and holds **no
+allowlist**, mirroring the server-authoritative `cabinet_lock` model.
+
+**Server-authoritative flow.** OMS owns the decision and orchestrates the
+response using **verbs that already exist** on `forgekey/<mac>/command` — no new
+device-bound "access response" verb is introduced for v1:
+
+1. Device reads a credential → publishes `access_request.v1` (debounced).
+2. OMS resolves credential → user, device → asset, and checks authorization.
+3. **GRANT** → `enable` (relay on, on the bound `power_relay`/`tool_controller`
+   device) or `unlock` (on a `cabinet_lock`), plus `set_indicator` in-use, and
+   opens an identified usage session.
+4. **DENY** → `set_indicator` deny feedback (and audit); the relay/lock stays
+   off.
+5. **END** (badge-out re-scan or inactivity timeout) → `disable`/relock + close
+   session + `set_indicator` available.
+
+If OMS/MQTT is unreachable the actuator stays off (fail-safe deny). The reader
+emits no actuation itself, so a compromised or spoofed reader can only *request*
+access — it can never grant it.
+
+**Reader hardware** is selected at build time behind a flag (PN532 over I2C is
+the documented reference; a mock driver emits synthetic UIDs for hardware-free
+CI). Swapping reader hardware (RC522, Wiegand, …) changes only the low-level
+driver, not this topic, the schema, or OMS.
 
 ## Command verbs by class
 
@@ -61,6 +92,7 @@ and include it inside payloads when the schema allows additive fields.
 | `tool_controller` | `enable`, `disable` | `set_metering_mode` |
 | `accessory_controller` | `enable`, `disable` | `set_runout_timer` |
 | `power_relay` | `power_set`, `relay_set` | `status` |
+| `badge_reader` | _(none — sensor only; emits `access/request`, responds to shared verbs only)_ | — |
 
 `indicator` devices accept `set_indicator` / `set_pattern`. The legacy form is a
 single semantic keyword in `indicator` (or `state`); the extended form adds

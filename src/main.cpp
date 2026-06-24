@@ -41,7 +41,7 @@
 #include "capabilities/ble_equipment/ble_equipment.h"
 #endif
 
-#if !defined(FORGEKEY_TEMPERATURE_SENSOR) && !defined(FORGEKEY_EPAPER) && !defined(FORGEKEY_ASSET_INDICATOR) && !defined(FORGEKEY_POWER_RELAY)
+#if !defined(FORGEKEY_TEMPERATURE_SENSOR) && !defined(FORGEKEY_EPAPER) && !defined(FORGEKEY_ASSET_INDICATOR) && !defined(FORGEKEY_POWER_RELAY) && !defined(FORGEKEY_BADGE_READER)
 #define FORGEKEY_HAS_PEOPLE_COUNTER_PIPELINE 1
 #endif
 
@@ -1100,7 +1100,7 @@ void setup() {
     delay(1000);
     ForgeKeyWatchdog::begin();
     ForgeKeyWatchdog::setRecoveryCallback(recoverSubsystem);
-#if defined(FORGEKEY_TEMPERATURE_SENSOR) || defined(FORGEKEY_EPAPER) || defined(FORGEKEY_ASSET_INDICATOR)
+#if defined(FORGEKEY_TEMPERATURE_SENSOR) || defined(FORGEKEY_EPAPER) || defined(FORGEKEY_ASSET_INDICATOR) || defined(FORGEKEY_BADGE_READER)
     ForgeKeyWatchdog::setEnabled(ForgeKeyWatchdog::Subsystem::Camera, false);
 #endif
 #ifdef FORGEKEY_DISABLE_BLE_SCANNER

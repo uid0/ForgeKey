@@ -14,7 +14,7 @@ be rolled out independently.
 | ePaper image delivery and battery telemetry | [`epaper.v1.yaml`](epaper.v1.yaml) | [`epaper_image_manifest.v1.schema.json`](../schemas/epaper_image_manifest.v1.schema.json), [`epaper_battery.v1.schema.json`](../schemas/epaper_battery.v1.schema.json), [`epaper.v1.schema.json`](../schemas/epaper.v1.schema.json) |
 | OTA artifact delivery | [`ota-artifacts.v1.yaml`](ota-artifacts.v1.yaml) | [`ota_artifact_manifest.v1.schema.json`](../schemas/ota_artifact_manifest.v1.schema.json), [`ota_status.v1.schema.json`](../schemas/ota_status.v1.schema.json) |
 | Diagnostics upload | [`diagnostics-upload.v1.yaml`](diagnostics-upload.v1.yaml) | [`diagnostics_upload.v1.schema.json`](../schemas/diagnostics_upload.v1.schema.json), [`diagnostics_upload_result.v1.schema.json`](../schemas/diagnostics_upload_result.v1.schema.json), [`diagnostics.v1.schema.json`](../schemas/diagnostics.v1.schema.json) |
-| MQTT topics and payloads | [`mqtt.md`](mqtt.md) | [`command.v1.schema.json`](../schemas/command.v1.schema.json), [`command_ack.v1.schema.json`](../schemas/command_ack.v1.schema.json), telemetry schemas in [`../schemas/`](../schemas/) |
+| MQTT topics and payloads | [`mqtt.md`](mqtt.md) | [`command.v1.schema.json`](../schemas/command.v1.schema.json), [`command_ack.v1.schema.json`](../schemas/command_ack.v1.schema.json), [`access_request.v1.schema.json`](../schemas/access_request.v1.schema.json), telemetry schemas in [`../schemas/`](../schemas/) |
 | Canonical error vocabulary | [`error-codes.md`](error-codes.md) | [`error.v1.schema.json`](../schemas/error.v1.schema.json) |
 
 ## Global compatibility rules

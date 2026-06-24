@@ -59,6 +59,7 @@ bool mmwaveConfigured();
 int mmwaveRxPin();
 int mmwaveTxPin();
 uint32_t mmwaveBaud();
+bool badgeReaderConfigured();
 const PowerManager::BatteryConfig& batteryConfig();
 
 // Deactivates active capabilities whose manifest claims conflict, use unsafe

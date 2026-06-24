@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgekey.local/schemas/access_request.v1.schema.json",
+  "title": "Access request",
+  "description": "Schema contract for access-request events produced by a ForgeKey badge_reader (credential reader) and consumed by OMS. The device is a pure sensor: it reads a credential and publishes this event on forgekey/<mac>/access/request. It makes NO access decision and holds NO allowlist; OMS resolves the credential, authorizes, and drives the relay/lock/indicator over the existing command channel.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {
+      "const": "forgekey.access_request.v1",
+      "description": "Immutable contract identifier for this payload shape."
+    },
+    "credential_type": {
+      "type": "string",
+      "enum": [
+        "badge",
+        "otp"
+      ],
+      "description": "Kind of credential presented. v1 firmware emits only 'badge'; 'otp' is reserved for a deferred follow-up."
+    },
+    "credential_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The credential value. For 'badge' this is the card UID as uppercase hex with no separators (e.g. '04A1B2C3D4'). For 'otp' it is the entered code string."
+    },
+    "reader_id": {
+      "type": "string",
+      "description": "Identifier of the reader/channel that produced the read, for devices with more than one reader. Defaults to 'main'."
+    },
+    "timestamp": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Epoch seconds when the credential was read. Present only when the device clock is valid; absent otherwise."
+    },
+    "nonce": {
+      "type": "string",
+      "description": "Optional per-event replay-protection token."
+    }
+  },
+  "required": [
+    "schema_version",
+    "credential_type",
+    "credential_id"
+  ],
+  "x-compatibility-notes": [
+    "OMS consumers must accept unknown additional properties for additive firmware releases.",
+    "OMS consumers should route by schema_version before applying payload-specific validation.",
+    "credential_id for badges is uppercase hex of the raw UID; OMS matching should be case-insensitive to tolerate firmware variation.",
+    "timestamp is epoch seconds and is only present when the device clock is valid; fall back to ingest time for ordering when it is absent.",
+    "The device is server-authoritative: it never decides access. OMS authorizes and responds via existing forgekey/<mac>/command verbs (enable/disable/unlock/set_indicator)."
+  ]
+}

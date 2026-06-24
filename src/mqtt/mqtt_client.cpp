@@ -291,13 +291,18 @@ void MqttClient::setTopicPrefix(const char* mac) {
     if (stateTopic.length() == 0) {
         stateTopic = String("forgekey/") + mac + "/state";
     }
+    // Access-request events live directly under the MAC (not the kind segment)
+    // so OMS can subscribe to all readers with a single forgekey/+/access/request.
+    if (accessRequestTopic.length() == 0) {
+        accessRequestTopic = String("forgekey/") + mac + "/access/request";
+    }
 
-    Serial.printf("[MQTT] setTopicPrefix: prefix=%s default_occupancy=%s default_reading=%s capabilities=%s ble_devices=%s ble_beacons=%s ble_peers=%s ble_equipment=%s logs=%s state=%s\n",
+    Serial.printf("[MQTT] setTopicPrefix: prefix=%s default_occupancy=%s default_reading=%s capabilities=%s ble_devices=%s ble_beacons=%s ble_peers=%s ble_equipment=%s logs=%s state=%s access_request=%s\n",
                   topicPrefix.c_str(), occupancyTopic.c_str(),
                   readingTopic.c_str(), capabilitiesTopic.c_str(),
                   bleDevicesTopic.c_str(), bleBeaconsTopic.c_str(),
                   blePeersTopic.c_str(), bleEquipmentTopic.c_str(),
-                  logTopic.c_str(), stateTopic.c_str());
+                  logTopic.c_str(), stateTopic.c_str(), accessRequestTopic.c_str());
 }
 
 bool MqttClient::publishCapabilities(const char* jsonPayload) {
@@ -882,6 +887,30 @@ bool MqttClient::publishEquipmentEvent(const char* jsonPayload) {
     if (!jsonPayload) jsonPayload = "{}";
     return publishJsonWithSchema(client, bleEquipmentTopic, jsonPayload,
                                  FORGEKEY_SCHEMA_BLE_V1, false, lastPublishMs);
+}
+
+bool MqttClient::publishAccessRequest(const char* jsonPayload) {
+    if (accessRequestTopic.length() == 0) {
+        Serial.println("[MQTT] publishAccessRequest: no access topic set "
+                       "(setTopicPrefix not called), skipping");
+        return false;
+    }
+    if (!jsonPayload) jsonPayload = "{}";
+    // Stamp the schema_version if the caller didn't.
+    String enriched;
+    const char* outbound = jsonPayload;
+    if (enrichJsonPayload(jsonPayload, FORGEKEY_SCHEMA_ACCESS_REQUEST_V1, enriched)) {
+        outbound = enriched.c_str();
+    }
+    // Best-effort at QoS 0; on failure fall back to the critical retry queue so
+    // a transient disconnect doesn't drop the access request (QoS 1 intent).
+    bool ok = publishImmediate(accessRequestTopic.c_str(), outbound, false);
+    if (!ok) {
+        ok = enqueueOutbound(accessRequestTopic.c_str(), outbound, false, true /*critical*/);
+    }
+    Serial.printf("[MQTT] publishAccessRequest: topic=%s payload=%s queued_or_sent=%d\n",
+                  accessRequestTopic.c_str(), outbound, (int)ok);
+    return ok;
 }
 
 bool MqttClient::publishImmediate(const char* topic, const char* payload, bool retain) {
