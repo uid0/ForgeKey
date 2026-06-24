@@ -26,6 +26,24 @@
         "off"
       ]
     },
+    "indicator": {
+      "type": "string",
+      "description": "Current indicator keyword (when set via set_indicator); reported on forgekey/<mac>/indicator/status."
+    },
+    "color": {
+      "type": "string",
+      "description": "Current indicator color as \"#RRGGBB\"; reported on forgekey/<mac>/indicator/status."
+    },
+    "brightness": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 255,
+      "description": "Current indicator brightness scale (0-255); reported on forgekey/<mac>/indicator/status."
+    },
+    "pattern": {
+      "type": "string",
+      "description": "Current indicator render pattern (solid/blink/slow_blink/breathe/off)."
+    },
     "capabilities": {
       "type": "array",
       "items": {

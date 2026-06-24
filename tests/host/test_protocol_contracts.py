@@ -18,6 +18,101 @@ def b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
 
+# Indicator contract sets — the documented set_indicator contract (the shared
+# SSOT in docs/contracts/mqtt.md), mirroring the firmware keyword/color/pattern
+# tables in src/capabilities/status_matrix/status_matrix.cpp. Keep these in sync
+# with that doc and those resolvers. (The firmware accepts a lenient superset of
+# this contract — e.g. it clamps out-of-range numeric values rather than
+# rejecting them — so these checks assert the contract boundary, not byte-for-
+# byte firmware leniency.)
+INDICATOR_KEYWORDS = {
+    # base + existing aliases
+    "ok", "available", "green",
+    "attention", "warning", "yellow",
+    "error", "critical", "red",
+    "busy", "reserved", "blue",
+    "off", "auto", "clear",
+    # new color keyword + status aliases
+    "purple", "magenta",
+    "in_use", "unavailable", "classroom", "class", "locked_out",
+}
+COLOR_NAMES = {
+    "red", "green", "blue", "yellow", "orange",
+    "purple", "magenta", "pink", "cyan", "white", "off", "black",
+}
+PATTERN_MODES = {"solid", "blink", "slow_blink", "breathe", "off"}
+BRIGHTNESS_WORDS = {"low", "high"}
+_HEX_COLOR = re.compile(r"^#?[0-9a-fA-F]{6}$")
+
+
+def _validate_indicator_color(value: object) -> None:
+    if isinstance(value, list):
+        rgb = value[:3]
+        if len(value) < 3 or not all(isinstance(c, int) and not isinstance(c, bool) and 0 <= c <= 255 for c in rgb):
+            raise ValueError("color array must be [r,g,b] with 0-255 ints")
+        return
+    if isinstance(value, str):
+        if value.lower() in COLOR_NAMES or _HEX_COLOR.match(value):
+            return
+        raise ValueError(f"unsupported color {value!r}")
+    raise ValueError("color must be a name, #RRGGBB, or [r,g,b]")
+
+
+def _validate_indicator_brightness(value: object) -> None:
+    if isinstance(value, bool):
+        raise ValueError("brightness must be a word or 0-255 int")
+    if isinstance(value, int):
+        if not 0 <= value <= 255:
+            raise ValueError("brightness out of range")
+        return
+    if isinstance(value, str):
+        if value.lower() in BRIGHTNESS_WORDS:
+            return
+        raise ValueError(f"unsupported brightness {value!r}")
+    raise ValueError("brightness must be a word or 0-255 int")
+
+
+def validate_indicator_command(doc: dict) -> None:
+    """Validate a set_indicator/set_pattern command against the contract.
+
+    Explicit color/brightness/pattern override the keyword defaults; values
+    outside the documented contract are rejected; the command must carry at
+    least one presentation directive (keyword, color, or pattern). The firmware
+    implements a lenient superset (it clamps out-of-range numerics), so this is
+    the strict contract boundary OMS should target, not a behavioral mirror.
+    """
+    keyword = doc.get("indicator") or doc.get("state")
+    have_keyword = keyword is not None
+    if have_keyword and keyword not in INDICATOR_KEYWORDS:
+        raise ValueError(f"unsupported indicator {keyword!r}")
+
+    have_color = "color" in doc and doc["color"] is not None
+    if have_color:
+        _validate_indicator_color(doc["color"])
+
+    if doc.get("brightness") is not None:
+        _validate_indicator_brightness(doc["brightness"])
+
+    pattern = doc.get("pattern")
+    have_pattern = isinstance(pattern, str) and pattern != ""
+    if have_pattern:
+        if pattern in PATTERN_MODES:
+            pass
+        elif not have_keyword and not have_color:
+            # legacy set_pattern carried the semantic keyword in `pattern`
+            if pattern not in INDICATOR_KEYWORDS:
+                raise ValueError(f"unsupported pattern {pattern!r}")
+            have_keyword = True
+        else:
+            raise ValueError(f"unsupported pattern {pattern!r}")
+
+    if "period_ms" in doc and not (isinstance(doc["period_ms"], int) and not isinstance(doc["period_ms"], bool)):
+        raise ValueError("period_ms must be an integer")
+
+    if not (have_keyword or have_color or have_pattern):
+        raise ValueError("indicator command needs indicator/color/pattern")
+
+
 def parse_command(payload: bytes) -> dict:
     doc = json.loads(payload)
     if not isinstance(doc, dict):
@@ -32,9 +127,7 @@ def parse_command(payload: bytes) -> dict:
         if not 1 <= duration <= 300:
             raise ValueError("duration_s out of range")
     elif cmd in {"set_indicator", "set_pattern"}:
-        indicator = doc.get("indicator") or doc.get("state") or doc.get("pattern")
-        if indicator not in {"ok", "attention", "error", "busy", "off", "auto"}:
-            raise ValueError("unsupported indicator")
+        validate_indicator_command(doc)
     elif cmd in {"ota", "update_firmware"}:
         if not isinstance(doc.get("url"), str) and not isinstance(doc.get("policy"), dict):
             raise ValueError("ota command missing url or policy")
@@ -155,6 +248,73 @@ def test_command_parsing_accepts_indicator_command() -> None:
 def test_command_parsing_rejects_invalid_or_unsupported_commands(payload: bytes) -> None:
     with pytest.raises(ValueError):
         parse_command(payload)
+
+
+def _indicator_payload(**fields: object) -> bytes:
+    body = {"schema_version": "forgekey.command.v1", "cmd": "set_indicator", **fields}
+    return json.dumps(body).encode()
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        # Canonical presentation payloads OMS sends (epic spec).
+        {"color": "green", "brightness": "low", "pattern": "solid"},   # available
+        {"color": "green", "brightness": "high", "pattern": "solid"},  # in use
+        {"color": "red", "brightness": "low", "pattern": "solid"},     # unavailable
+        {"pattern": "off"},                                            # locked out
+        {"color": "purple", "brightness": "high", "pattern": "slow_blink", "period_ms": 1500},  # class
+        # Color override forms: named purple, hex, and [r,g,b].
+        {"color": "purple"},
+        {"color": "#800080"},
+        {"color": [128, 0, 255]},
+        {"color": "magenta", "brightness": 200},
+        # Brightness words and integer.
+        {"color": "green", "brightness": "low"},
+        {"color": "green", "brightness": "high"},
+        {"color": "green", "brightness": 12},
+        # Pattern modes.
+        {"color": "blue", "pattern": "breathe"},
+        {"indicator": "error", "pattern": "blink"},
+        # Bare keywords: back-compat base + new status aliases.
+        {"indicator": "ok"},
+        {"indicator": "attention", "duration_s": 30},
+        {"indicator": "in_use"},
+        {"indicator": "unavailable"},
+        {"indicator": "classroom"},
+        {"indicator": "class"},
+        {"indicator": "locked_out"},
+        {"indicator": "purple"},
+        {"indicator": "auto"},
+    ],
+)
+def test_indicator_command_accepts_extended_presentation(fields: dict) -> None:
+    doc = parse_command(_indicator_payload(**fields))
+    assert doc["cmd"] == "set_indicator"
+
+
+def test_set_pattern_alias_accepts_legacy_keyword_in_pattern_field() -> None:
+    payload = b'{"schema_version":"forgekey.command.v1","cmd":"set_pattern","pattern":"ok"}'
+    assert parse_command(payload)["cmd"] == "set_pattern"
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"color": "chartreuse"},               # unknown named color
+        {"color": "#12"},                      # malformed hex
+        {"color": [0, 0]},                     # too few components
+        {"color": [0, 0, 300]},                # component out of range
+        {"brightness": "dim"},                 # unknown brightness word
+        {"brightness": 999},                   # brightness out of range
+        {"color": "green", "pattern": "strobe"},  # unknown pattern with explicit color
+        {"indicator": "sparkle"},              # unknown keyword
+        {},                                    # no presentation directive at all
+    ],
+)
+def test_indicator_command_rejects_unsupported_presentation(fields: dict) -> None:
+    with pytest.raises(ValueError):
+        parse_command(_indicator_payload(**fields))
 
 
 def test_ota_payload_validation_requires_https_sha256_and_signature() -> None:

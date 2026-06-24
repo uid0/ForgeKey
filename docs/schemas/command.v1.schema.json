@@ -48,6 +48,54 @@
     "action": {
       "type": "string"
     },
+    "indicator": {
+      "type": "string",
+      "description": "Semantic indicator keyword for set_indicator/set_pattern (e.g. ok, error, purple, in_use, locked_out)."
+    },
+    "state": {
+      "type": "string",
+      "description": "Alias for `indicator` accepted on set_indicator/set_pattern."
+    },
+    "color": {
+      "description": "Explicit indicator color override: named color, \"#RRGGBB\", or [r,g,b] (each 0-255).",
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255
+          },
+          "minItems": 3,
+          "maxItems": 3
+        }
+      ]
+    },
+    "brightness": {
+      "description": "Indicator brightness override: \"low\" | \"high\" | integer 0-255.",
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        }
+      ]
+    },
+    "pattern": {
+      "type": "string",
+      "description": "Indicator render pattern: solid | blink | slow_blink | breathe | off (also accepted as a legacy keyword carrier for set_pattern)."
+    },
+    "period_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Optional blink/breathe period for set_indicator. Defaults: blink 750, slow_blink 1500, breathe 2000."
+    },
     "wifi": {
       "type": "object",
       "additionalProperties": true

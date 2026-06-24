@@ -478,26 +478,147 @@ static void onCommandMessage(const char* topic, const uint8_t* payload, unsigned
         return;
     }
     if (strcmp(cmd, "set_indicator") == 0 || strcmp(cmd, "set_pattern") == 0) {
-        const char* indicator = doc["indicator"] | "";
-        if (!indicator || !*indicator) indicator = doc["state"] | "";
-        if (!indicator || !*indicator) indicator = doc["pattern"] | "";
-        unsigned long durationS = doc["duration_s"] | 0UL;
-        if (!StatusMatrix::setIndicator(indicator, durationS * 1000UL)) {
+        // Extended indicator contract (see docs/contracts/mqtt.md): a semantic
+        // `indicator` keyword plus optional explicit `color` / `brightness` /
+        // `pattern` / `period_ms` overrides. Explicit fields override the
+        // keyword's defaults. Unknown values reject via unsupported_indicator.
+        const char* keyword = doc["indicator"] | "";
+        if (!*keyword) keyword = doc["state"] | "";
+
+        StatusMatrix::IndicatorSpec spec;
+        bool clear = false;
+        bool haveKeyword = false;
+        bool haveColor = false;
+
+        if (*keyword) {
+            if (!StatusMatrix::keywordSpec(keyword, spec, clear)) {
+                publishCommandRejectAck(cmd, commandId, "unsupported_indicator");
+                debugPrintf("WARN", "CMD", "%s rejected: unknown indicator '%s'", cmd, keyword);
+                return;
+            }
+            haveKeyword = true;
+        }
+
+        // Explicit color override: named / "#RRGGBB" / [r,g,b].
+        JsonVariantConst colorV = doc["color"];
+        if (!colorV.isNull()) {
+            if (colorV.is<JsonArrayConst>()) {
+                JsonArrayConst arr = colorV.as<JsonArrayConst>();
+                if (arr.size() < 3) {
+                    publishCommandRejectAck(cmd, commandId, "unsupported_indicator");
+                    debugPrintf("WARN", "CMD", "%s rejected: color array needs [r,g,b]", cmd);
+                    return;
+                }
+                spec.r = (uint8_t)constrain(arr[0].as<int>(), 0, 255);
+                spec.g = (uint8_t)constrain(arr[1].as<int>(), 0, 255);
+                spec.b = (uint8_t)constrain(arr[2].as<int>(), 0, 255);
+            } else if (colorV.is<const char*>()) {
+                if (!StatusMatrix::parseColor(colorV.as<const char*>(), spec.r, spec.g, spec.b)) {
+                    publishCommandRejectAck(cmd, commandId, "unsupported_indicator");
+                    debugPrintf("WARN", "CMD", "%s rejected: unknown color '%s'",
+                                cmd, colorV.as<const char*>());
+                    return;
+                }
+            } else {
+                publishCommandRejectAck(cmd, commandId, "unsupported_indicator");
+                debugPrintf("WARN", "CMD", "%s rejected: bad color type", cmd);
+                return;
+            }
+            clear = false;  // an explicit color is a concrete render, never auto/clear
+            haveColor = true;
+        }
+
+        // Brightness override: "low" / "high" / integer 0-255.
+        JsonVariantConst brightV = doc["brightness"];
+        if (!brightV.isNull()) {
+            if (brightV.is<const char*>()) {
+                if (!StatusMatrix::parseBrightness(brightV.as<const char*>(), spec.brightness)) {
+                    publishCommandRejectAck(cmd, commandId, "unsupported_indicator");
+                    debugPrintf("WARN", "CMD", "%s rejected: unknown brightness '%s'",
+                                cmd, brightV.as<const char*>());
+                    return;
+                }
+            } else if (brightV.is<int>()) {
+                spec.brightness = (uint8_t)constrain(brightV.as<int>(), 0, 255);
+            } else {
+                publishCommandRejectAck(cmd, commandId, "unsupported_indicator");
+                debugPrintf("WARN", "CMD", "%s rejected: bad brightness type", cmd);
+                return;
+            }
+        }
+
+        // Pattern override: solid/blink/slow_blink/breathe/off. If the value is
+        // not a render mode and nothing else was given, treat it as a legacy
+        // keyword (old set_pattern carried the keyword in `pattern`).
+        const char* patternStr = doc["pattern"] | "";
+        if (*patternStr) {
+            StatusMatrix::Pattern p;
+            if (StatusMatrix::parsePattern(patternStr, p)) {
+                spec.pattern = p;
+            } else if (!haveKeyword && !haveColor) {
+                if (!StatusMatrix::keywordSpec(patternStr, spec, clear)) {
+                    publishCommandRejectAck(cmd, commandId, "unsupported_indicator");
+                    debugPrintf("WARN", "CMD", "%s rejected: unknown pattern '%s'", cmd, patternStr);
+                    return;
+                }
+                haveKeyword = true;
+            } else {
+                publishCommandRejectAck(cmd, commandId, "unsupported_indicator");
+                debugPrintf("WARN", "CMD", "%s rejected: unknown pattern '%s'", cmd, patternStr);
+                return;
+            }
+        }
+
+        // Optional explicit period for blink/breathe patterns.
+        unsigned long periodMs = doc["period_ms"] | 0UL;
+        if (periodMs > 0) spec.periodMs = periodMs;
+
+        // The command must carry at least one presentation directive.
+        if (!haveKeyword && !haveColor && !*patternStr) {
             publishCommandRejectAck(cmd, commandId, "unsupported_indicator");
-            debugPrintf("WARN", "CMD", "%s rejected: unsupported indicator '%s'",
-                        cmd, indicator);
+            debugPrintf("WARN", "CMD", "%s rejected: no indicator/color/pattern", cmd);
             return;
         }
+
+        unsigned long durationS = doc["duration_s"] | 0UL;
+
+        bool ok;
+        if (clear) {
+            StatusMatrix::clearIndicator();
+            ok = true;
+        } else {
+            ok = StatusMatrix::setIndicator(spec, durationS * 1000UL);
+        }
+        if (!ok) {
+            // No matrix on this device (stub build) — keep the existing reject path.
+            publishCommandRejectAck(cmd, commandId, "unsupported_indicator");
+            debugPrintf("WARN", "CMD", "%s rejected: indicator unsupported on this device", cmd);
+            return;
+        }
+
         JsonDocument ack;
         ack["cmd_ack"] = cmd;
         ack["command_id"] = commandId;
-        ack["indicator"] = indicator;
-        if (durationS > 0) ack["duration_s"] = durationS;
+        if (*keyword) ack["indicator"] = keyword;
         ack["ok"] = true;
+        if (clear) {
+            ack["pattern"] = "auto";
+        } else {
+            char hex[8];
+            snprintf(hex, sizeof(hex), "#%02X%02X%02X", spec.r, spec.g, spec.b);
+            ack["color"] = hex;
+            ack["brightness"] = spec.brightness;
+            ack["pattern"] = StatusMatrix::patternName(spec.pattern);
+            if (spec.periodMs > 0) ack["period_ms"] = spec.periodMs;
+        }
+        if (durationS > 0) ack["duration_s"] = durationS;
         String ackJson;
         serializeJson(ack, ackJson);
         mqttClient.publishStatus(ackJson.c_str());
-        debugPrintf("INFO", "CMD", "%s -> %s", cmd, indicator);
+        debugPrintf("INFO", "CMD", "%s -> kw='%s' #%02X%02X%02X br=%u pat=%s",
+                    cmd, *keyword ? keyword : "(none)",
+                    spec.r, spec.g, spec.b, (unsigned)spec.brightness,
+                    StatusMatrix::patternName(spec.pattern));
         return;
     }
     if (strcmp(cmd, "support_mode") == 0 || strcmp(cmd, "support") == 0 ||

@@ -62,12 +62,38 @@ and include it inside payloads when the schema allows additive fields.
 | `accessory_controller` | `enable`, `disable` | `set_runout_timer` |
 | `power_relay` | `power_set`, `relay_set` | `status` |
 
-`indicator` devices accept `set_indicator` / `set_pattern` with an
-`indicator`, `state`, or `pattern` string. Supported values are `ok`,
-`attention`, `error`, `busy`, `off`, and `auto`; aliases include `available`,
-`warning`, `critical`, `reserved`, `green`, `yellow`, `red`, `blue`, and
-`clear`. Optional `duration_s` auto-returns the matrix to normal device status
-after the requested window.
+`indicator` devices accept `set_indicator` / `set_pattern`. The legacy form is a
+single semantic keyword in `indicator` (or `state`); the extended form adds
+explicit presentation overrides so OMS can drive arbitrary **color**,
+**brightness**, and **pattern** on the WS2812 matrix. All new fields are
+optional and additive; explicit `color` / `brightness` / `pattern` override the
+keyword's defaults.
+
+| Field | Type | Notes |
+|---|---|---|
+| `indicator` (or `state`) | string | Semantic keyword. Base: `ok`, `attention`, `error`, `busy`, `off`, `auto`. Aliases: `available`, `warning`, `critical`, `reserved`, `green`, `yellow`, `red`, `blue`, `clear`. New: `purple`/`magenta`, and status aliases `in_use`, `unavailable`, `classroom`/`class`, `locked_out`. The firmware maps each keyword to a default color/brightness/pattern. |
+| `color` | string or array | Explicit color override. Named (`purple`, `magenta`, `green`, `red`, `blue`, `yellow`, `orange`, `pink`, `cyan`, `white`, `off`), hex `"#RRGGBB"`, or `[r,g,b]` (each 0-255). |
+| `brightness` | string or int | `"low"` \| `"high"` \| integer 0-255. `low` ≈ 12% and `high` ≈ 90% of full scale, applied by scaling the color per-pixel (the global matrix brightness remains a master dimmer). |
+| `pattern` | string | `"solid"` \| `"blink"` \| `"slow_blink"` \| `"breathe"` \| `"off"`. Default `solid`. |
+| `period_ms` | int | Optional blink/breathe period. Defaults: blink 750, slow_blink 1500, breathe 2000. |
+| `duration_s` | int | Auto-return the matrix to normal device status after N seconds. 0/missing = persist. |
+
+Unknown color, brightness, or pattern values are rejected with
+`error: "unsupported_indicator"`. The `command_ack.v1` for an accepted command
+echoes `indicator` (when a keyword was sent), the resolved `color` (`#RRGGBB`),
+`brightness` (int), and `pattern`. The firmware also reports current indicator
+state on `forgekey/<mac>/indicator/status` using `forgekey.status.v1` additive
+fields `indicator` / `color` / `brightness` / `pattern`.
+
+Canonical presentation payloads OMS sends:
+
+```json
+{"cmd":"set_indicator","color":"green","brightness":"low","pattern":"solid"}   // available
+{"cmd":"set_indicator","color":"green","brightness":"high","pattern":"solid"}  // in use
+{"cmd":"set_indicator","color":"red","brightness":"low","pattern":"solid"}     // unavailable
+{"cmd":"set_indicator","pattern":"off"}                                        // locked out
+{"cmd":"set_indicator","color":"purple","brightness":"high","pattern":"slow_blink","period_ms":1500}  // in use for a class
+```
 
 Unsupported verbs MUST be acknowledged with `command_unsupported`. Authenticated
 but unauthorized verbs MUST be acknowledged with `command_unauthorized`. Devices
