@@ -164,7 +164,7 @@ bench. That record is the root of trust for first enrollment and contains:
 | MAC | eFuse base MAC for the module | Immutable device lookup key; printed on the label and encoded in the QR URL. |
 | Device class | `people-counter`, `temperature-sensor`, `cabinet-lock`, etc. | Must match the firmware's `FORGEKEY_SENSOR_KIND`; OMS rejects mismatches. |
 | Claim code | Random human code such as `FK7P-Q9CD-2M6R` | Printed on the label; store only a salted hash in OMS; mark single-use after owner claim. |
-| Bootstrap token | Per-device or very small-batch bearer | Sent only in `X-ForgeKey-Bootstrap-Token`; expiry should be short and scoped to the MAC/class/record. |
+| Bootstrap token | Per-device or very small-batch bearer | Sent only in `X-ForgeKey-Provisioning-Token`; expiry should be short and scoped to the MAC/class/record. |
 | Manufacturing record ID | Work order / serial / fixture run ID | Sent as `manufacturing_record_id` for audit and support. |
 | QR/support URL | Claim/support page | QR contains MAC, class, and claim code but not the bootstrap token. |
 | Public-key status | Pending until first boot | OMS stores the device public key/CSR fingerprint on first successful enrollment. |
@@ -196,7 +196,7 @@ On every boot the device:
        `flash_memory_id`, and `chip_info`.
      * `photo` — `image/jpeg` of the area for imaging builds only; lock and
        temperature builds send metadata only.
-   - Sends headers `X-ForgeKey-Bootstrap-Token: <token>` and
+   - Sends headers `X-ForgeKey-Provisioning-Token: <token>` and
      `X-ForgeKey-Claim-Code: <claim-code>`.
    - Expects 2xx with JSON body containing at least `device_id` and a signed
      `client_certificate_pem`/`certificate_pem`; OMS may also return MQTT
@@ -601,9 +601,10 @@ quickly. `valid_after` is parsed and logged but the device does not enforce it
   rogue public CA is rejected at the TLS handshake.
 - **Bootstrap bearer**: short-lived/per-device token provided as
   `FORGEKEY_BOOTSTRAP_TOKEN` at manufacturing time or delivered into NVS as
-  `prov_tok`. It is sent in `X-ForgeKey-Bootstrap-Token` only during
+  `prov_tok`. It is sent in `X-ForgeKey-Provisioning-Token` only during
   enrollment and is validated against MAC, device class, claim code,
-  manufacturing record, and expiry.
+  manufacturing record, and expiry. (Older firmware sent this token in
+  `X-ForgeKey-Bootstrap-Token`, which OMS still accepts as a legacy alias.)
 - **Per-device auth**: each device generates its own P-256 private key and CSR.
   OMS signs the CSR and returns a unique client certificate used for MQTT/HTTPS
   authentication thereafter.

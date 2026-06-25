@@ -13,7 +13,7 @@
 #define OMS_PORT 443
 #endif
 
-// Short-lived or per-device bearer used in the X-ForgeKey-Bootstrap-Token
+// Short-lived or per-device bearer used in the X-ForgeKey-Provisioning-Token
 // header for /api/forgekey/devices/enroll/. Manufacturing should mint a
 // unique token per device (or per small batch with a short expiry) and bind it
 // to the MAC, device class, claim code, and manufacturing record in OMS.

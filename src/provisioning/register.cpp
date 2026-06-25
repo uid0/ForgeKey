@@ -479,7 +479,7 @@ bool Provisioning::enrollDevice(const char* host, uint16_t port,
 
     tls.printf("POST /api/forgekey/devices/enroll/ HTTP/1.1\r\n"
                "Host: %s\r\n"
-               "X-ForgeKey-Bootstrap-Token: %s\r\n"
+               "X-ForgeKey-Provisioning-Token: %s\r\n"
                "X-ForgeKey-Claim-Code: %s\r\n"
                "Content-Type: multipart/form-data; boundary=%s\r\n"
                "Content-Length: %u\r\n"

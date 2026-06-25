@@ -43,7 +43,7 @@ public:
     // time so back-end can correlate fleet stability metrics.
     uint32_t bootCount() const { return cachedBootCount; }
 
-    // Returns the bearer token currently used for the X-ForgeKey-Bootstrap-Token
+    // Returns the bearer token currently used for the X-ForgeKey-Provisioning-Token
     // header. Falls back to the compile-time FORGEKEY_BOOTSTRAP_TOKEN if NVS
     // hasn't yet been overwritten by an operator-delivered short-lived token.
     String activeProvisioningToken() const;
