@@ -13,6 +13,7 @@
 #endif
 
 #include "secrets.h"
+#include "watchdog/watchdog_manager.h"
 
 namespace WifiSetup {
 
@@ -164,6 +165,9 @@ void onWifiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
                       g_health.disconnectReason, (unsigned)g_health.reconnectCount);
     } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
         updateHealthConnected();
+        // A fresh DHCP lease means the link is usable again; refresh the
+        // health watchdog so it doesn't tear down a link that just came up.
+        ForgeKeyWatchdog::markHealthy(ForgeKeyWatchdog::Subsystem::WiFi);
     }
 }
 

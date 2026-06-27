@@ -1042,7 +1042,13 @@ static bool recoverSubsystem(ForgeKeyWatchdog::Subsystem subsystem, const char* 
                 ForgeKeyWatchdog::subsystemName(subsystem), reason ? reason : "timeout");
     switch (subsystem) {
         case ForgeKeyWatchdog::Subsystem::WiFi:
-            WiFi.disconnect(false, false);
+            // Do NOT tear down a working association. The health timeout can
+            // fire spuriously (a starved loop, or a transient WiFi.status()
+            // sample) while the link is actually up; calling WiFi.disconnect()
+            // here deauths a healthy connection (ASSOC_LEAVE / reason 8) and
+            // strands the device. Only nudge a reconnect when WiFi is genuinely
+            // down; a connected link is already healthy.
+            if (WiFi.status() == WL_CONNECTED) return true;
             WiFi.reconnect();
             return true;
         case ForgeKeyWatchdog::Subsystem::MQTT:
