@@ -163,6 +163,10 @@ String buildStatePayload(bool online, const char* ip, const char* reason) {
 }  // namespace
 
 void MqttClient::staticCallback(char* topic, uint8_t* payload, unsigned int length) {
+    // Any inbound message proves WiFi + MQTT are live — refresh the health
+    // watchdog's last-healthy clock for both subsystems before dispatching.
+    ForgeKeyWatchdog::markHealthy(ForgeKeyWatchdog::Subsystem::WiFi);
+    ForgeKeyWatchdog::markHealthy(ForgeKeyWatchdog::Subsystem::MQTT);
     // Dispatch to the matching per-topic handler. PubSubClient delivers every
     // subscribed topic through the same callback, so we have to demux here.
     if (mqttClient.firmwareTopic.length() &&
@@ -454,6 +458,16 @@ bool MqttClient::connect() {
         return false;
     }
 
+    // Gate every connect attempt on the link actually being usable. Without
+    // WiFi associated and a DHCP lease, a TCP/TLS connect only yields
+    // "host unreachable" (errno 118) and a reconnect storm. This single guard
+    // covers all callers: begin(), loop(), restart(), probeReachability(),
+    // and the publish fallback paths.
+    if (WiFi.status() != WL_CONNECTED || (uint32_t)WiFi.localIP() == 0) {
+        Serial.println("[MQTT] connect deferred: WiFi not ready (no association/IP)");
+        return false;
+    }
+
     String clientId = "ForgeKey_" + String((uint32_t)ESP.getEfuseMac(), HEX);
     if (stateTopic.length() == 0) {
         stateTopic = defaultStateTopic();
@@ -491,6 +505,11 @@ bool MqttClient::connect() {
         publishStateJson(birthPayload.c_str());
         resubscribeAll();
         serviceOutboundQueue();
+        // A completed connect proves WiFi + MQTT are both live; register the
+        // activity so the health watchdog's last-healthy clock reflects real
+        // success instead of relying solely on a periodic connected sample.
+        ForgeKeyWatchdog::markHealthy(ForgeKeyWatchdog::Subsystem::WiFi);
+        ForgeKeyWatchdog::markHealthy(ForgeKeyWatchdog::Subsystem::MQTT);
         return true;
     }
 
@@ -917,7 +936,13 @@ bool MqttClient::publishImmediate(const char* topic, const char* payload, bool r
     if (!client || !client->connected() || !topic || !topic[0]) return false;
     if (!payload) payload = "";
     bool ok = client->publish(topic, payload, retain);
-    if (ok) lastPublishMs = millis();
+    if (ok) {
+        lastPublishMs = millis();
+        // A successful socket write proves the link is carrying MQTT traffic;
+        // keep the health watchdog's clock fresh for WiFi + MQTT.
+        ForgeKeyWatchdog::markHealthy(ForgeKeyWatchdog::Subsystem::WiFi);
+        ForgeKeyWatchdog::markHealthy(ForgeKeyWatchdog::Subsystem::MQTT);
+    }
     return ok;
 }
 
@@ -1057,14 +1082,34 @@ void MqttClient::loop() {
     client->loop();
     serviceOutboundQueue();
     
-    // Reconnect if connection is lost (same 5s throttle as publish path)
+    // Reconnect if the connection is lost.
     if (!client->connected()) {
-        if (millis() - lastReconnectAttempt > 5000) {
-            Serial.printf("[MQTT] loop: connection lost, attempting reconnect (last_state=%d %s)\n",
-                          client->state(), mqttStateName(client->state()));
-            connect();
-            lastReconnectAttempt = millis();
+        // Don't even attempt MQTT while WiFi is re-associating / has no IP:
+        // a connect there only burns cycles on "host unreachable". Wait for
+        // the link to come back (also keeps backoff a measure of *broker*
+        // reachability, not WiFi-down churn).
+        if (WiFi.status() != WL_CONNECTED || (uint32_t)WiFi.localIP() == 0) {
+            return;
         }
+        // Exponential backoff on consecutive failures (1s, 2s, 4s ... capped
+        // at 30s) instead of a flat 5s, so a persistently unreachable broker
+        // is retried gently rather than every 5s forever.
+        unsigned long backoff = queueBackoffMs(reconnectFailures);
+        if (millis() - lastReconnectAttempt > backoff) {
+            Serial.printf("[MQTT] loop: connection lost, attempting reconnect "
+                          "(last_state=%d %s, failures=%u, backoff=%lums)\n",
+                          client->state(), mqttStateName(client->state()),
+                          (unsigned)reconnectFailures, backoff);
+            bool ok = connect();
+            lastReconnectAttempt = millis();
+            if (ok) {
+                reconnectFailures = 0;
+            } else if (reconnectFailures < 255) {
+                reconnectFailures++;
+            }
+        }
+    } else {
+        reconnectFailures = 0;
     }
 }
 

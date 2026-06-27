@@ -160,6 +160,7 @@ private:
     bool brokerIpResolved = false;
     int port = 1883;
     unsigned long lastReconnectAttempt = 0;
+    uint8_t reconnectFailures = 0;         // consecutive reconnect failures -> backoff
     unsigned long lastPublishMs = 0;       // millis() of last publish() == true
     int lastConnectState = 0;              // PubSubClient state after last connect attempt
     MessageHandler firmwareHandler;
