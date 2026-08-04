@@ -15,8 +15,12 @@ manufactured with the production profile and recorded in OMS before handoff.
 | Cabinet lock | `cd esp32c6-lock && idf.py build` | `cd esp32c6-lock && idf.py build` using the checked-in production defaults | ESP32-C6 secure boot v2, flash encryption release mode, encrypted NVS, locked debug policy. |
 
 Production firmware uses `partitions/forgekey_secure_ota.csv` or
-`esp32c6-lock/partitions_prod.csv`. Both mark NVS and user-data partitions as
-encrypted and include an `nvs_keys` partition for ESP-IDF NVS encryption.
+`esp32c6-lock/partitions_prod.csv`. The people counter is the exception: its
+image is larger than that table's 1.5 MB OTA slot, so
+`seeed_xiao_esp32s3_prod` uses `partitions/forgekey_secure_ota_8mb.csv`, which
+is the same layout grown to 3 MB slots for the XIAO ESP32-S3's 8 MB flash. All
+three mark NVS and user-data partitions as encrypted and include an `nvs_keys`
+partition for ESP-IDF NVS encryption.
 
 > **One-way warning:** Secure boot, flash encryption release mode, JTAG disable,
 and UART download restrictions burn eFuses. Treat production flashing as an

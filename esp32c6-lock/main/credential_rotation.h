@@ -8,6 +8,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 /* Handle a config message from MQTT. Returns true if the message was handled. */
 bool credential_rotation_handle_config(const char* topic, const uint8_t* payload, uint32_t length);

@@ -1,0 +1,36 @@
+# ESP32-C6 Lock Device - CI overlay on top of sdkconfig.defaults.
+#
+# sdkconfig.defaults is the manufacturing profile: it turns on secure boot v2,
+# flash encryption release mode, and signed binaries. Those need the offline
+# production signing key, so a plain `idf.py build` fails with
+# "Secure Boot Signing Key secure_boot_signing_key.pem does not exist" — and the
+# key must never be present on a CI runner anyway.
+#
+# This overlay turns off only the parts that require that key or burn eFuses, so
+# CI still compiles and links the real firmware (including the production NVS
+# routing under CONFIG_FORGEKEY_PRODUCTION_SECURITY) but emits an unsigned image.
+# Everything else — partition table, NVS encryption, task/logging config — is
+# inherited from sdkconfig.defaults unchanged.
+#
+# Apply it after the base file, never on its own:
+#   idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.ci.defaults" build
+#
+# Manufacturing builds keep using sdkconfig.defaults alone. See
+# docs/SECURITY_BASELINE.md.
+
+# Secure boot: needs secure_boot_signing_key.pem and burns eFuses.
+CONFIG_SECURE_BOOT=n
+CONFIG_SECURE_BOOT_V2_ENABLED=n
+CONFIG_SECURE_BOOT_BUILD_SIGNED_BINARIES=n
+CONFIG_SECURE_BOOT_FLASH_BOOTLOADER_DEFAULT=n
+
+# Flash encryption: release mode is irreversible.
+CONFIG_SECURE_FLASH_ENC_ENABLED=n
+CONFIG_SECURE_FLASH_ENCRYPTION_MODE_RELEASE=n
+
+# With flash encryption off, NVS encryption falls back to the HMAC scheme, which
+# needs a real eFuse key ID burned into the part and otherwise fails to compile
+# with "Configured eFuse block (CONFIG_NVS_SEC_HMAC_EFUSE_KEY_ID) out of range".
+# The firmware has no CONFIG_NVS_ENCRYPTION-conditional code, so turning it off
+# costs no build coverage; production keeps it on via flash encryption.
+CONFIG_NVS_ENCRYPTION=n

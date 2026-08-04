@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 bool firmware_verify_signature(const uint8_t* sha256_digest, size_t digest_len,
                                const uint8_t* signature_der, size_t signature_len);

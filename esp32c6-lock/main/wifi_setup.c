@@ -169,7 +169,7 @@ static bool try_predefined_networks(void) {
 #define AP_SSID_PREFIX "ForgeKey-Setup-"
 #define AP_MAX_SSID_LEN 32
 
-static esp_err_t captive_portal_handler_get(esp_http_server_req_t req) {
+static esp_err_t captive_portal_handler_get(httpd_req_t* req) {
     static const char* html =
         "<!DOCTYPE html>"
         "<html><head><title>ForgeKey Setup</title>"
@@ -188,29 +188,38 @@ static esp_err_t captive_portal_handler_get(esp_http_server_req_t req) {
         "Visit <a href='https://openmakersuite.com'>OpenMakerSuite</a> to generate unlock codes.</p>"
         "</body></html>";
 
-    esp_http_server_respond(req, html, strlen(html));
+    httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
 
-static esp_err_t captive_portal_handler_post(esp_http_server_req_t req) {
+static esp_err_t captive_portal_handler_post(httpd_req_t* req) {
     char ssid[64] = {0};
     char password[128] = {0};
 
-    int content_len = esp_http_server_get_content_length(req);
+    int content_len = (int)req->content_len;
     if (content_len <= 0 || content_len > 4096) {
-        esp_http_server_set_status_code(req, HTTP_STATUS_BAD_REQUEST);
-        esp_http_server_respond(req, "Bad request", 10);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad request");
         return ESP_OK;
     }
 
     char* body = malloc(content_len + 1);
     if (!body) {
-        esp_http_server_set_status_code(req, HTTP_STATUS_INTERNAL_SERVER_ERROR);
-        esp_http_server_respond(req, "Internal error", 14);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Internal error");
         return ESP_OK;
     }
 
-    esp_http_server_read(req, body, content_len);
+    /* httpd_req_recv can return a short read; keep going until the body is in. */
+    int total = 0;
+    while (total < content_len) {
+        int n = httpd_req_recv(req, body + total, content_len - total);
+        if (n == HTTPD_SOCK_ERR_TIMEOUT) continue;
+        if (n <= 0) {
+            free(body);
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad request");
+            return ESP_OK;
+        }
+        total += n;
+    }
     body[content_len] = '\0';
 
     /* Parse URL-encoded form data */
@@ -232,6 +241,7 @@ static esp_err_t captive_portal_handler_post(esp_http_server_req_t req) {
                 for (size_t i = 0; i < val_len; i++) {
                     if (val[i] == '+') val[i] = ' ';
                 }
+                if (val_len >= sizeof(ssid)) val_len = sizeof(ssid) - 1;
                 strncpy(ssid, val, val_len);
                 ssid[val_len] = '\0';
             } else if (key_len == 8 && strncmp(token, "password", 8) == 0) {
@@ -241,6 +251,7 @@ static esp_err_t captive_portal_handler_post(esp_http_server_req_t req) {
                 for (size_t i = 0; i < val_len; i++) {
                     if (val[i] == '+') val[i] = ' ';
                 }
+                if (val_len >= sizeof(password)) val_len = sizeof(password) - 1;
                 strncpy(password, val, val_len);
                 password[val_len] = '\0';
             }
@@ -257,8 +268,9 @@ static esp_err_t captive_portal_handler_post(esp_http_server_req_t req) {
         esp_wifi_connect();
     }
 
-    esp_http_server_set_status_code(req, HTTP_STATUS_FOUND);
-    esp_http_server_set_header(req, "Location", "/");
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", "/");
+    httpd_resp_send(req, NULL, 0);
     return ESP_OK;
 }
 
@@ -279,14 +291,14 @@ static const httpd_uri_t captive_post = {
 static esp_err_t captive_portal_start(const char* ap_ssid) {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
-    config.ctrl_port = HTTPD_CTRL_INVALID;
+    /* ctrl_port keeps HTTPD_DEFAULT_CONFIG()'s ESP_HTTPD_DEF_CTRL_PORT. */
     config.max_uri_handlers = 4;
 
+    /* Open AP: no password is set, so the portal is reachable for provisioning. */
     wifi_config_t ap_config = {
         .ap = {
             .ssid_len = 0,
             .max_connection = 4,
-            .password_min_len = 8,
         },
     };
 
