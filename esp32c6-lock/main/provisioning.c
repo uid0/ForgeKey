@@ -205,8 +205,10 @@ static char* build_enrollment_metadata_json(const char* mac,
     if (chip_info_json) {
         cJSON_AddStringToObject(chip_info_json, "model", chip_model_name(chip_info.model));
         cJSON_AddNumberToObject(chip_info_json, "cores", chip_info.cores);
-        cJSON_AddNumberToObject(chip_info_json, "revision", chip_info.revision);
-        cJSON_AddNumberToObject(chip_info_json, "full_revision", chip_info.full_revision);
+        /* ESP-IDF v5 dropped the separate full_revision field: chip_info.revision
+         * now carries the full MXX value (wafer major * 100 + minor). */
+        cJSON_AddNumberToObject(chip_info_json, "revision", chip_info.revision / 100);
+        cJSON_AddNumberToObject(chip_info_json, "full_revision", chip_info.revision);
 
         cJSON* features = cJSON_AddObjectToObject(chip_info_json, "features");
         if (features) {

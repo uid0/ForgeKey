@@ -192,7 +192,7 @@ static const httpd_uri_t api_status_uri = {
 void lock_web_server_init(void) {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = FORGEKEY_LOCK_WEB_PORT;
-    config.ctrl_port = HTTPD_CTRL_INVALID;
+    /* ctrl_port keeps HTTPD_DEFAULT_CONFIG()'s ESP_HTTPD_DEF_CTRL_PORT. */
     config.max_uri_handlers = 8;
 
     if (httpd_start(&s_server, &config) == ESP_OK) {

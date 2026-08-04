@@ -191,7 +191,7 @@ static void lock_gpio_read(void) {
     }
 
     /* Mortise switch: active = LOW */
-    bool mortise_raw = (gpio_get_level(FORGEKEY_LOCK_MORTISE_PIN) == LOW);
+    bool mortise_raw = (gpio_get_level(FORGEKEY_LOCK_MORTISE_PIN) == FORGEKEY_LOCK_MORTISE_ACTIVE);
     if (!g_mortise_init) {
         g_mortise_active = mortise_raw;
         g_mortise_debounce_time = now;
@@ -306,9 +306,25 @@ static bool verify_es256_signature(const char* signing_input,
     rc = mbedtls_mpi_read_binary(&r, signature, 32);
     if (rc == 0) rc = mbedtls_mpi_read_binary(&s, signature + 32, 32);
     if (rc == 0) {
+        /* mbedtls 3.x (ESP-IDF v5.x) made mbedtls_ecp_keypair opaque, so the
+         * group and public point have to be exported rather than read off the
+         * struct. Any failure here leaves rc non-zero and the command is
+         * rejected. */
         mbedtls_ecp_keypair* keypair = mbedtls_pk_ec(pk);
-        rc = mbedtls_ecdsa_verify(&keypair->grp, digest, sizeof(digest),
-                                  &keypair->Q, &r, &s);
+        if (!keypair) {
+            rc = MBEDTLS_ERR_PK_TYPE_MISMATCH;
+        } else {
+            mbedtls_ecp_group grp;
+            mbedtls_ecp_point Q;
+            mbedtls_ecp_group_init(&grp);
+            mbedtls_ecp_point_init(&Q);
+            rc = mbedtls_ecp_export(keypair, &grp, NULL, &Q);
+            if (rc == 0) {
+                rc = mbedtls_ecdsa_verify(&grp, digest, sizeof(digest), &Q, &r, &s);
+            }
+            mbedtls_ecp_point_free(&Q);
+            mbedtls_ecp_group_free(&grp);
+        }
     }
     mbedtls_mpi_free(&r);
     mbedtls_mpi_free(&s);

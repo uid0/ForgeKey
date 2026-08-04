@@ -39,7 +39,9 @@ static char s_topic_prefix[FORGEKEY_MQTT_MAX_TOPIC] = {0};
 static char s_command_topic[FORGEKEY_MQTT_MAX_TOPIC] = {0};
 static char s_config_topic[FORGEKEY_MQTT_MAX_TOPIC] = {0};
 static char s_firmware_topic[FORGEKEY_MQTT_MAX_TOPIC] = {0};
-static char s_firmware_status_topic[FORGEKEY_MQTT_MAX_TOPIC] = {0};
+/* The status topic is the firmware topic plus a "/status" suffix, so it needs
+ * room for both — sized the same, snprintf would silently truncate. */
+static char s_firmware_status_topic[FORGEKEY_MQTT_MAX_TOPIC + sizeof("/status")] = {0};
 static char s_status_topic[FORGEKEY_MQTT_MAX_TOPIC] = {0};
 static char s_capabilities_topic[FORGEKEY_MQTT_MAX_TOPIC] = {0};
 static char s_state_topic[FORGEKEY_MQTT_MAX_TOPIC] = {0};
@@ -331,15 +333,12 @@ bool mqtt_handler_begin(const char* broker_host, int port,
     mqtt_cfg.credentials.authentication.key = client_private_key_pem;
     mqtt_cfg.session.keepalive = 60;
     mqtt_cfg.session.last_will.topic = s_state_topic[0] ? s_state_topic : NULL;
-    build_state_payload(s_unexpected_disconnect_state,
-                        sizeof(s_unexpected_disconnect_state),
-                        false, NULL, "unexpected_disconnect");
-    mqtt_cfg.session.last_will.msg = s_unexpected_disconnect_state;
-    mqtt_cfg.session.last_will.msg_len = strlen(s_unexpected_disconnect_state);
+    mqtt_cfg.session.last_will.msg = kUnexpectedDisconnectState;
+    mqtt_cfg.session.last_will.msg_len = strlen(kUnexpectedDisconnectState);
     mqtt_cfg.session.last_will.qos = 0;
     mqtt_cfg.session.last_will.retain = true;
     mqtt_cfg.session.disable_clean_session = false;
-    mqtt_cfg.session.reconnect_timeout_ms = 10000;
+    mqtt_cfg.network.reconnect_timeout_ms = 10000;
     mqtt_cfg.network.disable_auto_reconnect = false;
 #else
     mqtt_cfg.host = broker_host;
@@ -348,11 +347,8 @@ bool mqtt_handler_begin(const char* broker_host, int port,
     mqtt_cfg.client_key_pem = client_private_key_pem;
     mqtt_cfg.keepalive = 60;
     mqtt_cfg.lwt_topic = s_state_topic[0] ? s_state_topic : NULL;
-    build_state_payload(s_unexpected_disconnect_state,
-                        sizeof(s_unexpected_disconnect_state),
-                        false, NULL, "unexpected_disconnect");
-    mqtt_cfg.lwt_msg = s_unexpected_disconnect_state;
-    mqtt_cfg.lwt_msg_len = strlen(s_unexpected_disconnect_state);
+    mqtt_cfg.lwt_msg = kUnexpectedDisconnectState;
+    mqtt_cfg.lwt_msg_len = strlen(kUnexpectedDisconnectState);
     mqtt_cfg.lwt_qos = 0;
     mqtt_cfg.lwt_retain = true;
     mqtt_cfg.disable_clean_session = false;

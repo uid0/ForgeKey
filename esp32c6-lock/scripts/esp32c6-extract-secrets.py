@@ -62,16 +62,24 @@ def extract_string_macro(header_path: Path, macro_name: str) -> str:
     return match.group(1)
 
 
-def write_oms_ca(dest: Path, pem: str):
-    """Write OMS CA cert as a const char[] array."""
-    # Convert PEM to C string literal, line by line
-    lines = pem.strip().split('\n')
+def pem_to_c_literal(pem: str) -> str:
+    """Render a PEM block as one C string literal built from adjacent literals.
+
+    The parts must be concatenated, not comma-separated: a brace-enclosed,
+    comma-separated list makes the declaration a char[] initialized from string
+    literals, which the compiler rejects with "excess elements in 'char' array
+    initializer". Callers emit `= <this> ;` with no braces.
+    """
     c_parts = []
-    for line in lines:
+    for line in pem.strip().split('\n'):
         # Escape backslashes and quotes for C string literal
         escaped = line.replace('\\', '\\\\').replace('"', '\\"')
         c_parts.append(f'    "{escaped}\\n"')
+    return '\n'.join(c_parts)
 
+
+def write_oms_ca(dest: Path, pem: str):
+    """Write OMS CA cert as a const char[] string."""
     content = '/*\n'
     content += ' * OMS CA certificate for ESP32-C6 lock build.\n'
     content += ' * Auto-generated from src/security/oms_ca.h — do not edit manually.\n'
@@ -79,10 +87,8 @@ def write_oms_ca(dest: Path, pem: str):
     content += ' */\n\n'
     content += '#ifndef FORGEKEY_OMS_CA_H\n'
     content += '#define FORGEKEY_OMS_CA_H\n\n'
-    content += 'static const char kOmsCaPem[] = {\n'
-    content += ',\n'.join(c_parts) + '\n'
-    content += '    NULL\n'
-    content += '};\n\n'
+    content += 'static const char kOmsCaPem[] =\n'
+    content += pem_to_c_literal(pem) + ';\n\n'
     content += '#endif /* FORGEKEY_OMS_CA_H */\n'
 
     dest.mkdir(parents=True, exist_ok=True)
@@ -91,13 +97,7 @@ def write_oms_ca(dest: Path, pem: str):
 
 
 def write_firmware_pubkey(dest: Path, pem: str):
-    """Write firmware pubkey as a const char[] array."""
-    lines = pem.strip().split('\n')
-    c_parts = []
-    for line in lines:
-        escaped = line.replace('\\', '\\\\').replace('"', '\\"')
-        c_parts.append(f'    "{escaped}\\n"')
-
+    """Write firmware pubkey as a const char[] string."""
     content = '/*\n'
     content += ' * Firmware signing public key for ESP32-C6 lock build.\n'
     content += ' * Auto-generated from src/security/firmware_pubkey.h — do not edit manually.\n'
@@ -107,10 +107,8 @@ def write_firmware_pubkey(dest: Path, pem: str):
     content += ' */\n\n'
     content += '#ifndef FORGEKEY_FIRMWARE_PUBKEY_H\n'
     content += '#define FORGEKEY_FIRMWARE_PUBKEY_H\n\n'
-    content += 'static const char kFirmwarePubKeyPem[] = {\n'
-    content += ',\n'.join(c_parts) + '\n'
-    content += '    NULL\n'
-    content += '};\n\n'
+    content += 'static const char kFirmwarePubKeyPem[] =\n'
+    content += pem_to_c_literal(pem) + ';\n\n'
     content += '#endif /* FORGEKEY_FIRMWARE_PUBKEY_H */\n'
 
     dest.mkdir(parents=True, exist_ok=True)
@@ -197,13 +195,7 @@ def write_device_config(dest: Path, bootstrap_token: str, claim_code: str, recor
 
 
 def write_oms_command_pubkey(dest: Path, pem: str):
-    """Write OMS command-verification public key as a const char[] array."""
-    lines = pem.strip().split('\n')
-    c_parts = []
-    for line in lines:
-        escaped = line.replace('\\', '\\\\').replace('"', '\\"')
-        c_parts.append(f'    "{escaped}\\n"')
-
+    """Write OMS command-verification public key as a const char[] string."""
     content = '/*\n'
     content += ' * OMS command verification public key for ESP32-C6 lock build.\n'
     content += ' * Auto-generated from src/security/oms_command_pubkey.h — do not edit manually.\n'
@@ -211,10 +203,8 @@ def write_oms_command_pubkey(dest: Path, pem: str):
     content += ' */\n\n'
     content += '#ifndef FORGEKEY_OMS_COMMAND_PUBKEY_H\n'
     content += '#define FORGEKEY_OMS_COMMAND_PUBKEY_H\n\n'
-    content += 'static const char kOmsCommandPubKeyPem[] = {\n'
-    content += ',\n'.join(c_parts) + '\n'
-    content += '    NULL\n'
-    content += '};\n\n'
+    content += 'static const char kOmsCommandPubKeyPem[] =\n'
+    content += pem_to_c_literal(pem) + ';\n\n'
     content += '#endif /* FORGEKEY_OMS_COMMAND_PUBKEY_H */\n'
 
     dest.mkdir(parents=True, exist_ok=True)
@@ -356,6 +346,7 @@ def write_firmware_verify_header(dest: Path):
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 bool firmware_verify_signature(const uint8_t* sha256_digest, size_t digest_len,
                                const uint8_t* signature_der, size_t signature_len);

@@ -1,0 +1,17 @@
+# ForgeKey production OTA partition table for 8 MB parts (XIAO ESP32-S3),
+# with encrypted NVS storage. Same layout and semantics as
+# forgekey_secure_ota.csv — encrypted nvs/nvs_keys, dual OTA slots, encrypted
+# data partition — but the slots are grown to 3 MB because the 4 MB table's
+# 1.5 MB slot cannot hold the camera + TFLite people-counter image (~2.24 MB).
+#
+# The 4 MB table stays the default: the ESP32-C3 prod targets (epaper, 2-channel
+# relay) only have 4 MB of flash and cannot use this one. Keep the two files in
+# step when adding or renaming a partition.
+# Name,     Type, SubType, Offset,   Size,     Flags
+nvs,        data, nvs,     0x9000,   0x4000,   encrypted
+nvs_keys,   data, nvs_keys,0xd000,   0x2000,   encrypted
+otadata,    data, ota,     0xf000,   0x2000,
+phy_init,   data, phy,     0x11000,  0x1000,
+ota_0,      app,  ota_0,   0x20000,  0x300000,
+ota_1,      app,  ota_1,   0x320000, 0x300000,
+spiffs,     data, spiffs,  0x620000, 0x1E0000, encrypted

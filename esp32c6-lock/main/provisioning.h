@@ -8,6 +8,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 
 #define FORGEKEY_PROV_MAX_DEVICES_ID 64
 #define FORGEKEY_PROV_MAX_TOPIC      128

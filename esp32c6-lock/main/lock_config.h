@@ -61,6 +61,10 @@
 #define FORGEKEY_LOCK_IR_BEAM_INTACT 1
 #define FORGEKEY_LOCK_IR_BEAM_BROKEN 0
 
+/* Mortise (physical key) switch states */
+#define FORGEKEY_LOCK_MORTISE_ACTIVE 0
+#define FORGEKEY_LOCK_MORTISE_INACTIVE 1
+
 /* Solenoid pulse duration (ms) */
 #ifndef FORGEKEY_LOCK_SOLENOID_PULSE_MS
 #define FORGEKEY_LOCK_SOLENOID_PULSE_MS 1500

@@ -495,7 +495,7 @@ bool ota_apply(const char* url, const char* sha256, const char* signature,
     while (received < content_length) {
         int n = esp_http_client_read(http_client, (char*)buf, sizeof(buf));
         if (n <= 0) {
-            if (esp_http_client_is_complete_data_transfer(http_client)) {
+            if (esp_http_client_is_complete_data_received(http_client)) {
                 break;
             }
             forgekey_watchdog_mark_healthy(FORGEKEY_WATCHDOG_OTA);

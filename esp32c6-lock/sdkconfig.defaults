@@ -60,6 +60,11 @@ CONFIG_FORGEKEY_PRODUCTION_SECURITY=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_prod.csv"
 CONFIG_PARTITION_TABLE_FILENAME="partitions_prod.csv"
+# partitions_prod.csv lays out a full 4 MB. ESPTOOLPY_FLASHSIZE defaults to 2 MB,
+# which fails the build with "Partitions tables occupies 4.0MB of flash ... which
+# does not fit in configured flash size 2MB", so state the size the table needs.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
 CONFIG_SECURE_BOOT=y
 CONFIG_SECURE_BOOT_V2_ENABLED=y
 CONFIG_SECURE_BOOT_BUILD_SIGNED_BINARIES=y

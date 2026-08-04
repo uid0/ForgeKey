@@ -16,25 +16,34 @@ idf_component_register(
          "boards/lock_board_manifest.c"
          "power/power_manager.c"
     INCLUDE_DIRS "." "${FORGEKEY_LOCK_GENERATED_DIR}"
-    REQUIRES 
+    # Component names must match the ESP-IDF component directory names exactly;
+    # a typo here fails the build at configure time with "Failed to resolve
+    # component". Note the ones that do not follow the esp_* convention:
+    # esp-tls is hyphenated, the MQTT component is mqtt (esp-mqtt is the
+    # submodule inside it), and the OTA ops component is app_update.
+    REQUIRES
         esp_wifi
         esp_event
         esp_netif
-        esp_tls
+        esp-tls
         esp_https_ota
         esp_http_client
         esp_http_server
-        esp-mqtt
+        mqtt
         nvs_flash
         json
         esp_partition
         spi_flash
-        update
+        app_update
+        # app_update only privately requires efuse, so esp_efuse.h is not on our
+        # include path without this. ota_update.c guards its anti-rollback checks
+        # with __has_include("esp_efuse.h") — drop this and they silently compile
+        # out and the device reports ota_anti_rollback_supported=false.
+        efuse
         driver
         esp_timer
         esp_system
         esp_adc
-        esp_timer
         lwip
         mbedtls
 )
